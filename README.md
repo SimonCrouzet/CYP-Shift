@@ -1,19 +1,8 @@
-<div align="center">
+# CYP-Shift
 
-# 🧬 CYP-Shift
-
-**Predicting cytochrome P450 inhibition under an interval-censored loss**
-
-Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/spaces/openadmet/cyp-challenge) · 17 Aug – 3 Nov 2026
-
-![status](https://img.shields.io/badge/status-in%20development-yellow)
-![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![licence](https://img.shields.io/badge/licence-MIT-green)
-![isoforms](https://img.shields.io/badge/isoforms-1A2%20·%202C9%20·%202D6%20·%203A4-purple)
-
-</div>
-
----
+Predicting cytochrome P450 inhibition under an interval-censored loss.
+Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/spaces/openadmet/cyp-challenge),
+17 August to 3 November 2026.
 
 > **Why the name.** *Cytochrome P450* is named for a 30 nm shift — its reduced,
 > CO-bound form absorbs at 450 nm rather than the usual 420, because an axial
@@ -23,20 +12,20 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 ---
 
-## 📋 At a glance
+## At a glance
 
 | | |
 |---|---|
-| 🎯 **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
-| 📈 **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
-| 🔀 **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
-| 🧊 **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
-| 🔬 **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
-| 📏 **Ranked on** | macro-averaged soft-threshold relative absolute error |
-| 🔁 **Submission limit** | 1 per 12 h, latest counts |
-| 📦 **Training data** | 4,905 dose-response · 17,504 single-concentration · 6,145 TDI |
+| **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
+| **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
+| **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
+| **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
+| **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
+| **Ranked on** | macro-averaged soft-threshold relative absolute error |
+| **Submission limit** | 1 per 12 h, latest counts |
+| **Training data** | 4,905 dose-response · 17,504 single-concentration · 6,145 TDI |
 
-### 🗓️ Timeline
+### Timeline
 
 | | date | event |
 |---|---|---|
@@ -48,7 +37,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 ---
 
-## 📏 The metric is not squared error
+## The metric is not squared error
 
 The regression track ranks on a **dead-zone L1 loss**. Per isoform:
 
@@ -77,22 +66,22 @@ Three properties drive every design decision in this repository:
 
 | property | consequence |
 |---|---|
-| 🆓 Zero error inside the credible band | the optimal point is **not** the posterior mean |
-| 🔒 Denominator is submission-independent | the objective is a **plain sum of dead-zone L1 errors** |
-| 📐 Band width varies ~10× with activity | inactives are nearly free, actives carry the score |
+| Zero error inside the credible band | the optimal point is **not** the posterior mean |
+| Denominator is submission-independent | the objective is a **plain sum of dead-zone L1 errors** |
+| Band width varies ~10× with activity | inactives are nearly free, actives carry the score |
 
 **Band width, measured on the training set:**
 
-| activity regime | median band width | share of score |
+| activity regime | median band width | share of the score |
 |---|---|---|
-| pIC50 ≥ 4 (active) | `▓░░░░░░░░░` 0.27 – 0.53 log units | almost all of it |
-| pIC50 < 4 (inactive) | `▓▓▓▓▓▓▓▓▓▓` 1.21 – 2.59 log units | almost none |
+| pIC50 ≥ 4, active | 0.27 – 0.53 log units | almost all of it |
+| pIC50 < 4, inactive | 1.21 – 2.59 log units | almost none |
 
 Lower is better. **1.0 means no better than predicting the mean.**
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 Three routes behind one interface. Every route emits the same object — a
 **predictive distribution over pIC50 per compound per isoform** — so the decision
@@ -101,10 +90,10 @@ swappable and combinable.
 
 ```mermaid
 flowchart TD
-    D[("🧪 Challenge data<br/>DRC · screen · TDI")] --> A
+    D[("Challenge data<br/>DRC · screen · TDI")] --> A
     D --> B
     D --> C
-    X[("🌍 External<br/>Veith · ChEMBL · CYP2C19")] -.pretraining only.-> A
+    X[("External<br/>Veith · ChEMBL · CYP2C19")] -.pretraining only.-> A
     X -.-> B
 
     A["<b>A · Ligand-only</b><br/>Chemprop D-MPNN<br/>multi-task, conditioned heads"]
@@ -114,9 +103,9 @@ flowchart TD
     A --> P
     B --> P
     C --> P
-    P["<b>📊 Predictive distribution</b><br/>mean · aleatoric · epistemic<br/>cross-route disagreement"]
-    P --> Q["<b>🎯 Decision layer</b><br/>minimise expected dead-zone L1<br/>over a predicted band"]
-    Q --> S["📤 Submission<br/>750 × 4 pIC50"]
+    P["<b>Predictive distribution</b><br/>mean · aleatoric · epistemic<br/>cross-route disagreement"]
+    P --> Q["<b>Decision layer</b><br/>minimise expected dead-zone L1<br/>over a predicted band"]
+    Q --> S["Submission<br/>750 × 4 pIC50"]
 ```
 
 | route | sees structure? | sees the heme? | role |
@@ -143,27 +132,27 @@ one-dimensional optimisation per compound and is the correct answer to this metr
 
 ---
 
-## 🧪 Data
+## Data
 
-| source | scale | role | status |
-|---|---|---|---|
-| Dose-response pIC50 | 4,905 compounds · 6,325 labels | primary supervised target | ⭐ core |
-| **Single-concentration screen** | **4,376 × 4 = 17,504** | **censored bounds, bias correction** | ⭐⭐ highest value |
-| Time-dependent inhibition arm | 6,145 compounds | classification track | ⭐ core |
-| Emax | 6,145 compounds | — | ⛔ inert |
-| Blinded test | 750 compounds | 75 analog series | 🔒 held out |
+| source | scale | role |
+|---|---|---|
+| Dose-response pIC50 | 4,905 compounds · 6,325 labels | primary supervised target |
+| **Single-concentration screen** | **4,376 × 4 = 17,504** | **censored bounds, bias correction** |
+| Time-dependent inhibition arm | 6,145 compounds | classification track |
+| Emax | 6,145 compounds | — |
+| Blinded test | 750 compounds | 75 analog series |
 
 ### Why the screening file matters most
 
 Dose-response coverage is **sparse and non-random**, because compounds were promoted
 to full curves only if they hit that isoform in the primary screen:
 
-| isoform | DRC coverage | |
-|---|---|---|
-| CYP3A4 | 47.6% | `▓▓▓▓▓░░░░░` |
-| CYP2D6 | 30.4% | `▓▓▓░░░░░░░` |
-| CYP1A2 | 28.8% | `▓▓▓░░░░░░░` |
-| CYP2C9 | 26.2% | `▓▓▓░░░░░░░` |
+| isoform | DRC coverage |
+|---|---|
+| CYP3A4 | 47.6% |
+| CYP2D6 | 30.4% |
+| CYP1A2 | 28.8% |
+| CYP2C9 | 26.2% |
 
 3,596 of 4,905 compounds carry exactly **one** isoform label. Train naively and you
 learn "given this compound is a hit, how big a hit", which is not the question the
@@ -172,12 +161,12 @@ test set asks.
 The single-concentration matrix is dense, unbiased, and its log fold-change is a
 near-perfect rank surrogate for pIC50:
 
-| isoform | Spearman(log2FC, pIC50) | |
-|---|---|---|
-| CYP3A4 | −0.936 | `▓▓▓▓▓▓▓▓▓░` |
-| CYP2C9 | −0.896 | `▓▓▓▓▓▓▓▓▓░` |
-| CYP1A2 | −0.862 | `▓▓▓▓▓▓▓▓░░` |
-| CYP2D6 | −0.828 | `▓▓▓▓▓▓▓▓░░` |
+| isoform | Spearman(log2FC, pIC50) |
+|---|---|
+| CYP3A4 | −0.936 |
+| CYP2C9 | −0.896 |
+| CYP1A2 | −0.862 |
+| CYP2D6 | −0.828 |
 
 It supplies exactly the inactives the supervised labels lack. External sources enter
 as **pretraining or post-hoc gates, never mixed into the supervised training set**.
@@ -186,16 +175,15 @@ itself, ~91% identical, same pocket.
 
 ---
 
-## 📊 The isoforms are not equally hard
+## The isoforms are not equally hard
 
 Five-fold cross-validated R² on the challenge training data, random split:
 
-| isoform | n | physchem | ECFP4 | both | + basic-N | |
-|---|---|---|---|---|---|---|
-| CYP3A4 | 2,335 | 0.375 | 0.289 | **0.494** | 0.494 | `▓▓▓▓▓▓▓▓▓▓` |
-| CYP2C9 | 1,285 | 0.261 | 0.103 | **0.311** | 0.320 | `▓▓▓▓▓▓░░░░` |
-| CYP1A2 | 1,412 | 0.138 | 0.131 | **0.210** | 0.212 | `▓▓▓▓░░░░░░` |
-| **CYP2D6** | 1,493 | **0.039** | 0.109 | **0.136** | **0.150** | `▓▓▓░░░░░░░` |
+| isoform | n | physchem | ECFP4 | both | + basic-N |
+| CYP3A4 | 2,335 | 0.375 | 0.289 | **0.494** | 0.494 |
+| CYP2C9 | 1,285 | 0.261 | 0.103 | **0.311** | 0.320 |
+| CYP1A2 | 1,412 | 0.138 | 0.131 | **0.210** | 0.212 |
+| **CYP2D6** | 1,493 | **0.039** | 0.109 | **0.136** | **0.150** |
 
 **CYP2D6 is a different problem**, and mechanistically so:
 
@@ -219,7 +207,7 @@ profile.
 
 ---
 
-## 📁 Repository layout
+## Repository layout
 
 ```
 src/cypshift/
@@ -235,7 +223,7 @@ tests/             pytest suite, run in CI
 data/              inputs (gitignored)
 ```
 
-## ⚙️ Setup
+## Setup
 
 ```bash
 mamba env create -f environment.yml && mamba activate cypshift
@@ -251,9 +239,9 @@ hf auth whoami         # verify
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
-### 🚧 Blocking — cheap, and everything else depends on them
+### Blocking — cheap, and everything else depends on them
 
 | | task | why it blocks |
 |---|---|---|
@@ -261,7 +249,7 @@ hf auth whoami         # verify
 | ⬜ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
 | ⬜ | Build and freeze a similarity-matched holdout | random-split CV is biased against the features that matter most |
 
-### 🔧 The shared spine
+### The shared spine
 
 | | task | notes |
 |---|---|---|
@@ -270,9 +258,9 @@ hf auth whoami         # verify
 | ⬜ | Route A baseline: D-MPNN multi-task + fingerprint control | establishes the floor and the submission plumbing |
 | ⬜ | Auxiliary heads, measured one at a time | screen as censored bounds → Veith → ChEMBL, deduplicated |
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
-| ⬜ | **Build the decision layer** | 🎯 the piece worth being right about |
+| ⬜ | **Build the decision layer** | the piece worth being right about |
 
-### 🧊 Structure work, if the blocking check clears it
+### Structure work, if the blocking check clears it
 
 | | task | notes |
 |---|---|---|
@@ -281,17 +269,17 @@ hf auth whoami         # verify
 | ⬜ | Cross-route disagreement as epistemic uncertainty | a lower bar than beating a fingerprint on accuracy |
 | ⬜ | CYP2D6 as a dedicated project | it decides the macro average |
 
-### 🔭 Open directions, not yet committed
+### Open directions, not yet committed
 
 | direction | rationale |
 |---|---|
-| 🧩 **Pocket-shape target selection** | CYP1B1 and CYP1A1 share CYP1A2's narrow planar slot — the cleanest available test of the criterion |
-| ⚗️ **Binding-motif target selection** | aromatase, CYP11B1/B2 and thromboxane-A synthase total 11,700 compounds saturated with heme-coordinating azoles |
-| 🎲 **Adversarial pose sampling** | the affinity head scores one pose, in pockets known for multiple simultaneous occupancy |
-| 🧊 **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
-| ⏱️ **Time-dependent inhibition** | the label is a deterministic function of two continuous quantities we already model |
+| **Pocket-shape target selection** | CYP1B1 and CYP1A1 share CYP1A2's narrow planar slot — the cleanest available test of the criterion |
+| **Binding-motif target selection** | aromatase, CYP11B1/B2 and thromboxane-A synthase total 11,700 compounds saturated with heme-coordinating azoles |
+| **Adversarial pose sampling** | the affinity head scores one pose, in pockets known for multiple simultaneous occupancy |
+| **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
+| **Time-dependent inhibition** | the label is a deterministic function of two continuous quantities we already model |
 
-### ⛔ Approaches evaluated and set aside
+### Approaches evaluated and set aside
 
 | approach | why |
 |---|---|
@@ -303,7 +291,7 @@ hf auth whoami         # verify
 
 ---
 
-## 📝 Method notes
+## Method notes
 
 **Validation is the hardest unsolved problem here, not an implementation detail.**
 The test set is 75 analog series expanded from training hits, but the training
@@ -323,7 +311,7 @@ the loss function rather than fitting it to interim feedback.
 
 ---
 
-## 📄 Licence
+## Licence
 
 Code released under MIT. Challenge data belongs to OpenADMET under its own terms.
 External datasets retain their licences: SAIR is CC-BY-4.0, AQAffinity Apache 2.0,
