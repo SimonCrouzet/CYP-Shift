@@ -1,0 +1,17 @@
+notes/
+
+# Data
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Tooling
+.ruff_cache/
+.pytest_cache/
+wandb/
