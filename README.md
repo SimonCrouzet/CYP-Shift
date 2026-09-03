@@ -12,7 +12,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 ---
 
-## At a glance
+## 📋 At a glance
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 ---
 
-## The metric is not squared error
+## 📏 The metric is not squared error
 
 The regression track ranks on a **dead-zone L1 loss**. Per isoform:
 
@@ -81,7 +81,7 @@ Lower is better. **1.0 means no better than predicting the mean.**
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 Three routes behind one interface. Every route emits the same object — a
 **predictive distribution over pIC50 per compound per isoform** — so the decision
@@ -132,7 +132,7 @@ one-dimensional optimisation per compound and is the correct answer to this metr
 
 ---
 
-## Data
+## 🧪 Data
 
 | source | scale | role |
 |---|---|---|
@@ -175,7 +175,7 @@ itself, ~91% identical, same pocket.
 
 ---
 
-## The isoforms are not equally hard
+## 📊 The isoforms are not equally hard
 
 Five-fold cross-validated R² on the challenge training data, random split:
 
@@ -207,7 +207,7 @@ profile.
 
 ---
 
-## Repository layout
+## 📁 Repository layout
 
 ```
 src/cypshift/
@@ -223,7 +223,7 @@ tests/             pytest suite, run in CI
 data/              inputs (gitignored)
 ```
 
-## Setup
+## ⚙️ Setup
 
 ```bash
 mamba env create -f environment.yml && mamba activate cypshift
@@ -239,7 +239,7 @@ hf auth whoami         # verify
 
 ---
 
-## Roadmap
+## 🗺️ Roadmap
 
 ### Blocking — cheap, and everything else depends on them
 
@@ -291,7 +291,7 @@ hf auth whoami         # verify
 
 ---
 
-## Method notes
+## 📝 Method notes
 
 **Validation is the hardest unsolved problem here, not an implementation detail.**
 The test set is 75 analog series expanded from training hits, but the training
@@ -311,7 +311,7 @@ the loss function rather than fitting it to interim feedback.
 
 ---
 
-## Licence
+## 📄 Licence
 
 Code released under MIT. Challenge data belongs to OpenADMET under its own terms.
 External datasets retain their licences: SAIR is CC-BY-4.0, AQAffinity Apache 2.0,
