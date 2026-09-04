@@ -372,6 +372,22 @@ hf auth whoami         # verify
 
 ## 📝 Method notes
 
+**Assay conditioning is not degenerate, at least for trees.** Concatenating a one-hot
+at a network's input can only shift its output, so a model can satisfy assay
+conditioning by learning a per-assay constant and nothing more — a real risk here,
+since screen pseudo-labels sit about two log units below curve labels and an intercept
+would explain most of that. Measured on the boosted model, predicting the same
+compounds under both assays: mean difference 0.264, **spread across compounds 0.268**.
+The per-compound variation is as large as the average effect, so the conditioning
+carries chemistry rather than an offset.
+
+That result does not transfer to the other models. A tree splits on the assay column
+and then on fingerprint bits inside that branch, which is an interaction by
+construction; a linear first layer cannot do that. The check therefore has to be
+re-run per model, and `cypshift.eval.uncertainty.conditioning_is_additive` exists for
+that.
+
+
 **Validation is the hardest unsolved problem here, not an implementation detail.**
 The test set is 75 analog series expanded from training hits, but the training
 library is a diversity set containing almost no analog series, so a like-for-like
