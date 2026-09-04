@@ -11,7 +11,10 @@ import typer
 from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
 from cypshift.data.splits import similarity_matched_holdout
+from cypshift.decision.band import BandWidthModel
+from cypshift.decision.placement import place
 from cypshift.eval.scoring import score_submission
+from cypshift.eval.uncertainty import summarise
 from cypshift.models.ligand import LigandOnlyRoute
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
@@ -119,11 +122,37 @@ def baseline(
     route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
 
     prediction = route.predict(held_out["SMILES"].tolist())
-    submission = held_out[["Molecule_Name"]].copy()
-    for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
-        submission[endpoint] = prediction.mean[:, column]
 
-    print(score_submission(submission, held_out).round(4).to_string())
+    band_models = {
+        endpoint: BandWidthModel.fit(
+            retained[endpoint].to_numpy(float),
+            retained[f"{endpoint}_conf_low"].to_numpy(float),
+            retained[f"{endpoint}_conf_high"].to_numpy(float),
+        )
+        for endpoint in REGRESSION_ENDPOINTS
+    }
+    placed = place(prediction, band_models, seed=seed)
+
+    diagnostics = pd.DataFrame(
+        {
+            endpoint.split("_")[0]: summarise(
+                held_out[endpoint].to_numpy(float),
+                prediction.mean[:, column],
+                prediction.total_std[:, column],
+            )
+            for column, endpoint in enumerate(REGRESSION_ENDPOINTS)
+        }
+    )
+    print("\n=== predictive distribution ===")
+    print(diagnostics.round(3).to_string())
+
+    for label, values in (("posterior mean", prediction.mean), ("expected-loss placement", placed)):
+        submission = held_out[["Molecule_Name"]].copy()
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            submission[endpoint] = values[:, column]
+        scores = score_submission(submission, held_out)
+        print(f"\n=== {label} ===")
+        print(scores[["ST-RAE_mean", "MAE_mean", "R2_mean"]].round(4).to_string())
 
 
 if __name__ == "__main__":
