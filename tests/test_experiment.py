@@ -108,7 +108,7 @@ def test_an_unknown_conditioning_strategy_is_rejected():
 def test_input_encodings_and_structural_conditioning_are_separate_axes():
     """One is columns appended to the input, the other is how the model is wired."""
     assert set(CONDITIONING_STRATEGIES).isdisjoint(CURVE_CONDITIONING)
-    assert set(CURVE_CONDITIONING) == {"heads", "descriptor"}
+    assert set(CURVE_CONDITIONING) == {"heads", "descriptor", "film"}
 
 
 def test_all_multifidelity_strategies_are_named():

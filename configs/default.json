@@ -68,5 +68,11 @@
     "project": "cyp-shift",
     "entity": null,
     "tags": []
+  },
+  "auxiliary": {
+    "max_distance": 1.5,
+    "weighting": "exponential",
+    "scale": 1.0,
+    "target_weight": 1.0
   }
 }

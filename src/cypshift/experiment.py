@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,9 @@ CURVE_CONDITIONING = ("heads", "descriptor", "film")
 #: Re-exported so a config can be validated without importing the data package.
 DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES
 
+#: Re-exported for the same reason.
+AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
+
 MULTIFIDELITY_STRATEGIES = ("none", "extra_rows", "predicted_label", "embedding")
 
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
@@ -70,6 +74,29 @@ class FeatureConfig:
     fingerprint_radius: int = 2
     use_physicochemical: bool = True
     use_mechanistic: bool = True
+
+
+@dataclass
+class AuxiliaryConfig:
+    """Which enzymes outside the scored four to train on, and how much to trust them.
+
+    Distance is a mean Z-scale difference per aligned binding-site position, on a scale
+    where two unrelated sites score 5.27 and a conservative Leu-to-Ile swap scores 0.62.
+    See :mod:`cypshift.data.auxiliary`.
+    """
+
+    #: Admit a candidate whose binding site is within this of a scored enzyme. The
+    #: default admits seven human CYPs; 3.0 admits seventeen, most of them past halfway
+    #: to the distance two unrelated sites score.
+    max_distance: float = 1.5
+    #: How weight falls off with distance; see :data:`AUXILIARY_WEIGHTING`.
+    weighting: str = "exponential"
+    #: Distance at which "inverse" halves and "exponential" falls to 1/e.
+    scale: float = 1.0
+    #: Weight given to a scored enzyme's own rows. Raise it when auxiliary volume
+    #: swamps the target: CYP2C19 alone brings about 17,000 Veith rows against roughly
+    #: 6,000 dose-response labels across all four scored enzymes.
+    target_weight: float = 1.0
 
 
 @dataclass
@@ -165,6 +192,7 @@ class ExperimentConfig:
     features: FeatureConfig = field(default_factory=FeatureConfig)
     conditioning: ConditioningConfig = field(default_factory=ConditioningConfig)
     multifidelity: MultifidelityConfig = field(default_factory=MultifidelityConfig)
+    auxiliary: AuxiliaryConfig = field(default_factory=AuxiliaryConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
 
@@ -177,6 +205,7 @@ class ExperimentConfig:
                 (source, DESCRIPTOR_SOURCES, "model.curve.descriptor_sources")
                 for source in self.model.curve.descriptor_sources
             ),
+            (self.auxiliary.weighting, AUXILIARY_WEIGHTING, "auxiliary.weighting"),
             (self.multifidelity.strategy, MULTIFIDELITY_STRATEGIES, "multifidelity.strategy"),
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),

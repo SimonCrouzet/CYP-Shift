@@ -82,3 +82,22 @@ parameters:
 early_terminate:
   type: hyperband
   min_iter: 3
+
+  # Which enzymes outside the scored four to train on. Distance is a mean Z-scale
+  # difference per aligned binding-site position, where two unrelated sites score 5.27
+  # and a conservative Leu-to-Ile swap scores 0.62. 1.5 admits seven human CYPs, 3.0
+  # admits seventeen. Note CYP2D6 has no relative at any of these: its nearest is
+  # CYP2B6 at 3.16, so it trains alone whatever is chosen here.
+  auxiliary.max_distance:
+    values: [1.0, 1.5, 3.0]
+
+  # How an admitted enzyme's weight falls off. "uniform" is the baseline that says
+  # distance weighting is doing nothing, and the one to beat.
+  auxiliary.weighting:
+    values: [uniform, inverse, exponential]
+
+  # Weight on the scored enzymes' own rows. Worth raising above 1: CYP2C19 alone brings
+  # about 17,000 Veith rows against roughly 6,000 dose-response labels across all four
+  # scored enzymes, so auxiliaries can decide the fit even after downweighting.
+  auxiliary.target_weight:
+    values: [1.0, 2.0, 5.0]
