@@ -1,0 +1,14 @@
+name: cypshift
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - rdkit=2025.03.*
+  - numpy>=1.26
+  - pandas>=2.1
+  - pyarrow>=15.0
+  - scikit-learn>=1.4
+  - scipy>=1.11
+  - pip
+  - pip:
+      - -e .[dev]

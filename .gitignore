@@ -1,7 +1,7 @@
-notes/
+/notes/
 
-# Data
-data/
+# Data (inputs, downloaded not committed)
+/data/
 
 # Python
 __pycache__/
@@ -15,3 +15,7 @@ venv/
 .ruff_cache/
 .pytest_cache/
 wandb/
+
+# Build
+/build/
+/dist/
