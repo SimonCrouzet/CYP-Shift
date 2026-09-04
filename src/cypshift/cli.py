@@ -20,6 +20,7 @@ from cypshift.decision.selection import PlacementSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.models.conditioned import ConditionedRoute
+from cypshift.models.deadzone import DeadZoneRoute
 from cypshift.models.ensemble import DiverseEnsembleRoute
 from cypshift.models.ligand import LigandOnlyRoute
 
@@ -230,6 +231,69 @@ def baseline(
         comparison = paired_difference(submissions[label], submissions[reference], evaluation)
         print(f"\n=== {label} minus {reference}, paired ===")
         print(comparison.round(4).to_string())
+
+
+@app.command()
+def loss_ablation(
+    directory: Path = DEFAULT_DATA_DIR,
+    holdout_fraction: float = 0.2,
+    with_screen: Annotated[bool, typer.Option(help="Add screen pseudo-labels.")] = True,
+    epochs: int = 60,
+    seed: int = 0,
+    mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
+    verbose: bool = True,
+) -> None:
+    """Train one architecture on squared error and on the scored loss, and compare.
+
+    A single-variable experiment: same network, same data, same split, same scoring.
+    The only difference is the objective, so any difference in score is attributable
+    to training on the metric rather than on squared error.
+    """
+    _configure_logging(verbose)
+    train = load("inhibition", directory)
+    test = load("test", directory)
+
+    if mask_path and mask_path.exists():
+        mask = np.load(mask_path)
+    else:
+        mask = similarity_matched_holdout(
+            train["SMILES"].tolist(),
+            test["SMILES"].tolist(),
+            holdout_fraction=holdout_fraction,
+            seed=seed,
+        )
+        if mask_path:
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(mask_path, mask)
+
+    retained, evaluation = train.loc[~mask], train.loc[mask]
+    screen_labels = None
+    if with_screen:
+        screen = load("screen", directory)
+        kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
+        screen_labels, _ = pseudo_labels(kept, retained)
+    observations = build_observations(retained, screen_labels=screen_labels)
+
+    submissions = {}
+    for objective in ("squared", "dead_zone"):
+        logger.info("training with the %s objective", objective)
+        route = DeadZoneRoute(loss=objective, epochs=epochs, seed=seed).fit(observations)
+        predicted = route.predict(evaluation["SMILES"].tolist()).mean
+        frame = evaluation[["Molecule_Name"]].copy()
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            frame[endpoint] = predicted[:, column]
+        submissions[objective] = frame
+
+    summary = {
+        label: score_submission(frame, evaluation)["ST-RAE_mean"]
+        for label, frame in submissions.items()
+    }
+    print("\n=== ST-RAE, same network, only the objective differs ===")
+    print(pd.DataFrame(summary).round(4).to_string())
+
+    comparison = paired_difference(submissions["dead_zone"], submissions["squared"], evaluation)
+    print("\n=== dead-zone minus squared error, paired ===")
+    print(comparison.round(4).to_string())
 
 
 if __name__ == "__main__":
