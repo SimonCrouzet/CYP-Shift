@@ -1,11 +1,15 @@
-"""Training on the metric's own loss rather than on squared error.
+"""A feed-forward network over molecular features, with the objective as a parameter.
 
-The challenge charges the distance from a prediction to the nearest bound of the
-true value's credible interval, and nothing at all inside it. Squared error does not
-resemble that. A compound already predicted inside its band still produces gradient
-under mean squared error, so the model keeps refining predictions that are already
-scored perfect, while the dead-zone loss has exactly zero gradient there and spends
-capacity only on compounds that are actually being charged.
+The training objective is swappable and is meant to be swept, not assumed. Squared
+error is the default everywhere; the challenge scores *soft-threshold absolute
+error*, which charges the distance to the nearest credible-interval bound and nothing
+inside it. Those are different shapes -- under squared error a compound already
+predicted inside its interval still produces gradient, so the model keeps refining
+predictions already scored perfect, while under the soft-threshold objective the
+gradient there is exactly zero and capacity goes to compounds actually being charged.
+
+Which objective generalises best is an empirical question, so ``loss`` is an argument
+and every run reports every metric regardless of what it trained on.
 
 It also absorbs censored labels without special handling. A single-concentration
 screen reading outside the calibration range establishes only that a compound is
@@ -45,17 +49,17 @@ logger = logging.getLogger(__name__)
 UNBOUNDED = 1e4
 
 
-def dead_zone_loss(
+def soft_threshold_loss(
     prediction: torch.Tensor,
     lower: torch.Tensor,
     upper: torch.Tensor,
     weight: torch.Tensor,
 ) -> torch.Tensor:
-    """The scored loss, as a differentiable objective.
+    """Soft-threshold absolute error, as a differentiable objective.
 
-    Mirrors ``rae_soft_threshold_absolute_error``'s numerator: distance to the nearest
-    bound, zero inside. Only the numerator, because the denominator is a property of
-    the truth and does not depend on the prediction, so it cannot affect the gradient.
+    This is the numerator of the challenge's ``rae_soft_threshold_absolute_error``:
+    distance to the nearest bound, zero inside. Only the numerator, because the
+    denominator is a property of the truth and cannot affect the gradient.
 
     Args:
         prediction: Predicted pIC50, shape ``(n,)``.
@@ -70,6 +74,29 @@ def dead_zone_loss(
     above = torch.clamp(prediction - upper, min=0.0)
     below = torch.clamp(lower - prediction, min=0.0)
     return ((above + below) * weight).sum() / weight.sum().clamp(min=1e-8)
+
+
+OBJECTIVES = ("squared", "absolute", "soft_threshold")
+
+
+def _objective(
+    name: str,
+    prediction: torch.Tensor,
+    value: torch.Tensor,
+    lower: torch.Tensor,
+    upper: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Weighted mean of the requested per-row objective."""
+    if name == "soft_threshold":
+        return soft_threshold_loss(prediction, lower, upper, weight)
+    if name == "squared":
+        per_row = (prediction - value) ** 2
+    elif name == "absolute":
+        per_row = (prediction - value).abs()
+    else:
+        raise ValueError(f"unknown objective {name!r}; expected one of {OBJECTIVES}")
+    return (per_row * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
 class ConditionedMLP(nn.Module):
@@ -91,10 +118,10 @@ class ConditionedMLP(nn.Module):
         return self.trunk(x).squeeze(-1)
 
 
-class DeadZoneRoute:
+class NeuralRoute:
     """Structure-free route trained on the challenge's own loss."""
 
-    name = "structure_free_deadzone"
+    name = "structure_free_neural"
 
     def __init__(
         self,
@@ -108,7 +135,7 @@ class DeadZoneRoute:
         batch_size: int = 256,
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
-        loss: str = "dead_zone",
+        loss: str = "soft_threshold",
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -139,7 +166,7 @@ class DeadZoneRoute:
             raise RuntimeError("route is not fitted")
         return torch.from_numpy(self._scaler.transform(features))
 
-    def fit(self, observations: pd.DataFrame) -> "DeadZoneRoute":
+    def fit(self, observations: pd.DataFrame) -> "NeuralRoute":
         """Train on the observation table, using each row's own band.
 
         Rows without explicit bounds are treated as points, which reduces the loss to
@@ -174,13 +201,14 @@ class DeadZoneRoute:
                 index = order[start : start + self.batch_size]
                 optimiser.zero_grad()
                 predicted = self._model(features[index])
-                if self.loss == "dead_zone":
-                    batch_loss = dead_zone_loss(
-                        predicted, lower_t[index], upper_t[index], weight_t[index]
-                    )
-                else:
-                    squared = (predicted - value_t[index]) ** 2 * weight_t[index]
-                    batch_loss = squared.sum() / weight_t[index].sum().clamp(min=1e-8)
+                batch_loss = _objective(
+                    self.loss,
+                    predicted,
+                    value_t[index],
+                    lower_t[index],
+                    upper_t[index],
+                    weight_t[index],
+                )
                 batch_loss.backward()
                 optimiser.step()
                 total += batch_loss.detach().item() * len(index)

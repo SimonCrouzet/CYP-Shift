@@ -1,11 +1,11 @@
-"""Route A: the structure-free route, conditioned on target and assay.
+"""Route A: one model over all isoforms, with target and assay as input columns.
 
-One model serves every isoform and every assay condition. A row is a single
-measurement, and its input is the molecule concatenated with a one-hot block naming
-which protein it was measured against and under which experiment. Aspirin measured on
-CYP3A4 and on CYP1A2 produces identical molecular features, so only the conditioning
-block distinguishes them, and the network is free to learn shared chemistry in its
-lower layers while taking isoform-specific behaviour from the conditioning.
+A row is a single measurement, and its input is the molecule's features plus a
+one-hot vector naming which protein it was measured against and under which
+experiment. That is all "conditioning" means here -- extra input columns, not a
+separate pathway. Aspirin measured on CYP3A4 and on CYP1A2 gives identical molecular
+features, so those columns are the only thing distinguishing the two rows, which is
+what lets one model serve every isoform instead of four models sharing nothing.
 
 That is what "structure-free" buys over "ligand-only". No 3D structure is used, but
 the protein and the experiment are both in the input, so a measurement made on a

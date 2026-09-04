@@ -13,6 +13,7 @@ the differential test say whether anything moved.
 import numpy as np
 import pandas as pd
 
+
 def _resolve_bounds(
     y_true: pd.Series | np.ndarray,
     y_true_upper: pd.Series | np.ndarray | None,
@@ -50,9 +51,7 @@ def _resolve_bounds(
         ValueError: If both explicit bounds and a confidence interval are provided.
 
     """
-    if (
-        y_true_upper is not None or y_true_lower is not None
-    ) and confidence_interval is not None:
+    if (y_true_upper is not None or y_true_lower is not None) and confidence_interval is not None:
         raise ValueError(
             "Cannot provide both upper/lower bounds and confidence interval for soft thresholding."
         )

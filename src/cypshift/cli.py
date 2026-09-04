@@ -20,9 +20,9 @@ from cypshift.decision.selection import PlacementSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.models.conditioned import ConditionedRoute
-from cypshift.models.deadzone import DeadZoneRoute
 from cypshift.models.ensemble import DiverseEnsembleRoute
 from cypshift.models.ligand import LigandOnlyRoute
+from cypshift.models.neural import OBJECTIVES, NeuralRoute
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
 logger = logging.getLogger(__name__)
@@ -243,11 +243,12 @@ def loss_ablation(
     mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
     verbose: bool = True,
 ) -> None:
-    """Train one architecture on squared error and on the scored loss, and compare.
+    """Train one architecture on each candidate objective and report every metric.
 
-    A single-variable experiment: same network, same data, same split, same scoring.
-    The only difference is the objective, so any difference in score is attributable
-    to training on the metric rather than on squared error.
+    A single-variable sweep: same network, same data, same split, same scoring, with
+    only the training objective changing. Every metric is reported for every arm
+    regardless of which one it trained on, since a model tuned for one can easily be
+    worse on another and that trade is the thing worth seeing.
     """
     _configure_logging(verbose)
     train = load("inhibition", directory)
@@ -275,9 +276,9 @@ def loss_ablation(
     observations = build_observations(retained, screen_labels=screen_labels)
 
     submissions = {}
-    for objective in ("squared", "dead_zone"):
+    for objective in OBJECTIVES:
         logger.info("training with the %s objective", objective)
-        route = DeadZoneRoute(loss=objective, epochs=epochs, seed=seed).fit(observations)
+        route = NeuralRoute(loss=objective, epochs=epochs, seed=seed).fit(observations)
         predicted = route.predict(evaluation["SMILES"].tolist()).mean
         frame = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
@@ -291,7 +292,9 @@ def loss_ablation(
     print("\n=== ST-RAE, same network, only the objective differs ===")
     print(pd.DataFrame(summary).round(4).to_string())
 
-    comparison = paired_difference(submissions["dead_zone"], submissions["squared"], evaluation)
+    comparison = paired_difference(
+        submissions["soft_threshold"], submissions["squared"], evaluation
+    )
     print("\n=== dead-zone minus squared error, paired ===")
     print(comparison.round(4).to_string())
 

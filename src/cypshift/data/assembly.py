@@ -149,13 +149,13 @@ def conditioning_matrix(
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
 ) -> np.ndarray:
-    """One-hot block identifying the target and the assay behind each observation.
+    """One-hot input columns naming the target and the assay behind each observation.
 
     One-hot rather than a learned protein embedding, deliberately. With four targets
     an embedding can produce only four distinct vectors, so it acts as a lookup table
     carrying a homology prior with nothing to generalise across -- every target seen
-    at prediction time was also seen in training. It also costs width: dense
-    conditioning columns against a sparse molecular block dilute the latter.
+    at prediction time was also seen in training. It also costs width: dense columns
+    against a sparse molecular block dilute the latter.
     """
     unknown_targets = set(observations["target"]) - set(targets)
     unknown_assays = set(observations["assay"]) - set(assays)

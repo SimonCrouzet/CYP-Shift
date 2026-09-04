@@ -8,7 +8,7 @@ import torch
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import build_observations
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.deadzone import DeadZoneRoute, dead_zone_loss
+from cypshift.models.neural import NeuralRoute, soft_threshold_loss
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
@@ -20,49 +20,49 @@ def _tensor(*values):
 
 def test_a_prediction_inside_the_band_costs_nothing():
     pred, low, high, w = _tensor([5.0, 6.0], [4.8, 5.8], [5.2, 6.2], [1.0, 1.0])
-    assert float(dead_zone_loss(pred, low, high, w)) == 0.0
+    assert float(soft_threshold_loss(pred, low, high, w)) == 0.0
 
 
 def test_a_prediction_on_a_bound_costs_nothing():
     pred, low, high, w = _tensor([5.2], [4.8], [5.2], [1.0])
-    assert float(dead_zone_loss(pred, low, high, w)) == pytest.approx(0.0)
+    assert float(soft_threshold_loss(pred, low, high, w)) == pytest.approx(0.0)
 
 
 def test_cost_is_distance_to_the_nearest_bound():
     pred, low, high, w = _tensor([6.2], [4.8], [5.2], [1.0])
-    assert float(dead_zone_loss(pred, low, high, w)) == pytest.approx(1.0)
+    assert float(soft_threshold_loss(pred, low, high, w)) == pytest.approx(1.0)
 
 
 def test_gradient_vanishes_inside_the_band():
     """The reason to train on this at all: no capacity spent where nothing is charged."""
     pred = torch.tensor([5.0], dtype=torch.float32, requires_grad=True)
     low, high, w = _tensor([4.8], [5.2], [1.0])
-    dead_zone_loss(pred, low, high, w).backward()
+    soft_threshold_loss(pred, low, high, w).backward()
     assert float(pred.grad) == 0.0
 
 
 def test_gradient_is_present_outside_the_band():
     pred = torch.tensor([6.0], dtype=torch.float32, requires_grad=True)
     low, high, w = _tensor([4.8], [5.2], [1.0])
-    dead_zone_loss(pred, low, high, w).backward()
+    soft_threshold_loss(pred, low, high, w).backward()
     assert float(pred.grad) > 0.0
 
 
 def test_a_censored_label_charges_nothing_below_its_bound():
     """A one-sided band is what a screen reading outside the calibrated range supports."""
     pred, low, high, w = _tensor([1.0, 3.0], [-1e4, -1e4], [3.86, 3.86], [1.0, 1.0])
-    assert float(dead_zone_loss(pred, low, high, w)) == 0.0
+    assert float(soft_threshold_loss(pred, low, high, w)) == 0.0
 
 
 def test_a_censored_label_still_charges_above_its_bound():
     pred, low, high, w = _tensor([5.86], [-1e4], [3.86], [1.0])
-    assert float(dead_zone_loss(pred, low, high, w)) == pytest.approx(2.0)
+    assert float(soft_threshold_loss(pred, low, high, w)) == pytest.approx(2.0)
 
 
 def test_weights_scale_a_row_contribution():
     pred, low, high = _tensor([6.2, 6.2], [5.2, 5.2], [5.2, 5.2])
-    trusted = dead_zone_loss(pred, low, high, torch.tensor([1.0, 1.0]))
-    halved = dead_zone_loss(pred[:1], low[:1], high[:1], torch.tensor([0.3]))
+    trusted = soft_threshold_loss(pred, low, high, torch.tensor([1.0, 1.0]))
+    halved = soft_threshold_loss(pred[:1], low[:1], high[:1], torch.tensor([0.3]))
     assert float(trusted) == pytest.approx(float(halved))  # weighted mean, not sum
 
 
@@ -78,7 +78,7 @@ def _observations(seed=0):
 
 
 def _route(**kwargs):
-    return DeadZoneRoute(n_bits=128, hidden=32, epochs=5, n_forward_passes=4, **kwargs)
+    return NeuralRoute(n_bits=128, hidden=32, epochs=5, n_forward_passes=4, **kwargs)
 
 
 def test_predicting_before_fitting_is_an_error():
@@ -106,6 +106,27 @@ def test_dropout_at_prediction_time_produces_a_spread():
 
 def test_the_two_objectives_learn_different_models():
     observations = _observations()
-    dead = _route(loss="dead_zone").fit(observations).predict(SMILES).mean
+    dead = _route(loss="soft_threshold").fit(observations).predict(SMILES).mean
     squared = _route(loss="squared").fit(observations).predict(SMILES).mean
     assert not np.allclose(dead, squared)
+
+
+def test_every_declared_objective_trains():
+    from cypshift.models.neural import OBJECTIVES
+
+    observations = _observations()
+    for objective in OBJECTIVES:
+        route = _route(loss=objective).fit(observations)
+        assert np.isfinite(route.predict(SMILES[:3]).mean).all()
+
+
+def test_an_unknown_objective_is_rejected():
+    with pytest.raises(ValueError, match="unknown objective"):
+        _route(loss="not_an_objective").fit(_observations())
+
+
+def test_absolute_and_squared_objectives_differ():
+    observations = _observations()
+    absolute = _route(loss="absolute").fit(observations).predict(SMILES).mean
+    squared = _route(loss="squared").fit(observations).predict(SMILES).mean
+    assert not np.allclose(absolute, squared)
