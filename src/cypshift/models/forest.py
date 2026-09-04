@@ -1,4 +1,4 @@
-"""Route A: the ligand-only baseline.
+"""Model A: the ligand-only baseline.
 
 One model per endpoint, fitted on the compounds where that endpoint was measured.
 Fitting per endpoint rather than as one multi-output model is deliberate: coverage
@@ -8,7 +8,7 @@ with everything at 0.06 or below.
 
 The ensemble exists for its *spread*, not its mean. Seed averaging is known to add
 almost nothing to accuracy here, but the decision layer needs a distribution to
-integrate the dead-zone loss against, and disagreement between independently seeded
+integrate the soft-threshold loss against, and disagreement between independently seeded
 fits is the cheapest honest source of one.
 """
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 MIN_LABELS_PER_ENDPOINT = 50
 
 
-class LigandOnlyRoute:
+class PerTargetForest:
     """Fingerprint and descriptor ensemble over SMILES alone."""
 
     name = "ligand"
@@ -54,7 +54,7 @@ class LigandOnlyRoute:
     def _features(self, smiles: list[str]) -> NDArray[np.float32]:
         return featurise(smiles, n_bits=self.n_bits)
 
-    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "LigandOnlyRoute":
+    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "PerTargetForest":
         """Fit one ensemble per endpoint on that endpoint's measured compounds.
 
         Args:
@@ -91,7 +91,7 @@ class LigandOnlyRoute:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """Predict a distribution for every compound and endpoint."""
         if not self._members:
-            raise RuntimeError("route is not fitted")
+            raise RuntimeError("model is not fitted")
         features = self._features(smiles)
         samples = np.stack(
             [

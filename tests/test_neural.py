@@ -1,4 +1,4 @@
-"""The dead-zone objective, and the route trained on it."""
+"""The soft-threshold objective, and the model trained on it."""
 
 import numpy as np
 import pandas as pd
@@ -8,7 +8,7 @@ import torch
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import build_observations
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.neural import NeuralRoute, soft_threshold_loss
+from cypshift.models.neural import NeuralNetwork, soft_threshold_loss
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
@@ -49,7 +49,7 @@ def test_gradient_is_present_outside_the_band():
 
 
 def test_a_censored_label_charges_nothing_below_its_bound():
-    """A one-sided band is what a screen reading outside the calibrated range supports."""
+    """A one-sided interval is what a screen reading outside the calibrated range supports."""
     pred, low, high, w = _tensor([1.0, 3.0], [-1e4, -1e4], [3.86, 3.86], [1.0, 1.0])
     assert float(soft_threshold_loss(pred, low, high, w)) == 0.0
 
@@ -78,7 +78,7 @@ def _observations(seed=0):
 
 
 def _route(**kwargs):
-    return NeuralRoute(n_bits=128, hidden=32, epochs=5, n_forward_passes=4, **kwargs)
+    return NeuralNetwork(n_bits=128, hidden=32, epochs=5, n_forward_passes=4, **kwargs)
 
 
 def test_predicting_before_fitting_is_an_error():
@@ -92,16 +92,16 @@ def test_fitting_on_an_empty_table_is_rejected():
 
 
 def test_fit_then_predict_returns_a_distribution():
-    route = _route().fit(_observations())
-    prediction = route.predict(SMILES[:5])
+    model = _route().fit(_observations())
+    prediction = model.predict(SMILES[:5])
     assert isinstance(prediction, PredictiveDistribution)
     assert prediction.samples.shape == (4, 5, len(REGRESSION_ENDPOINTS))
     assert np.isfinite(prediction.samples).all()
 
 
 def test_dropout_at_prediction_time_produces_a_spread():
-    route = _route(dropout=0.3).fit(_observations())
-    assert route.predict(SMILES).epistemic_variance.mean() > 0
+    model = _route(dropout=0.3).fit(_observations())
+    assert model.predict(SMILES).epistemic_variance.mean() > 0
 
 
 def test_the_two_objectives_learn_different_models():
@@ -116,8 +116,8 @@ def test_every_declared_objective_trains():
 
     observations = _observations()
     for objective in OBJECTIVES:
-        route = _route(loss=objective).fit(observations)
-        assert np.isfinite(route.predict(SMILES[:3]).mean).all()
+        model = _route(loss=objective).fit(observations)
+        assert np.isfinite(model.predict(SMILES[:3]).mean).all()
 
 
 def test_an_unknown_objective_is_rejected():

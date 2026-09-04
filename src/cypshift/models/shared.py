@@ -1,8 +1,8 @@
-"""Route A: one model over all isoforms, with target and assay as input columns.
+"""Model A: one model over all isoforms, with target and assay as input columns.
 
 A row is a single measurement, and its input is the molecule's features plus a
 one-hot vector naming which protein it was measured against and under which
-experiment. That is all "conditioning" means here -- extra input columns, not a
+experiment. That is all "context" means here -- extra input columns, not a
 separate pathway. Aspirin measured on CYP3A4 and on CYP1A2 gives identical molecular
 features, so those columns are the only thing distinguishing the two rows, which is
 what lets one model serve every isoform instead of four models sharing nothing.
@@ -24,7 +24,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, conditioning_matrix
+from cypshift.data.assembly import ASSAYS, context_columns
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.ensemble import DEFAULT_MEMBERS, MemberSpec
@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 SCORED_ASSAY = "direct_inhibition_drc"
 
 
-class ConditionedRoute:
-    """Structure-free route over a long observation table."""
+class SharedEnsemble:
+    """Structure-free model over a long observation table."""
 
     name = "structure_free"
 
@@ -66,7 +66,7 @@ class ConditionedRoute:
         )
         return (matrix > 0).astype(np.float32) if spec.name.startswith("nearest") else matrix
 
-    def fit(self, observations: pd.DataFrame) -> "ConditionedRoute":
+    def fit(self, observations: pd.DataFrame) -> "SharedEnsemble":
         """Fit every member on the whole observation table at once.
 
         Args:
@@ -79,7 +79,7 @@ class ConditionedRoute:
         usable = observations[np.isfinite(observations["value"])]
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
-        context = conditioning_matrix(usable, self.targets, self.assays)
+        context = context_columns(usable, self.targets, self.assays)
         smiles = usable["SMILES"].tolist()
         weights = usable["weight"].to_numpy(float)
         values = usable["value"].to_numpy(float)
@@ -99,7 +99,7 @@ class ConditionedRoute:
                 estimator.fit(features, values, sample_weight=weights)
             except TypeError:
                 # Neighbour models take no sample weights; the source mixture is then
-                # carried by the conditioning block alone.
+                # carried by the context block alone.
                 estimator.fit(features, values)
             self._fitted.append(estimator)
         return self
@@ -107,13 +107,13 @@ class ConditionedRoute:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """Predict at the scored assay condition for every endpoint."""
         if not self._fitted:
-            raise RuntimeError("route is not fitted")
+            raise RuntimeError("model is not fitted")
         n = len(smiles)
         samples = np.empty((len(self.members), n, len(self.endpoints)))
         for column, endpoint in enumerate(self.endpoints):
             target = endpoint.split("_")[0]
             query = pd.DataFrame({"target": [target] * n, "assay": [SCORED_ASSAY] * n})
-            context = conditioning_matrix(query, self.targets, self.assays)
+            context = context_columns(query, self.targets, self.assays)
             for index, spec in enumerate(self.members):
                 features = np.hstack([self._molecular(smiles, spec), context])
                 samples[index, :, column] = self._fitted[index].predict(features)

@@ -10,7 +10,7 @@ from cypshift.data.assembly import (
     OBSERVATION_COLUMNS,
     SourceWeights,
     build_observations,
-    conditioning_matrix,
+    context_columns,
 )
 
 
@@ -75,7 +75,7 @@ def test_custom_weights_are_respected():
 
 def test_conditioning_is_one_hot_over_targets_and_assays():
     observations = build_observations(_inhibition(), _screen_labels())
-    context = conditioning_matrix(observations)
+    context = context_columns(observations)
     assert context.shape == (len(observations), len(ISOFORMS) + len(ASSAYS))
     # Exactly one target and exactly one assay set per row.
     assert np.all(context[:, : len(ISOFORMS)].sum(axis=1) == 1)
@@ -86,12 +86,12 @@ def test_an_unrecognised_target_is_rejected():
     observations = build_observations(_inhibition())
     observations.loc[0, "target"] = "CYP2C19"
     with pytest.raises(ValueError, match="unrecognised target"):
-        conditioning_matrix(observations)
+        context_columns(observations)
 
 
 def test_the_same_compound_on_two_targets_differs_only_in_conditioning():
     observations = build_observations(_inhibition(n=5))
-    context = conditioning_matrix(observations)
+    context = context_columns(observations)
     same_compound = observations["Molecule_Name"] == "OCNT-00000"
     rows = context[same_compound.to_numpy()]
     assert len(rows) == len(ISOFORMS)

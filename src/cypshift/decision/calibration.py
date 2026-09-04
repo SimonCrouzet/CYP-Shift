@@ -7,7 +7,7 @@ fifteen times, with 90% intervals covering 4-10% of compounds instead of 90%. Se
 disagreement captures almost none of the real uncertainty, because every member saw
 the same data and shares the same failure modes.
 
-That matters here because the placement layer optimises against whatever posterior it
+That matters here because the point-estimate step optimises against whatever posterior it
 is handed. Given one that is effectively a point mass it cannot do the job it exists
 for, and where the model is confident and wrong it will commit harder to the wrong
 answer.
@@ -19,7 +19,7 @@ all are. Without that division every compound would receive the same width: corr
 on average and uninformative per compound.
 
 The correction is applied as an added aleatoric term rather than by stretching the
-samples, so a route's predicted shape -- including genuine multi-modality, where it
+samples, so a model's predicted shape -- including genuine multi-modality, where it
 has any -- survives calibration.
 """
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 #: The floor guarding against division by a near-zero spread is set as a low quantile
 #: of the observed spread rather than as an absolute constant. A fixed floor clamps
-#: every compound whenever a route is confident, which flattens the spread to a
+#: every compound whenever a model is confident, which flattens the spread to a
 #: constant and destroys the per-compound ranking conformal is meant to preserve.
 DEFAULT_FLOOR_QUANTILE = 0.05
 
@@ -57,7 +57,7 @@ class ConformalCalibrator:
         level: float = 0.90,
         floor_quantile: float = DEFAULT_FLOOR_QUANTILE,
     ) -> "ConformalCalibrator":
-        """Learn a multiplier per endpoint on data the route did not train on.
+        """Learn a multiplier per endpoint on data the model did not train on.
 
         Args:
             distribution: Predictions on the calibration compounds.
@@ -100,7 +100,7 @@ class ConformalCalibrator:
         before being used as one. Skipping that conversion inflates the interval by
         the same factor and overshoots coverage.
 
-        The shortfall is added as aleatoric variance, so the route's own sample shape
+        The shortfall is added as aleatoric variance, so the model's own sample shape
         is preserved and only the width changes.
         """
         missing = set(distribution.endpoints) - set(self.multipliers)

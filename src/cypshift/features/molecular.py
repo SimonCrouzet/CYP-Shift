@@ -41,7 +41,7 @@ BASIC_AMINE_SMARTS = "[NX3;H2,H1,H0;!$(N[!#6]);!$(N*=[!#6]);!$(Nc);!$(N#*)]"
 #: This is precisely the interaction a co-folded affinity head cannot score, since
 #: non-polymer cofactors are masked out of its pair representation before the head
 #: sees them, which makes it the highest-value hand-built feature to pair with a
-#: structure route.
+#: structure model.
 HEME_COORDINATING_SMARTS = "[nX2;H0]"
 
 CARBOXYLIC_ACID_SMARTS = "[CX3](=O)[OX2H1,OX1-]"

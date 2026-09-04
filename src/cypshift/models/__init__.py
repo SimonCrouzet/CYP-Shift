@@ -1,1 +1,1 @@
-"""Prediction routes behind a common interface."""
+"""Prediction models behind a common interface."""

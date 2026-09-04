@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.ensemble import DEFAULT_MEMBERS, DiverseEnsembleRoute, MemberSpec
-from cypshift.models.ligand import LigandOnlyRoute
+from cypshift.models.ensemble import DEFAULT_MEMBERS, MemberSpec, PerTargetEnsemble
+from cypshift.models.forest import PerTargetForest
 
 ENDPOINTS = ("CYP1A2_pIC50_direct_inhibition", "CYP3A4_pIC50_direct_inhibition")
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "CC(=O)N({})c1ccccc1", "Cn1cnc({})c1"]
@@ -41,7 +41,7 @@ def _fast_members():
 
 
 def _route():
-    return DiverseEnsembleRoute(endpoints=ENDPOINTS, members=_fast_members(), n_bits=256)
+    return PerTargetEnsemble(endpoints=ENDPOINTS, members=_fast_members(), n_bits=256)
 
 
 def test_default_members_span_more_than_one_feature_view():
@@ -64,19 +64,19 @@ def test_wrong_target_shape_is_rejected():
 
 
 def test_fit_then_predict_returns_one_sample_per_member():
-    route = _route().fit(SMILES, _targets(len(SMILES)))
-    prediction = route.predict(SMILES[:6])
+    model = _route().fit(SMILES, _targets(len(SMILES)))
+    prediction = model.predict(SMILES[:6])
     assert isinstance(prediction, PredictiveDistribution)
     assert prediction.samples.shape == (3, 6, len(ENDPOINTS))
     assert np.isfinite(prediction.samples).all()
 
 
 def test_diverse_members_disagree_more_than_reseeded_ones():
-    """The point of the route: real disagreement, not seed noise."""
+    """The point of the model: real disagreement, not seed noise."""
     targets = _targets(len(SMILES))
     diverse = _route().fit(SMILES, targets).predict(SMILES)
     seeded = (
-        LigandOnlyRoute(endpoints=ENDPOINTS, n_members=3, n_estimators=20, n_bits=256)
+        PerTargetForest(endpoints=ENDPOINTS, n_members=3, n_estimators=20, n_bits=256)
         .fit(SMILES, targets)
         .predict(SMILES)
     )
@@ -91,6 +91,6 @@ def test_an_endpoint_with_too_few_labels_is_rejected():
 
 
 def test_the_route_satisfies_the_declared_interface():
-    route = _route()
-    assert route.name == "ligand_diverse"
-    assert hasattr(route, "fit") and hasattr(route, "predict")
+    model = _route()
+    assert model.name == "ligand_diverse"
+    assert hasattr(model, "fit") and hasattr(model, "predict")

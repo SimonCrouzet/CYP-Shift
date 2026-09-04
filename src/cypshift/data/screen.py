@@ -30,7 +30,7 @@ times; treated as one-sided bounds they say the one true thing the screen suppor
 that the compound is inactive.
 
 Bounds are emitted in the same ``_conf_low`` / ``_conf_high`` form the challenge uses,
-so a pseudo-label drops straight into the dead-zone loss the metric is built on.
+so a pseudo-label drops straight into the soft-threshold loss the metric is built on.
 """
 
 import logging

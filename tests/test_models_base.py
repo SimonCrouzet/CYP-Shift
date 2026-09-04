@@ -1,4 +1,4 @@
-"""The predictive distribution carried between routes and the decision layer."""
+"""The predictive distribution carried between models and the decision layer."""
 
 import numpy as np
 import pytest

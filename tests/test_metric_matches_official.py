@@ -16,7 +16,7 @@ RNG = np.random.default_rng(0)
 
 
 def _case(n=200):
-    """Truth with realistic activity-dependent bands: wide below the assay floor."""
+    """Truth with realistic activity-dependent intervals: wide below the assay floor."""
     y = RNG.uniform(2, 8, n)
     half = np.where(y < 4, RNG.uniform(0.6, 1.4, n), RNG.uniform(0.1, 0.3, n))
     return y, y - half, y + half

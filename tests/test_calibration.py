@@ -12,7 +12,7 @@ RNG = np.random.default_rng(0)
 
 
 def _overconfident(n=800, understatement=12.0):
-    """A route whose spread ranks errors but understates them by a known factor."""
+    """A model whose spread ranks errors but understates them by a known factor."""
     truth = RNG.normal(5.0, 1.0, (n, len(ENDPOINTS)))
     honest_std = RNG.uniform(0.2, 0.8, (n, len(ENDPOINTS)))
     mean = truth + RNG.normal(0.0, honest_std)
@@ -94,7 +94,7 @@ def test_coverage_tracks_the_requested_level():
 
 
 def test_the_floor_adapts_to_the_scale_of_the_predicted_spread():
-    # A confident route and a diffuse one must not share an absolute floor, or the
+    # A confident model and a diffuse one must not share an absolute floor, or the
     # confident one is clamped flat and loses its per-compound ranking.
     tight, truth = _overconfident(understatement=40.0)
     wide, _ = _overconfident(understatement=2.0)

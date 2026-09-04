@@ -61,7 +61,7 @@ def test_wider_bands_never_increase_the_numerator():
 
 
 def test_undefined_when_the_mean_predictor_is_never_penalised():
-    # A band spanning everything leaves the baseline with zero error.
+    # A interval spanning everything leaves the baseline with zero error.
     with pytest.raises(ZeroDivisionError):
         soft_threshold_rae(TRUTH, TRUTH, TRUTH - 10, TRUTH + 10)
 
@@ -69,6 +69,6 @@ def test_undefined_when_the_mean_predictor_is_never_penalised():
 def test_matches_a_hand_computed_example():
     truth = np.array([2.0, 6.0])
     lower, upper = np.array([1.5, 5.5]), np.array([2.5, 6.5])
-    predictions = np.array([4.0, 6.0])  # 1.5 above the first band, inside the second
-    # baseline is mean(truth) = 4.0: 1.5 above the first band, 1.5 below the second
+    predictions = np.array([4.0, 6.0])  # 1.5 above the first interval, inside the second
+    # baseline is mean(truth) = 4.0: 1.5 above the first interval, 1.5 below the second
     assert soft_threshold_rae(truth, predictions, lower, upper) == pytest.approx(1.5 / 3.0)

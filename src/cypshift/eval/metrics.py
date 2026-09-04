@@ -1,6 +1,6 @@
 """Regression metrics for the CYP challenge, reproducing the official scoring code.
 
-The ranked metric is a *dead-zone* L1 loss: a prediction falling anywhere inside the
+The ranked metric is a *soft-threshold* L1 loss: a prediction falling anywhere inside the
 95% credible interval of the fitted dose-response curve contributes exactly zero
 error, and one outside contributes only its distance to the nearest bound. Both the
 model error and the naive-baseline error in the denominator go through the same
@@ -63,7 +63,7 @@ def soft_threshold_rae(
 
     The denominator is the same soft-thresholded error committed by a constant
     predictor at ``mean(y_true)``, so it does not depend on the submission: minimising
-    ST-RAE is exactly minimising the summed dead-zone L1 error.
+    ST-RAE is exactly minimising the summed soft-threshold L1 error.
 
     Args:
         y_true: True pIC50 point estimates. Used only for the baseline mean.

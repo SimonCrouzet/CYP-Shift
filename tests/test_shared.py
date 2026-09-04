@@ -1,4 +1,4 @@
-"""The structure-free route conditioned on target and assay."""
+"""The structure-free model conditioned on target and assay."""
 
 import numpy as np
 import pandas as pd
@@ -8,8 +8,8 @@ from sklearn.ensemble import RandomForestRegressor
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import build_observations
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.conditioned import ConditionedRoute
 from cypshift.models.ensemble import MemberSpec
+from cypshift.models.shared import SharedEnsemble
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SUBSTITUENTS = ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]
@@ -47,7 +47,7 @@ def _members():
 
 
 def _route():
-    return ConditionedRoute(members=_members(), n_bits=256)
+    return SharedEnsemble(members=_members(), n_bits=256)
 
 
 def test_predicting_before_fitting_is_an_error():
@@ -62,25 +62,25 @@ def test_fitting_on_an_empty_table_is_rejected():
 
 
 def test_one_model_serves_every_endpoint():
-    route = _route().fit(build_observations(_inhibition()))
-    prediction = route.predict(SMILES[:5])
+    model = _route().fit(build_observations(_inhibition()))
+    prediction = model.predict(SMILES[:5])
     assert isinstance(prediction, PredictiveDistribution)
     assert prediction.samples.shape == (2, 5, len(REGRESSION_ENDPOINTS))
     assert np.isfinite(prediction.samples).all()
 
 
 def test_the_same_molecule_gets_different_predictions_per_isoform():
-    """Only the conditioning block distinguishes them, so it must be doing work."""
-    route = _route().fit(build_observations(_inhibition()))
-    prediction = route.predict(SMILES[:8]).mean
+    """Only the context block distinguishes them, so it must be doing work."""
+    model = _route().fit(build_observations(_inhibition()))
+    prediction = model.predict(SMILES[:8]).mean
     spread_across_isoforms = prediction.std(axis=1)
     assert (spread_across_isoforms > 0).all()
 
 
 def test_a_screen_source_can_be_trained_on_without_a_separate_model():
     observations = build_observations(_inhibition(), screen_labels=_screen())
-    route = _route().fit(observations)
-    assert route.predict(SMILES[:4]).samples.shape == (2, 4, len(REGRESSION_ENDPOINTS))
+    model = _route().fit(observations)
+    assert model.predict(SMILES[:4]).samples.shape == (2, 4, len(REGRESSION_ENDPOINTS))
 
 
 def test_adding_a_source_changes_what_the_model_learned():
@@ -95,12 +95,12 @@ def test_adding_a_source_changes_what_the_model_learned():
 
 
 def test_prediction_is_made_at_the_scored_assay():
-    from cypshift.models.conditioned import SCORED_ASSAY
+    from cypshift.models.shared import SCORED_ASSAY
 
     assert SCORED_ASSAY == "direct_inhibition_drc"
 
 
 def test_the_route_satisfies_the_declared_interface():
-    route = _route()
-    assert route.name == "structure_free"
-    assert hasattr(route, "fit") and hasattr(route, "predict")
+    model = _route()
+    assert model.name == "structure_free"
+    assert hasattr(model, "fit") and hasattr(model, "predict")

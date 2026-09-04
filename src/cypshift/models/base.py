@@ -1,8 +1,8 @@
-"""The common interface every prediction route implements.
+"""The common interface every prediction model implements.
 
-A route does not return a point estimate. It returns a *predictive distribution*,
-because the scored metric has a dead zone and the point that minimises expected error
-under a dead-zone loss is not the posterior mean. Deciding that point is the job of
+A model does not return a point estimate. It returns a *predictive distribution*,
+because the scored metric has a soft threshold and the point that minimises expected error
+under a soft-threshold loss is not the posterior mean. Deciding that point is the job of
 :mod:`cypshift.decision`, and it needs a distribution to integrate against.
 
 The distribution is carried as samples rather than as a mean and a standard
@@ -31,7 +31,7 @@ class PredictiveDistribution:
             data. For a single deterministic model this axis has length one.
         endpoints: Column names, matching the last axis of ``samples``.
         aleatoric_variance: Optional, same shape as ``samples``. Per-member predicted
-            measurement noise, for routes that estimate it. Kept separate so the two
+            measurement noise, for models that estimate it. Kept separate so the two
             sources can be combined by the law of total variance rather than conflated.
     """
 
@@ -74,7 +74,7 @@ class PredictiveDistribution:
 
     @property
     def aleatoric_mean_variance(self) -> NDArray[np.float64]:
-        """Mean predicted measurement noise, or zeros if the route does not estimate it."""
+        """Mean predicted measurement noise, or zeros if the model does not estimate it."""
         if self.aleatoric_variance is None:
             return np.zeros_like(self.mean)
         return self.aleatoric_variance.mean(axis=0)
@@ -91,9 +91,9 @@ class PredictiveDistribution:
     def draw(self, n_draws: int, seed: int = 0) -> NDArray[np.float64]:
         """Monte Carlo draws of the predicted value, shape ``(n_draws, compounds, endpoints)``.
 
-        Members are resampled with replacement and, where a route reports aleatoric
+        Members are resampled with replacement and, where a model reports aleatoric
         variance, Gaussian noise of that scale is added. This is what the decision
-        layer integrates the dead-zone loss against.
+        layer integrates the soft-threshold loss against.
         """
         rng = np.random.default_rng(seed)
         chosen = rng.integers(0, self.n_members, size=n_draws)
@@ -112,16 +112,16 @@ class PredictiveDistribution:
 
 
 @runtime_checkable
-class Route(Protocol):
-    """A prediction route: ligand-only, co-folded affinity head, or interaction potential."""
+class Model(Protocol):
+    """A prediction model: ligand-only, co-folded affinity head, or interaction potential."""
 
     name: str
     endpoints: tuple[str, ...]
 
-    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "Route":
+    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "Model":
         """Train on SMILES and a ``(n_compounds, n_endpoints)`` target matrix.
 
-        Missing targets are NaN and must be handled by the route, since coverage is
+        Missing targets are NaN and must be handled by the model, since coverage is
         26-48% per isoform and is not missing at random.
         """
         ...

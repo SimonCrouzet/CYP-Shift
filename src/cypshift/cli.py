@@ -13,16 +13,16 @@ from cypshift.data.assembly import build_observations
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
 from cypshift.data.screen import pseudo_labels
 from cypshift.data.splits import similarity_matched_holdout
-from cypshift.decision.band import BandWidthModel
 from cypshift.decision.calibration import ConformalCalibrator
-from cypshift.decision.placement import place
-from cypshift.decision.selection import PlacementSelector
+from cypshift.decision.interval_width import IntervalWidthModel
+from cypshift.decision.point_estimate import choose_estimates
+from cypshift.decision.selection import EstimatorSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
-from cypshift.models.conditioned import ConditionedRoute
-from cypshift.models.ensemble import DiverseEnsembleRoute
-from cypshift.models.ligand import LigandOnlyRoute
-from cypshift.models.neural import OBJECTIVES, NeuralRoute
+from cypshift.models.ensemble import PerTargetEnsemble
+from cypshift.models.forest import PerTargetForest
+from cypshift.models.neural import OBJECTIVES, NeuralNetwork
+from cypshift.models.shared import SharedEnsemble
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
 logger = logging.getLogger(__name__)
@@ -98,16 +98,16 @@ def baseline(
     n_members: int = 5,
     n_estimators: int = 300,
     route_name: Annotated[
-        str, typer.Option("--route", help="ligand, diverse or conditioned.")
+        str, typer.Option("--model", help="ligand, diverse or conditioned.")
     ] = "ligand",
     with_screen: Annotated[bool, typer.Option(help="Add screen pseudo-labels.")] = False,
     seed: int = 0,
     mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
     verbose: bool = True,
 ) -> None:
-    """Fit the ligand-only route and score it on the similarity-matched holdout.
+    """Fit the ligand-only model and score it on the similarity-matched holdout.
 
-    This is the floor every other route has to beat, measured through the official
+    This is the floor every other model has to beat, measured through the official
     metric on a split built to resemble the blinded test set.
     """
     _configure_logging(verbose)
@@ -149,29 +149,29 @@ def baseline(
             kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
             screen_labels, _ = pseudo_labels(kept, retained)
         observations = build_observations(retained, screen_labels=screen_labels)
-        route = ConditionedRoute(seed=seed)
-        logger.info("route: %s", route.name)
-        route.fit(observations)
+        model = SharedEnsemble(seed=seed)
+        logger.info("model: %s", model.name)
+        model.fit(observations)
     else:
-        route = (
-            DiverseEnsembleRoute(seed=seed)
+        model = (
+            PerTargetEnsemble(seed=seed)
             if route_name == "diverse"
-            else LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
+            else PerTargetForest(n_members=n_members, n_estimators=n_estimators, seed=seed)
         )
-        logger.info("route: %s", route.name)
-        route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
+        logger.info("model: %s", model.name)
+        model.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
 
     calibrator = ConformalCalibrator.fit(
-        route.predict(calibration["SMILES"].tolist()),
+        model.predict(calibration["SMILES"].tolist()),
         calibration[list(REGRESSION_ENDPOINTS)].to_numpy(float),
     )
 
-    raw = route.predict(evaluation["SMILES"].tolist())
+    raw = model.predict(evaluation["SMILES"].tolist())
     calibrated = calibrator.apply(raw)
-    calibration_prediction = calibrator.apply(route.predict(calibration["SMILES"].tolist()))
+    calibration_prediction = calibrator.apply(model.predict(calibration["SMILES"].tolist()))
 
-    band_models = {
-        endpoint: BandWidthModel.fit(
+    width_models = {
+        endpoint: IntervalWidthModel.fit(
             retained[endpoint].to_numpy(float),
             retained[f"{endpoint}_conf_low"].to_numpy(float),
             retained[f"{endpoint}_conf_high"].to_numpy(float),
@@ -193,20 +193,20 @@ def baseline(
         print(f"\n=== predictive distribution, {label} ===")
         print(diagnostics.round(3).to_string())
 
-    # Whether placement helps is decided on the calibration half and applied to the
+    # Whether point_estimate helps is decided on the calibration half and applied to the
     # evaluation half, never chosen on the compounds it is then scored against.
-    selector = PlacementSelector.fit(
-        place(calibration_prediction, band_models, seed=seed),
+    selector = EstimatorSelector.fit(
+        choose_estimates(calibration_prediction, width_models, seed=seed),
         calibration_prediction.mean,
         calibration,
     )
-    placed_calibrated = place(calibrated, band_models, seed=seed)
+    placed_calibrated = choose_estimates(calibrated, width_models, seed=seed)
 
     candidates = {
         "posterior mean": raw.mean,
-        "placement, raw spread": place(raw, band_models, seed=seed),
-        "placement, calibrated spread": placed_calibrated,
-        "placement, selected endpoints": selector.apply(placed_calibrated, raw.mean),
+        "point_estimate, raw spread": choose_estimates(raw, width_models, seed=seed),
+        "point_estimate, calibrated spread": placed_calibrated,
+        "point_estimate, selected endpoints": selector.apply(placed_calibrated, raw.mean),
     }
     submissions = {}
     for label, values in candidates.items():
@@ -278,8 +278,8 @@ def loss_ablation(
     submissions = {}
     for objective in OBJECTIVES:
         logger.info("training with the %s objective", objective)
-        route = NeuralRoute(loss=objective, epochs=epochs, seed=seed).fit(observations)
-        predicted = route.predict(evaluation["SMILES"].tolist()).mean
+        model = NeuralNetwork(loss=objective, epochs=epochs, seed=seed).fit(observations)
+        predicted = model.predict(evaluation["SMILES"].tolist()).mean
         frame = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
             frame[endpoint] = predicted[:, column]

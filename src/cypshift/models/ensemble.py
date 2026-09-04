@@ -8,7 +8,7 @@ modes and their disagreement carries almost no information about where the predi
 is unreliable.
 
 That matters because conformal calibration can correct the *size* of a predictive
-interval but cannot create *ordering* that was never in it, and the placement layer
+interval but cannot create *ordering* that was never in it, and the point-estimate step
 needs ordering to do better than shifting every compound by the same amount.
 
 Members here differ along the two axes that actually change what a model can see:
@@ -33,7 +33,7 @@ from sklearn.neighbors import KNeighborsRegressor
 from cypshift.config import REGRESSION_ENDPOINTS
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.ligand import MIN_LABELS_PER_ENDPOINT
+from cypshift.models.forest import MIN_LABELS_PER_ENDPOINT
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class MemberSpec:
 
 
 #: Five members spanning two feature views and four inductive biases. The neighbour
-#: model earns its place despite being the weakest alone: the blinded test set is
+#: model earns its choose_estimates despite being the weakest alone: the blinded test set is
 #: analog series expanded from training hits, so local transfer is exactly the regime
 #: it is good at and the tree ensembles are not.
 DEFAULT_MEMBERS: tuple[MemberSpec, ...] = (
@@ -97,8 +97,8 @@ DEFAULT_MEMBERS: tuple[MemberSpec, ...] = (
 )
 
 
-class DiverseEnsembleRoute:
-    """Ligand-only route whose members differ in feature view and inductive bias."""
+class PerTargetEnsemble:
+    """Ligand-only model whose members differ in feature view and inductive bias."""
 
     name = "ligand_diverse"
 
@@ -127,7 +127,7 @@ class DiverseEnsembleRoute:
         # view rather than a float array scikit-learn would silently coerce.
         return (matrix > 0) if spec.name.startswith("nearest") else matrix
 
-    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "DiverseEnsembleRoute":
+    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "PerTargetEnsemble":
         """Fit every member on every endpoint's measured compounds."""
         if targets.shape != (len(smiles), len(self.endpoints)):
             raise ValueError(f"targets must be ({len(smiles)}, {len(self.endpoints)})")
@@ -155,7 +155,7 @@ class DiverseEnsembleRoute:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """Predict a distribution whose members disagree where the models genuinely differ."""
         if not self._fitted:
-            raise RuntimeError("route is not fitted")
+            raise RuntimeError("model is not fitted")
         views = {spec.name: self._view(smiles, spec) for spec in self.members}
         samples = np.stack(
             [

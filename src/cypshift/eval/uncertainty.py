@@ -1,6 +1,6 @@
-"""Is a route's predictive distribution any good?
+"""Is a model's predictive distribution any good?
 
-The placement layer optimises against whatever posterior it is handed, so a
+The point-estimate step optimises against whatever posterior it is handed, so a
 confidently wrong distribution makes it commit harder to a wrong answer. Three
 questions, and they are not the same question:
 
@@ -34,7 +34,7 @@ def error_ranking(
 ) -> dict[str, float]:
     """How well the predicted spread orders compounds by how wrong they turn out to be.
 
-    A route reporting the same spread for every compound cannot rank anything, and the
+    A model reporting the same spread for every compound cannot rank anything, and the
     rank correlation is then undefined rather than merely small. That case reports the
     no-skill values, 0.0 correlation and a decile ratio of 1.0, rather than NaN.
     """

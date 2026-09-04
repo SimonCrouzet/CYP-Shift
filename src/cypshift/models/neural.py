@@ -13,7 +13,7 @@ and every run reports every metric regardless of what it trained on.
 
 It also absorbs censored labels without special handling. A single-concentration
 screen reading outside the calibration range establishes only that a compound is
-inactive -- a one-sided band running down from a bound. Under this loss, predicting
+inactive -- a one-sided interval running down from a bound. Under this loss, predicting
 anywhere below that bound costs nothing, which is precisely what the reading
 supports. The 2,855 censored CYP2D6 pseudo-labels become ordinary training rows.
 
@@ -37,11 +37,11 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, conditioning_matrix
+from cypshift.data.assembly import ASSAYS, context_columns
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
-from cypshift.models.conditioned import SCORED_ASSAY
+from cypshift.models.shared import SCORED_ASSAY
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +63,9 @@ def soft_threshold_loss(
 
     Args:
         prediction: Predicted pIC50, shape ``(n,)``.
-        lower: Lower bound of each label's band. Use a large negative value for a
+        lower: Lower bound of each label's interval. Use a large negative value for a
             label censored from below.
-        upper: Upper bound of each label's band.
+        upper: Upper bound of each label's interval.
         weight: Per-row trust, so a screen pseudo-label counts for less than a curve.
 
     Returns:
@@ -118,8 +118,8 @@ class ConditionedMLP(nn.Module):
         return self.trunk(x).squeeze(-1)
 
 
-class NeuralRoute:
-    """Structure-free route trained on the challenge's own loss."""
+class NeuralNetwork:
+    """Structure-free model trained on the challenge's own loss."""
 
     name = "structure_free_neural"
 
@@ -163,11 +163,11 @@ class NeuralRoute:
             self._scaler = BlockScaler(n_count_columns=self.n_bits, n_dense_columns=n_dense)
             self._scaler.fit(features)
         if self._scaler is None:
-            raise RuntimeError("route is not fitted")
+            raise RuntimeError("model is not fitted")
         return torch.from_numpy(self._scaler.transform(features))
 
-    def fit(self, observations: pd.DataFrame) -> "NeuralRoute":
-        """Train on the observation table, using each row's own band.
+    def fit(self, observations: pd.DataFrame) -> "NeuralNetwork":
+        """Train on the observation table, using each row's own interval.
 
         Rows without explicit bounds are treated as points, which reduces the loss to
         plain absolute error for them.
@@ -177,7 +177,7 @@ class NeuralRoute:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        context = conditioning_matrix(usable, self.targets, self.assays)
+        context = context_columns(usable, self.targets, self.assays)
         features = self._scale_blocks(self._features(usable["SMILES"].tolist(), context), fit=True)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
@@ -219,7 +219,7 @@ class NeuralRoute:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """Predict with dropout left on, so repeated passes give a genuine spread."""
         if self._model is None:
-            raise RuntimeError("route is not fitted")
+            raise RuntimeError("model is not fitted")
         self._model.train()  # keep dropout active: this is the uncertainty source
         n = len(smiles)
         samples = np.empty((self.n_forward_passes, n, len(self.endpoints)))
@@ -228,7 +228,7 @@ class NeuralRoute:
                 query = pd.DataFrame(
                     {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
                 )
-                context = conditioning_matrix(query, self.targets, self.assays)
+                context = context_columns(query, self.targets, self.assays)
                 features = self._scale_blocks(self._features(smiles, context), fit=False)
                 for pass_index in range(self.n_forward_passes):
                     samples[pass_index, :, column] = self._model(features).numpy()

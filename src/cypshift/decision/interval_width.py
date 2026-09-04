@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BandWidthModel:
+class IntervalWidthModel:
     """Half-widths of the credible interval as a function of the true value.
 
     Attributes:
@@ -41,7 +41,7 @@ class BandWidthModel:
         y_true_lower: NDArray[np.float64],
         y_true_upper: NDArray[np.float64],
         n_bins: int = 12,
-    ) -> "BandWidthModel":
+    ) -> "IntervalWidthModel":
         """Estimate half-widths by binning observed intervals on activity.
 
         Args:
@@ -69,7 +69,7 @@ class BandWidthModel:
             lower.append(float(np.median(y[in_bin] - low[in_bin])))
             upper.append(float(np.median(high[in_bin] - y[in_bin])))
         logger.info(
-            "band width across %.2f-%.2f pIC50: lower %.2f-%.2f, upper %.2f-%.2f",
+            "interval width across %.2f-%.2f pIC50: lower %.2f-%.2f, upper %.2f-%.2f",
             levels[0],
             levels[-1],
             min(lower),

@@ -1,6 +1,6 @@
 """Choosing the point to submit, given a predictive distribution.
 
-The scored loss has a dead zone, so the point that minimises expected error is not
+The scored loss has a soft threshold, so the point that minimises expected error is not
 the posterior mean. Writing ``U = y + w_high`` and ``L = y - w_low`` for the credible
 bounds implied by a possible true value ``y``, the expected loss at a candidate
 prediction ``p`` is
@@ -13,7 +13,7 @@ which is convex and piecewise linear in ``p``. Its derivative is
 ``P(U < p) - P(L > p)``, so the minimiser is the point where the probability of
 overshooting every upper bound first exceeds the probability of undershooting every
 lower bound. That is a weighted-quantile problem with an exact answer; no grid search
-is needed, and :func:`expected_soft_loss` exists so the exact solution can be checked
+is needed, and :func:`expected_loss` exists so the exact solution can be checked
 against a brute-force scan in the tests.
 
 Why this matters here. Under a bimodal active/inactive posterior the mean lands in
@@ -27,18 +27,18 @@ import logging
 import numpy as np
 from numpy.typing import NDArray
 
-from cypshift.decision.band import BandWidthModel
+from cypshift.decision.interval_width import IntervalWidthModel
 from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
 
 
-def expected_soft_loss(
+def expected_loss(
     candidates: NDArray[np.float64],
     lower_bounds: NDArray[np.float64],
     upper_bounds: NDArray[np.float64],
 ) -> NDArray[np.float64]:
-    """Mean dead-zone loss at each candidate prediction, over drawn credible bounds.
+    """Mean soft-threshold loss at each candidate prediction, over drawn credible bounds.
 
     Args:
         candidates: Candidate predictions, shape ``(n_candidates,)``.
@@ -54,10 +54,10 @@ def expected_soft_loss(
     return (above + below).mean(axis=1)
 
 
-def optimal_placement(
+def loss_minimising_estimate(
     lower_bounds: NDArray[np.float64], upper_bounds: NDArray[np.float64]
 ) -> float:
-    """The exact minimiser of the expected dead-zone loss.
+    """The exact minimiser of the expected soft-threshold loss.
 
     The loss is convex and piecewise linear with kinks only at the drawn bounds, so
     the minimum is attained at one of them. The derivative condition
@@ -74,17 +74,17 @@ def optimal_placement(
     return float(candidates[crossed[0]] if len(crossed) else candidates[-1])
 
 
-def place(
+def choose_estimates(
     distribution: PredictiveDistribution,
-    band_models: dict[str, BandWidthModel],
+    width_models: dict[str, IntervalWidthModel],
     n_draws: int = 400,
     seed: int = 0,
 ) -> NDArray[np.float64]:
     """Turn a predictive distribution into the points to submit.
 
     Args:
-        distribution: What a route predicted.
-        band_models: One fitted :class:`BandWidthModel` per endpoint.
+        distribution: What a model predicted.
+        width_models: One fitted :class:`IntervalWidthModel` per endpoint.
         n_draws: Monte Carlo draws per compound.
         seed: Fixes the draws.
 
@@ -92,21 +92,21 @@ def place(
         Shape ``(n_compounds, n_endpoints)``, the prediction to submit.
 
     Raises:
-        KeyError: If an endpoint has no band model.
+        KeyError: If an endpoint has no interval model.
     """
-    missing = set(distribution.endpoints) - set(band_models)
+    missing = set(distribution.endpoints) - set(width_models)
     if missing:
-        raise KeyError(f"no band model for {sorted(missing)}")
+        raise KeyError(f"no interval model for {sorted(missing)}")
 
     draws = distribution.draw(n_draws, seed=seed)
-    placements = np.empty((distribution.n_compounds, len(distribution.endpoints)))
+    point_estimates = np.empty((distribution.n_compounds, len(distribution.endpoints)))
     for column, endpoint in enumerate(distribution.endpoints):
         values = draws[:, :, column]
-        lower_half, upper_half = band_models[endpoint].predict(values)
+        lower_half, upper_half = width_models[endpoint].predict(values)
         lower_bounds, upper_bounds = values - lower_half, values + upper_half
         for compound in range(distribution.n_compounds):
-            placements[compound, column] = optimal_placement(
+            point_estimates[compound, column] = loss_minimising_estimate(
                 lower_bounds[:, compound], upper_bounds[:, compound]
             )
-    logger.info("placed %d compounds across %d endpoints", *placements.shape)
-    return placements
+    logger.info("chosen %d compounds across %d endpoints", *point_estimates.shape)
+    return point_estimates
