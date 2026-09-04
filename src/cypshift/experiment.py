@@ -37,7 +37,7 @@ CONDITIONING_STRATEGIES = ("flat", "factorised", "metadata")
 #: learned representation in as a feature, which is what that benchmark found wins.
 MULTIFIDELITY_STRATEGIES = ("none", "extra_rows", "predicted_label", "embedding")
 
-MODEL_KINDS = ("boosted", "neural", "graph", "per_target_ensemble")
+MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
 OBJECTIVES = ("squared", "absolute", "soft_threshold")
 
 
@@ -93,6 +93,22 @@ class NeuralConfig:
 
 
 @dataclass
+class CurveConfig:
+    """The dose-response curve model, which predicts curve parameters per arm."""
+
+    hidden: int = 256
+    dropout: float = 0.2
+    epochs: int = 60
+    batch_size: int = 256
+    learning_rate: float = 1e-3
+    forward_passes: int = 30
+    #: Half-width of the interval placed around a single-well screen reading, as an
+    #: inhibited fraction. One measurement with no replicate does not support a tight
+    #: bound, and stating a tighter one would let the screen overrule fitted curves.
+    screen_noise: float = 0.1
+
+
+@dataclass
 class GraphConfig:
     hidden: int = 300
     depth: int = 3
@@ -109,6 +125,7 @@ class ModelConfig:
     boosted: BoostedConfig = field(default_factory=BoostedConfig)
     neural: NeuralConfig = field(default_factory=NeuralConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    curve: CurveConfig = field(default_factory=CurveConfig)
 
 
 @dataclass

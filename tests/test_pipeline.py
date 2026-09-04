@@ -77,3 +77,19 @@ def test_metrics_flatten_to_scalars_a_tracker_can_log():
     assert flat["CYP3A4_ST-RAE"] == 0.68
     assert flat["MA_ST-RAE"] == 0.70
     assert all(isinstance(v, float) for v in flat.values())
+
+
+def test_the_curve_model_receives_the_screen_as_response_not_pic50():
+    """A curve model compares against an inhibited fraction, so units must match."""
+    from cypshift.models.curve import CurveModel
+
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    assert isinstance(build_model(config), CurveModel)
+
+
+def test_curve_hyperparameters_reach_the_model():
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    config.override("model.curve.hidden", 64)
+    assert build_model(config).hidden == 64

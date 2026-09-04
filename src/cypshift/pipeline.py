@@ -13,7 +13,7 @@ import pandas as pd
 from cypshift.config import REGRESSION_ENDPOINTS
 from cypshift.data.assembly import SourceWeights, build_observations
 from cypshift.data.challenge import load
-from cypshift.data.screen import pseudo_labels
+from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import ExperimentConfig
@@ -73,6 +73,19 @@ def build_model(config: ExperimentConfig) -> object:
             conditioning=config.conditioning.strategy,
             seed=config.data.seed,
         )
+    if kind == "curve":
+        from cypshift.models.curve import CurveModel
+
+        return CurveModel(
+            n_bits=config.features.fingerprint_bits,
+            hidden=config.model.curve.hidden,
+            dropout=config.model.curve.dropout,
+            epochs=config.model.curve.epochs,
+            batch_size=config.model.curve.batch_size,
+            learning_rate=config.model.curve.learning_rate,
+            n_forward_passes=config.model.curve.forward_passes,
+            seed=config.data.seed,
+        )
     raise ValueError(f"model.kind={kind!r} has no builder")
 
 
@@ -103,6 +116,18 @@ def assemble_training_data(
 
     screen = load("screen", Path(config.data.directory))
     kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
+    curves = build_observations(retained, weights=weights)
+
+    if config.model.kind == "curve":
+        # The curve model predicts a response, so the screen enters as the quantity it
+        # actually measured -- an inhibited fraction at one concentration. No
+        # calibration, and the units match what the loss compares against.
+        points = response_observations(kept, config.model.curve.screen_noise)
+        points["weight"] = config.multifidelity.screen_weight
+        return pd.concat([curves, points[curves.columns]], ignore_index=True), None
+
+    # Every other model predicts a pIC50, so the screen has to be mapped onto that
+    # scale first, which is what the isotonic calibration does.
     labels, _ = pseudo_labels(kept, retained)
     return build_observations(retained, screen_labels=labels, weights=weights), None
 

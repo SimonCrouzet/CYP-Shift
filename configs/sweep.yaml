@@ -30,7 +30,7 @@ parameters:
     max: 1.0
 
   model.kind:
-    values: [boosted, neural, graph]
+    values: [boosted, neural, graph, curve]
   model.objective:
     values: [squared, absolute, soft_threshold]
 
