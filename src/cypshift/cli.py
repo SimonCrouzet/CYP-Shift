@@ -16,6 +16,7 @@ from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.decision.placement import place
 from cypshift.eval.scoring import score_submission
 from cypshift.eval.uncertainty import summarise
+from cypshift.models.ensemble import DiverseEnsembleRoute
 from cypshift.models.ligand import LigandOnlyRoute
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
@@ -91,6 +92,7 @@ def baseline(
     holdout_fraction: float = 0.2,
     n_members: int = 5,
     n_estimators: int = 300,
+    diverse: Annotated[bool, typer.Option(help="Use the diverse ensemble.")] = False,
     seed: int = 0,
     mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
     verbose: bool = True,
@@ -132,7 +134,12 @@ def baseline(
         "fit %d, calibrate %d, evaluate %d", len(retained), len(calibration), len(evaluation)
     )
 
-    route = LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
+    route = (
+        DiverseEnsembleRoute(seed=seed)
+        if diverse
+        else LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
+    )
+    logger.info("route: %s", route.name)
     route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
 
     calibrator = ConformalCalibrator.fit(
