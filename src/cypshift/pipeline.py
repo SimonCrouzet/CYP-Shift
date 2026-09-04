@@ -10,12 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from cypshift.config import REGRESSION_ENDPOINTS
+from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import SourceWeights, build_observations
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
+from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import MULTIFIDELITY_STRATEGIES, ExperimentConfig
 from cypshift.models.base import PredictiveDistribution
@@ -87,6 +88,7 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
             learning_rate=config.model.curve.learning_rate,
             n_forward_passes=config.model.curve.forward_passes,
             conditioning=config.model.curve.conditioning,
+            descriptor_sources=tuple(config.model.curve.descriptor_sources),
             seed=config.data.seed,
             surrogate=surrogate,
         )
@@ -213,7 +215,50 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
     submission = evaluation[["Molecule_Name"]].copy()
     for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
         submission[endpoint] = prediction.mean[:, column]
-    return score_submission(submission, evaluation), prediction
+    scores = score_submission(submission, evaluation)
+
+    tdi = score_tdi(model, evaluation, directory)
+    if tdi is not None:
+        logger.info(
+            "TDI track (ranked by MCC):\n%s", tdi[["MCC_mean", "Accuracy_mean"]].to_string()
+        )
+    return scores, prediction
+
+
+def score_tdi(model: object, evaluation: pd.DataFrame, directory: Path) -> pd.DataFrame | None:
+    """Score the time-dependent inhibition track, when the model can predict it.
+
+    Only a model of the dose-response curve can. The label is defined by comparing the
+    preincubated arm's midpoint against the direct arm's, so predicting it means
+    predicting both curves; a model emitting a single pIC50 has nothing to compare.
+    Returns None rather than raising for those, since the regression track is still a
+    valid run.
+
+    Labels live in their own file and cover a different set of compounds, so the
+    holdout is intersected with them rather than assumed to overlap.
+    """
+    if not hasattr(model, "predict_is_time_dependent"):
+        logger.info("%s cannot predict TDI; scoring the regression track only", model.name)
+        return None
+
+    labels = load("tdi", directory)
+    shared = evaluation.merge(
+        labels[["Molecule_Name", *CLASSIFICATION_ENDPOINTS]], on="Molecule_Name"
+    )
+    if shared.empty:
+        logger.info("no holdout compound carries a TDI label")
+        return None
+
+    flags = model.predict_is_time_dependent(shared["SMILES"].tolist())
+    predicted = pd.DataFrame(
+        {
+            endpoint: flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
+            for endpoint in CLASSIFICATION_ENDPOINTS
+        }
+    )
+    truth = shared[list(CLASSIFICATION_ENDPOINTS)].astype("boolean")
+    logger.info("scoring TDI on %d holdout compounds", len(shared))
+    return score_classification(predicted, truth)
 
 
 def metrics_for_tracking(scores: pd.DataFrame) -> dict[str, float]:

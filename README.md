@@ -471,7 +471,7 @@ hf auth whoami         # verify
 
 | | task | why it blocks |
 |---|---|---|
-| ⬜ | Verify whether AQAffinity replicates the Boltz-2 heme mask | decides whether the two structure-based models are redundant |
+| ✅ | Verify whether AQAffinity replicates the Boltz-2 heme mask | **it does not** — it keeps the ligand-ligand block, so the two are not redundant |
 | ✅ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
 | ✅ | Build and freeze a similarity-matched holdout | closes 87% of the gap a random split leaves |
 
@@ -487,6 +487,7 @@ hf auth whoami         # verify
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
 | ✅ | **Build the decision layer** | −0.0085 macro, 99% of paired samples |
 | ⬜ | Extend placement beyond CYP3A4 | needs a better posterior on the other three |
+| ✅ | **Score the TDI track** | official metrics vendored: MCC, accuracy, precision, recall, F1; ranked by MCC |
 
 ### 🧊 Structure work, if the blocking check clears it
 
@@ -505,7 +506,7 @@ hf auth whoami         # verify
 | ⚗️ **Binding-motif target selection** | aromatase, CYP11B1/B2 and thromboxane-A synthase total 11,700 compounds saturated with heme-coordinating azoles |
 | 🎲 **Adversarial pose sampling** | the affinity head scores one pose, in pockets known for multiple simultaneous occupancy |
 | 🧊 **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
-| ⏱️ **Time-dependent inhibition** | the label is a deterministic function of two continuous quantities we already model |
+
 
 ### ⛔ Approaches evaluated and set aside
 

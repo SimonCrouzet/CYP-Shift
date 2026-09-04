@@ -9,6 +9,7 @@ from cypshift.config import ISOFORMS
 from cypshift.data.assembly import build_observations
 from cypshift.models.curve import (
     ARMS,
+    DESCRIBED_CONDITIONING,
     EMAX,
     EMAX_OFFSET,
     HILL,
@@ -292,3 +293,25 @@ class TestFilmConditioning:
             output = network(torch.randn(64, 32))
         difference = output[:, 0, 0, PIC50] - output[:, 1, 0, PIC50]
         assert difference.std() > 1e-3
+
+
+@pytest.mark.parametrize("mode", sorted(DESCRIBED_CONDITIONING))
+def test_every_described_mode_builds_its_descriptors_when_fitted(mode, tmp_path):
+    """CurveModel.fit built descriptors only for "descriptor", so "film" raised at fit
+    time despite being a valid setting the sweep offered."""
+    model = CurveModel(conditioning=mode, epochs=1, n_forward_passes=2)
+    observations = pd.DataFrame(
+        {
+            "Molecule_Name": [f"M{i}" for i in range(8)],
+            "SMILES": ["CCO", "c1ccccc1", "CCN", "CCCC"] * 2,
+            "target": ["CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"] * 2,
+            "assay": ["direct_inhibition_drc"] * 8,
+            "value": [5.0, 5.5, 6.0, 4.5] * 2,
+            "conf_low": [4.5, 5.0, 5.5, 4.0] * 2,
+            "conf_high": [5.5, 6.0, 6.5, 5.0] * 2,
+            "weight": [1.0] * 8,
+            "is_censored": [False] * 8,
+        }
+    )
+    model.fit(observations)
+    assert model.predict_pic50(["CCO"]).shape[1] == 4

@@ -32,7 +32,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
-from cypshift.data.enzymes import DESCRIPTOR_FAMILIES, describe_all
+from cypshift.data.conditioning import describe_all
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 
@@ -240,11 +240,14 @@ class CurveModel:
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
         conditioning: str = "heads",
-        descriptor_families: tuple[str, ...] = DESCRIPTOR_FAMILIES,
+        descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
     ) -> None:
         self.conditioning = conditioning
-        self.descriptor_families = descriptor_families
+        #: Which sources build the per-enzyme vector when conditioning is
+        #: "descriptor" or "film"; see
+        #: :data:`cypshift.data.conditioning.DESCRIPTOR_SOURCES`.
+        self.descriptor_sources = descriptor_sources
         self.targets = targets
         self.n_bits = n_bits
         #: Optional callable appended to the feature matrix, used to feed the
@@ -302,9 +305,12 @@ class CurveModel:
         weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
 
         descriptors = None
-        if self.conditioning == "descriptor":
+        # Both described modes need the vector, not just "descriptor" -- film consumes
+        # the same rows and merely applies them multiplicatively.
+        if self.conditioning in DESCRIBED_CONDITIONING:
             descriptors = torch.tensor(
-                describe_all(list(self.targets), self.descriptor_families), dtype=torch.float32
+                describe_all(list(self.targets), tuple(self.descriptor_sources)),
+                dtype=torch.float32,
             )
         self._model = CurveNetwork(
             features.shape[1],
