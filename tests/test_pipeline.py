@@ -52,13 +52,24 @@ def test_the_no_screen_strategy_uses_only_the_curves():
     assert surrogate is None
 
 
-def test_the_unbuilt_strategies_say_so_rather_than_falling_back():
+def test_an_unknown_strategy_says_so_rather_than_falling_back():
     """Declaring an option in the config must not silently do something else."""
-    for strategy in ("predicted_label", "embedding"):
-        config = ExperimentConfig()
-        config.override("multifidelity.strategy", strategy)
-        with pytest.raises(NotImplementedError, match="not yet built"):
-            assemble_training_data(config, _retained())
+    config = ExperimentConfig()
+    config.multifidelity.strategy = "distillation"
+    with pytest.raises(ValueError, match="unknown multi-fidelity strategy"):
+        assemble_training_data(config, _retained())
+
+
+@pytest.mark.parametrize("strategy", ["predicted_label", "embedding"])
+def test_a_surrogate_strategy_is_refused_for_the_graph_model(strategy):
+    """The graph model consumes molecular graphs, so a surrogate column has nowhere to
+    go. Accepting the setting and training without it would report a comparison that
+    never happened."""
+    config = ExperimentConfig()
+    config.override("multifidelity.strategy", strategy)
+    config.override("model.kind", "graph")
+    with pytest.raises(ValueError, match="does not use"):
+        assemble_training_data(config, _retained())
 
 
 def test_source_weights_reach_the_observation_table():

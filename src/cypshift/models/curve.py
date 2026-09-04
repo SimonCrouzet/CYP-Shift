@@ -232,6 +232,7 @@ class CurveModel:
         self,
         targets: tuple[str, ...] = ISOFORMS,
         n_bits: int = 2048,
+        surrogate: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
         epochs: int = 60,
@@ -246,6 +247,10 @@ class CurveModel:
         self.descriptor_families = descriptor_families
         self.targets = targets
         self.n_bits = n_bits
+        #: Optional callable appended to the feature matrix, used to feed the
+        #: single-concentration screen in as an input rather than as extra training
+        #: rows. See :mod:`cypshift.data.surrogate`.
+        self.surrogate = surrogate
         self.hidden = hidden
         self.dropout = dropout
         self.epochs = epochs
@@ -257,7 +262,7 @@ class CurveModel:
         self._scaler: BlockScaler | None = None
 
     def _features(self, smiles: list[str], fit: bool) -> torch.Tensor:
-        matrix = featurise(smiles, n_bits=self.n_bits).astype(np.float32)
+        matrix = featurise(smiles, n_bits=self.n_bits, extra=self.surrogate).astype(np.float32)
         if fit:
             n_dense = len(physicochemical(["CCO"]).columns)
             self._scaler = BlockScaler(self.n_bits, n_dense).fit(matrix)

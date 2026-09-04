@@ -17,7 +17,7 @@ That is why both blocks are kept and why the mechanistic block exists.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -126,6 +126,7 @@ def featurise(
     physchem: bool = True,
     mechanism: bool = True,
     n_bits: int = 2048,
+    extra: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
 ) -> NDArray[np.float32]:
     """Assemble the requested blocks into one dense matrix.
 
@@ -135,6 +136,9 @@ def featurise(
         physchem: Include bulk physicochemical descriptors.
         mechanism: Include the mechanistic substructure counts.
         n_bits: Fingerprint length.
+        extra: Optional block appended last, called with the same compounds. This is
+            how a multi-fidelity surrogate enters -- as an input feature rather than
+            as extra training rows. See :mod:`cypshift.data.surrogate`.
 
     Returns:
         Shape ``(n_compounds, n_features)``.
@@ -146,6 +150,13 @@ def featurise(
         blocks.append(physicochemical(smiles).to_numpy(dtype=np.float32))
     if mechanism:
         blocks.append(mechanistic(smiles).to_numpy(dtype=np.float32))
+    if extra is not None:
+        appended = np.asarray(extra(smiles), dtype=np.float32)
+        if len(appended) != len(smiles):
+            raise ValueError(
+                f"extra block returned {len(appended)} rows for {len(smiles)} compounds"
+            )
+        blocks.append(appended.reshape(len(smiles), -1))
     if not blocks:
         raise ValueError("at least one feature block must be requested")
     matrix = np.hstack(blocks)

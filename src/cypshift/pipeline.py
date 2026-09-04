@@ -15,14 +15,15 @@ from cypshift.data.assembly import SourceWeights, build_observations
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
+from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
 from cypshift.eval.scoring import score_submission
-from cypshift.experiment import ExperimentConfig
+from cypshift.experiment import MULTIFIDELITY_STRATEGIES, ExperimentConfig
 from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
 
 
-def build_model(config: ExperimentConfig) -> object:
+def build_model(config: ExperimentConfig, surrogate: object | None = None) -> object:
     """Construct the model a configuration names.
 
     Imported lazily so a run needing only boosted trees does not pay for torch, and a
@@ -33,6 +34,7 @@ def build_model(config: ExperimentConfig) -> object:
         conditioning=config.conditioning.strategy,
         n_bits=config.features.fingerprint_bits,
         seed=config.data.seed,
+        surrogate=surrogate,
     )
     if kind == "boosted":
         from cypshift.models.boosted import BoostedTrees
@@ -86,6 +88,7 @@ def build_model(config: ExperimentConfig) -> object:
             n_forward_passes=config.model.curve.forward_passes,
             conditioning=config.model.curve.conditioning,
             seed=config.data.seed,
+            surrogate=surrogate,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
 
@@ -99,14 +102,16 @@ def assemble_training_data(
     surrogate feature derived from the screen rather than extra training rows.
     """
     strategy = config.multifidelity.strategy
-    # Refuse an unbuilt strategy before touching the data, so a sweep fails in a
-    # second rather than after loading and calibrating the screen.
-    if strategy in ("predicted_label", "embedding"):
-        raise NotImplementedError(
-            f"multifidelity.strategy={strategy!r} is declared but not yet built"
-        )
-    if strategy not in ("none", "extra_rows"):
+    if strategy not in MULTIFIDELITY_STRATEGIES:
         raise ValueError(f"unknown multi-fidelity strategy {strategy!r}")
+    # The graph model consumes molecular graphs, not the dense feature matrix, so a
+    # surrogate column has nowhere to go. Refusing beats accepting the setting and
+    # quietly training without it, which would report a comparison that never happened.
+    if strategy in SURROGATE_STRATEGIES and config.model.kind == "graph":
+        raise ValueError(
+            f"multifidelity.strategy={strategy!r} needs a dense feature matrix, "
+            "which the graph model does not use; pair it with another model.kind"
+        )
 
     weights = SourceWeights(
         screen_pseudo_label=config.multifidelity.screen_weight,
@@ -114,6 +119,20 @@ def assemble_training_data(
     )
     if strategy == "none":
         return build_observations(retained, weights=weights), None
+
+    if strategy in SURROGATE_STRATEGIES:
+        # Fitted only on retained compounds. Letting it see the holdout would carry
+        # those compounds' screen readings into the feature and inflate the score
+        # without improving anything on the blinded test set.
+        screen = load("screen", Path(config.data.directory))
+        surrogate = fit_surrogate(
+            screen,
+            trainable=set(retained["Molecule_Name"]),
+            strategy=strategy,
+            n_bits=config.features.fingerprint_bits,
+            seed=config.data.seed,
+        )
+        return build_observations(retained, weights=weights), surrogate
 
     screen = load("screen", Path(config.data.directory))
     kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
@@ -153,7 +172,7 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
         seed=config.data.seed,
     )
     retained, evaluation = train.loc[~mask], train.loc[mask]
-    observations, _ = assemble_training_data(config, retained)
+    observations, surrogate = assemble_training_data(config, retained)
     logger.info(
         "%s | conditioning %s | multifidelity %s | %d observations",
         config.model.kind,
@@ -162,7 +181,7 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
         len(observations),
     )
 
-    model = build_model(config)
+    model = build_model(config, surrogate)
     model.fit(observations)
     prediction = model.predict(evaluation["SMILES"].tolist())
 

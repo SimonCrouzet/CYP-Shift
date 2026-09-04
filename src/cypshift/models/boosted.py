@@ -73,6 +73,7 @@ class BoostedTrees:
         assays: tuple[str, ...] = ASSAYS,
         conditioning: str = "factorised",
         n_bits: int = 2048,
+        surrogate: object | None = None,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
         num_leaves: int = 63,
@@ -86,6 +87,10 @@ class BoostedTrees:
         self.assays = assays
         self.conditioning = conditioning
         self.n_bits = n_bits
+        #: Optional callable appended to the feature matrix, used to feed the
+        #: single-concentration screen in as an input rather than as extra training
+        #: rows. See :mod:`cypshift.data.surrogate`.
+        self.surrogate = surrogate
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
@@ -97,7 +102,9 @@ class BoostedTrees:
         self._offset = 0.0
 
     def _features(self, smiles: list[str], encoding: NDArray[np.float32]) -> NDArray[np.float32]:
-        return np.hstack([featurise(smiles, n_bits=self.n_bits), encoding]).astype(np.float32)
+        return np.hstack(
+            [featurise(smiles, n_bits=self.n_bits, extra=self.surrogate), encoding]
+        ).astype(np.float32)
 
     def fit(self, observations: pd.DataFrame) -> "BoostedTrees":
         """Train on the observation table, using each row's own credible interval.
