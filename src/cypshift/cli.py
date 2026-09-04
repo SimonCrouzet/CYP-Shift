@@ -14,7 +14,7 @@ from cypshift.data.splits import similarity_matched_holdout
 from cypshift.decision.band import BandWidthModel
 from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.decision.placement import place
-from cypshift.eval.scoring import score_submission
+from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.models.ensemble import DiverseEnsembleRoute
 from cypshift.models.ligand import LigandOnlyRoute
@@ -178,14 +178,29 @@ def baseline(
         "placement, raw spread": place(raw, band_models, seed=seed),
         "placement, calibrated spread": place(calibrated, band_models, seed=seed),
     }
-    summary = {}
+    submissions = {}
     for label, values in candidates.items():
         submission = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
             submission[endpoint] = values[:, column]
-        summary[label] = score_submission(submission, evaluation)["ST-RAE_mean"]
+        submissions[label] = submission
+
+    summary = {
+        label: score_submission(frame, evaluation)["ST-RAE_mean"]
+        for label, frame in submissions.items()
+    }
     print("\n=== ST-RAE (lower is better) ===")
     print(pd.DataFrame(summary).round(4).to_string())
+
+    # Differences this small are only interpretable paired: both submissions are
+    # scored on identical bootstrap draws, so the difference is taken within a sample.
+    reference = "posterior mean"
+    for label in candidates:
+        if label == reference:
+            continue
+        comparison = paired_difference(submissions[label], submissions[reference], evaluation)
+        print(f"\n=== {label} minus {reference}, paired ===")
+        print(comparison.round(4).to_string())
 
 
 if __name__ == "__main__":
