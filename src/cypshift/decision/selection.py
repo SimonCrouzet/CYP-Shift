@@ -17,7 +17,7 @@ evaluation data, never selected on the same compounds it is then scored against.
 That discipline turned out to matter: the first version of this selector, with a
 threshold just above a coin flip, chose two endpoints whose advantage did not
 survive the crossing and scored worse than applying point_estimate everywhere. See
-:data:`DEFAULT_WIN_RATE_THRESHOLD` for what the reversal looked like and why the bar
+:data:`DEFAULT_P_VALUE_THRESHOLD` for what the reversal looked like and why the bar
 is now set where it is.
 """
 
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 #: Only near-unanimous effects survived the crossing: CYP3A4 at 100% and 99%,
 #: CYP1A2's rejection at 16% and 24%. Requiring near-unanimity is what separates a
 #: replicated effect from a large one.
-DEFAULT_WIN_RATE_THRESHOLD = 0.95
+DEFAULT_P_VALUE_THRESHOLD = 0.95
 
 
 @dataclass
@@ -54,8 +54,8 @@ class EstimatorSelector:
     """Which endpoints benefit from point_estimate, decided on held-out data."""
 
     use_loss_minimising: dict[str, bool] = field(default_factory=dict)
-    win_rates: dict[str, float] = field(default_factory=dict)
-    threshold: float = DEFAULT_WIN_RATE_THRESHOLD
+    p_values: dict[str, float] = field(default_factory=dict)
+    threshold: float = DEFAULT_P_VALUE_THRESHOLD
 
     @classmethod
     def fit(
@@ -65,7 +65,7 @@ class EstimatorSelector:
         truth: pd.DataFrame,
         endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS,
         key: str = "Molecule_Name",
-        threshold: float = DEFAULT_WIN_RATE_THRESHOLD,
+        threshold: float = DEFAULT_P_VALUE_THRESHOLD,
     ) -> "EstimatorSelector":
         """Compare chosen against mean predictions on calibration compounds.
 
@@ -75,7 +75,7 @@ class EstimatorSelector:
             truth: Calibration ground truth with credible bounds and ``key``.
             endpoints: Endpoint names matching the prediction columns.
             key: Compound identifier column.
-            threshold: Share of paired bootstrap samples a chosen endpoint must win.
+            threshold: One-sided bootstrap p-value an endpoint must reach.
 
         Returns:
             A selector recording the decision and the evidence behind it.
@@ -88,16 +88,16 @@ class EstimatorSelector:
             frames[label] = frame
 
         comparison = paired_difference(frames["chosen"], frames["mean"], truth, key=key)
-        win_rates = {e: float(comparison.loc[e, "win_rate"]) for e in endpoints}
-        decisions = {e: rate >= threshold for e, rate in win_rates.items()}
-        for endpoint, rate in win_rates.items():
+        p_values = {e: float(comparison.loc[e, "p_value"]) for e in endpoints}
+        decisions = {e: value <= threshold for e, value in p_values.items()}
+        for endpoint, rate in p_values.items():
             logger.info(
                 "%s: point_estimate wins %.1f%% of paired samples -> %s",
                 endpoint,
                 100 * rate,
                 "choose_estimates" if decisions[endpoint] else "use the mean",
             )
-        return cls(decisions, win_rates, threshold)
+        return cls(decisions, p_values, threshold)
 
     def apply(
         self,

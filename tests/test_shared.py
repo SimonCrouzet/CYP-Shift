@@ -70,7 +70,7 @@ def test_one_model_serves_every_endpoint():
 
 
 def test_the_same_molecule_gets_different_predictions_per_isoform():
-    """Only the context block distinguishes them, so it must be doing work."""
+    """Only the one_hot block distinguishes them, so it must be doing work."""
     model = _route().fit(build_observations(_inhibition()))
     prediction = model.predict(SMILES[:8]).mean
     spread_across_isoforms = prediction.std(axis=1)

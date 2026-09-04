@@ -37,7 +37,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, context_columns
+from cypshift.data.assembly import ASSAYS, one_hot_encode
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
@@ -153,8 +153,8 @@ class NeuralNetwork:
         self._model: ConditionedMLP | None = None
         self._scaler: BlockScaler | None = None
 
-    def _features(self, smiles: list[str], context: NDArray[np.float32]) -> NDArray[np.float32]:
-        return np.hstack([featurise(smiles, n_bits=self.n_bits), context]).astype(np.float32)
+    def _features(self, smiles: list[str], one_hot: NDArray[np.float32]) -> NDArray[np.float32]:
+        return np.hstack([featurise(smiles, n_bits=self.n_bits), one_hot]).astype(np.float32)
 
     def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
         """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
@@ -177,8 +177,8 @@ class NeuralNetwork:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        context = context_columns(usable, self.targets, self.assays)
-        features = self._scale_blocks(self._features(usable["SMILES"].tolist(), context), fit=True)
+        one_hot = one_hot_encode(usable, self.targets, self.assays)
+        features = self._scale_blocks(self._features(usable["SMILES"].tolist(), one_hot), fit=True)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
@@ -228,8 +228,8 @@ class NeuralNetwork:
                 query = pd.DataFrame(
                     {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
                 )
-                context = context_columns(query, self.targets, self.assays)
-                features = self._scale_blocks(self._features(smiles, context), fit=False)
+                one_hot = one_hot_encode(query, self.targets, self.assays)
+                features = self._scale_blocks(self._features(smiles, one_hot), fit=False)
                 for pass_index in range(self.n_forward_passes):
                     samples[pass_index, :, column] = self._model(features).numpy()
         return PredictiveDistribution(samples, self.endpoints)

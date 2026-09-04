@@ -86,7 +86,7 @@ def test_paired_difference_detects_a_consistently_better_submission():
         worse[endpoint] = truth[endpoint] + RNG.normal(0, 2.0, len(truth))
     comparison = paired_difference(predictions, worse, truth, n_repeats=200)
     assert comparison.loc[MACRO_LABEL, "delta_mean"] < 0
-    assert comparison.loc[MACRO_LABEL, "win_rate"] > 0.95
+    assert comparison.loc[MACRO_LABEL, "p_value"] < 0.05
 
 
 def test_paired_difference_of_a_submission_with_itself_is_exactly_zero():

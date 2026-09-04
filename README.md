@@ -392,21 +392,25 @@ the loss function rather than fitting it to interim feedback.
 
 ## 📖 Terms
 
-Field terms, used as the challenge and the literature use them. Where an obvious
-plain word exists, it is used instead of a coinage.
+Every term below carries where it comes from, because a glossary the authors write
+themselves cannot certify their own vocabulary. Anything marked *plain description*
+is not a term of art — it is ordinary words for an ordinary thing, and should be
+replaced if the field turns out to have a name for it.
 
-| term | meaning |
-|---|---|
-| **pIC50** | −log₁₀ of the concentration giving half-maximal inhibition. 7 is potent, 4 is roughly the assay's floor |
-| **isoform** | one of the four CYP enzymes being predicted |
-| **credible interval** | the 95% interval on a fitted dose-response value, shipped as `_conf_low` / `_conf_high` |
-| **ST-RAE** | the challenge's ranked metric. Charges the distance to the nearest credible-interval bound, zero inside. Lower is better; 1.0 equals a constant predictor |
-| **soft-threshold loss** | the numerator of that metric used as a training objective |
-| **point estimate** | the single number submitted. Chosen to minimise expected loss, which is not the posterior mean when the loss has a flat region |
-| **context columns** | one-hot inputs naming the isoform and assay a row was measured under. Ordinary input columns, not a separate mechanism |
-| **arm** | the organisers' term for an assay condition: the direct-inhibition arm and the TDI arm |
-| **paired win rate** | fraction of 1,000 bootstrap resamples where one submission beats another. Both are scored on identical draws, so the comparison is paired |
-| **structure-free** | uses no 3D structure. The protein still enters as isoform identity, so this is not the same as ligand-only |
+| term | meaning | source |
+|---|---|---|
+| **pIC50** | −log₁₀ of the concentration giving half-maximal inhibition | field standard |
+| **isoform** | one of the four CYP enzymes predicted | field standard |
+| **credible interval** | 95% interval on a fitted value, shipped as `_conf_low` / `_conf_high` | challenge: `REGRESSION_CREDIBLE_INTERVALS_*_SUFFIX` |
+| **ST-RAE** | the ranked metric: distance to the nearest credible-interval bound, zero inside. Lower is better, 1.0 equals a constant predictor | challenge: `ACTIVITY_METRICS` |
+| **soft-threshold** | the qualifier the organisers use for that metric | challenge: "Soft-Threshold Scoring" |
+| **arm** | an assay condition — the direct-inhibition arm, the TDI arm | challenge: "direct inhibition and TDI arms" |
+| **p-value** | one-sided bootstrap p-value on a paired comparison | challenge: `p_value` column in its head-to-head |
+| **point estimate** | the single number submitted | statistics |
+| **conformal prediction** | rescaling an interval on held-out data so its coverage is honest | statistics |
+| **one-hot encoding** | binary columns naming which isoform and assay a row came from | machine learning standard |
+| **structure-free** | uses no 3D structure; the protein still enters as isoform identity | *plain description* |
+| **similarity-matched holdout** | a holdout whose nearest-neighbour similarity profile matches the test set's | *plain description* |
 
 ---
 

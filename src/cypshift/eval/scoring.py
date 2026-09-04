@@ -160,7 +160,7 @@ def paired_difference(
     deviations, and it is how the challenge's own head-to-head comparison works.
 
     A difference much smaller than the standalone standard deviation can still be
-    real if it is consistent across samples, and ``win_rate`` is what says so.
+    real if it is consistent across samples, and the p-value is what says so.
 
     Args:
         predictions_a: The submission under test.
@@ -171,7 +171,8 @@ def paired_difference(
 
     Returns:
         Per endpoint and macro: the mean paired difference in ST-RAE, its standard
-        deviation, and the fraction of samples where ``a`` scores lower than ``b``.
+        deviation, a one-sided bootstrap p-value, and the number of samples in which
+        ``a`` scores lower than ``b``.
     """
     per_sample_a = _bootstrap_all_endpoints(predictions_a, truth, key, n_repeats)
     per_sample_b = _bootstrap_all_endpoints(predictions_b, truth, key, n_repeats)
@@ -183,7 +184,11 @@ def paired_difference(
                 "endpoint": endpoint,
                 "delta_mean": difference.mean(),
                 "delta_std": difference.std(ddof=1),
-                "win_rate": float((difference < 0).mean()),
+                # One-sided bootstrap p-value: the share of samples in which A does
+                # *not* beat B. The challenge reports a ``p_value`` column and
+                # displays "won N/N bootstrap samples" for the same comparison.
+                "p_value": float((difference >= 0).mean()),
+                "n_wins": int((difference < 0).sum()),
             }
         )
     return pd.DataFrame(rows).set_index("endpoint")

@@ -49,12 +49,12 @@ def test_endpoints_where_placement_hurts_are_rejected():
     assert not selector.use_loss_minimising[REGRESSION_ENDPOINTS[2]]
 
 
-def test_win_rates_are_recorded_as_evidence():
+def test_p_values_are_recorded_as_evidence():
     truth = _truth()
     chosen, mean = _predictions(truth, good_columns={0})
     selector = EstimatorSelector.fit(chosen, mean, truth)
-    assert selector.win_rates[REGRESSION_ENDPOINTS[0]] > 0.9
-    assert selector.win_rates[REGRESSION_ENDPOINTS[1]] < 0.5
+    assert selector.p_values[REGRESSION_ENDPOINTS[0]] < 0.1
+    assert selector.p_values[REGRESSION_ENDPOINTS[1]] > 0.5
 
 
 def test_apply_takes_placed_values_only_where_selected():
@@ -67,18 +67,18 @@ def test_apply_takes_placed_values_only_where_selected():
         np.testing.assert_allclose(chosen[:, column], source[:, column])
 
 
-def test_the_default_threshold_demands_near_unanimity():
-    """A win rate just above a coin flip is not evidence at this sample size."""
-    from cypshift.decision.selection import DEFAULT_WIN_RATE_THRESHOLD
+def test_the_default_threshold_demands_strong_evidence():
+    """A comparison just past a coin flip is not evidence at this sample size."""
+    from cypshift.decision.selection import DEFAULT_P_VALUE_THRESHOLD
 
-    assert DEFAULT_WIN_RATE_THRESHOLD >= 0.9
+    assert DEFAULT_P_VALUE_THRESHOLD <= 0.05
 
 
 def test_a_marginal_advantage_is_not_selected_by_default():
     truth = _truth()
     chosen, mean = _predictions(truth, good_columns={0, 3})
     selector = EstimatorSelector.fit(chosen, mean, truth)
-    marginal = [e for e, rate in selector.win_rates.items() if 0.5 < rate < 0.9]
+    marginal = [e for e, value in selector.p_values.items() if 0.1 < value < 0.5]
     assert all(not selector.use_loss_minimising[e] for e in marginal)
 
 

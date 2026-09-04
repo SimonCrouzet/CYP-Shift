@@ -2,9 +2,9 @@
 
 A *structure-free* model is not a ligand-only one. It sees no 3D structure, but the
 protein is still available to it as identity, and the experiment is available as
-context. Both belong in the input, because that is what lets a single model learn
+one_hot. Both belong in the input, because that is what lets a single model learn
 shared chemistry in its lower layers while taking target-specific and
-assay-specific behaviour from the context block.
+assay-specific behaviour from the one_hot block.
 
 The alternative -- one model per isoform, as the first baseline here did -- transfers
 nothing between them and cannot use a measurement made under a different condition at
@@ -144,7 +144,7 @@ def build_observations(
     return observations
 
 
-def context_columns(
+def one_hot_encode(
     observations: pd.DataFrame,
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,

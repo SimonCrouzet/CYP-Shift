@@ -2,7 +2,7 @@
 
 A row is a single measurement, and its input is the molecule's features plus a
 one-hot vector naming which protein it was measured against and under which
-experiment. That is all "context" means here -- extra input columns, not a
+experiment. That is all "one_hot" means here -- extra input columns, not a
 separate pathway. Aspirin measured on CYP3A4 and on CYP1A2 gives identical molecular
 features, so those columns are the only thing distinguishing the two rows, which is
 what lets one model serve every isoform instead of four models sharing nothing.
@@ -24,7 +24,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, context_columns
+from cypshift.data.assembly import ASSAYS, one_hot_encode
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.ensemble import DEFAULT_MEMBERS, MemberSpec
@@ -79,7 +79,7 @@ class SharedEnsemble:
         usable = observations[np.isfinite(observations["value"])]
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
-        context = context_columns(usable, self.targets, self.assays)
+        one_hot = one_hot_encode(usable, self.targets, self.assays)
         smiles = usable["SMILES"].tolist()
         weights = usable["weight"].to_numpy(float)
         values = usable["value"].to_numpy(float)
@@ -93,13 +93,13 @@ class SharedEnsemble:
 
         self._fitted = []
         for spec in self.members:
-            features = np.hstack([self._molecular(smiles, spec), context])
+            features = np.hstack([self._molecular(smiles, spec), one_hot])
             estimator = spec.build(self.seed)
             try:
                 estimator.fit(features, values, sample_weight=weights)
             except TypeError:
                 # Neighbour models take no sample weights; the source mixture is then
-                # carried by the context block alone.
+                # carried by the one_hot block alone.
                 estimator.fit(features, values)
             self._fitted.append(estimator)
         return self
@@ -113,8 +113,8 @@ class SharedEnsemble:
         for column, endpoint in enumerate(self.endpoints):
             target = endpoint.split("_")[0]
             query = pd.DataFrame({"target": [target] * n, "assay": [SCORED_ASSAY] * n})
-            context = context_columns(query, self.targets, self.assays)
+            one_hot = one_hot_encode(query, self.targets, self.assays)
             for index, spec in enumerate(self.members):
-                features = np.hstack([self._molecular(smiles, spec), context])
+                features = np.hstack([self._molecular(smiles, spec), one_hot])
                 samples[index, :, column] = self._fitted[index].predict(features)
         return PredictiveDistribution(samples, self.endpoints)
