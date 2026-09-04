@@ -15,6 +15,7 @@ used by the leaderboard and neither is reproduced here.
 """
 
 import logging
+import warnings
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -95,13 +96,30 @@ def relative_absolute_error(y_true: ArrayLike, y_pred: ArrayLike) -> float:
     return float(np.abs(truth - pred).sum() / np.abs(truth - truth.mean()).sum())
 
 
+def _rank_correlation(statistic: object) -> object:
+    """Wrap a scipy rank correlation, silencing its constant-input warning.
+
+    A bootstrap sample can legitimately draw a constant vector, which leaves the
+    correlation undefined. That case is expected and handled by
+    :data:`METRIC_NAN_FALLBACK`, so the warning carries no information.
+    """
+
+    def compute(y_true: ArrayLike, y_pred: ArrayLike) -> float:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            warnings.filterwarnings("ignore", message="An input array is constant")
+            return float(statistic(y_true, y_pred).statistic)
+
+    return compute
+
+
 #: Secondary leaderboard metrics, in the order the challenge reports them. Each takes
 #: ``(y_true, y_pred)``; ST-RAE is handled separately because it needs the bounds.
 SECONDARY_METRICS = {
     "MAE": mean_absolute_error,
     "R2": r2_score,
-    "Spearman_R": lambda t, p: spearmanr(t, p).statistic,
-    "Kendall_Tau": lambda t, p: kendalltau(t, p).statistic,
+    "Spearman_R": _rank_correlation(spearmanr),
+    "Kendall_Tau": _rank_correlation(kendalltau),
 }
 
 #: Rank correlations are undefined when a bootstrap sample has zero variance in either
