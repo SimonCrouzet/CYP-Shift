@@ -185,3 +185,60 @@ def pseudo_labels(
         )
 
     return labels, {isoform: calibrator.residual_std(isoform) for isoform in ISOFORMS}
+
+
+def inhibited_fraction(log2_fold_change: np.ndarray) -> np.ndarray:
+    """Convert the screen's fold-change readout into an inhibited fraction.
+
+    The screen reports log2 of remaining activity against control, so a fold change of
+    ``f`` leaves ``2**f`` of the signal and the inhibited fraction is ``1 - 2**f``.
+    Values above zero mean the readout rose, which inhibition cannot explain, so they
+    clip to zero rather than becoming a negative fraction.
+
+    No calibration is involved. This is the measured quantity in the units a
+    dose-response curve predicts at that concentration, which is what lets a screen
+    reading constrain the curve directly instead of via a fitted pIC50 surrogate.
+    """
+    return np.clip(1.0 - np.power(2.0, log2_fold_change), 0.0, 1.0)
+
+
+def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) -> pd.DataFrame:
+    """Screen readings as constraints on the curve, one row per compound and enzyme.
+
+    Args:
+        screen: The long single-concentration table.
+        measurement_noise: Half-width of the interval placed around each reading, as an
+            inhibited fraction. A single well with no replicate does not support a
+            tight bound.
+
+    Returns:
+        Rows carrying the inhibited fraction and an interval around it, ready to be
+        compared against the curve evaluated at the screen concentration.
+    """
+    rows = []
+    for isoform in ISOFORMS:
+        block = screen[screen["enzyme"] == isoform]
+        if block.empty:
+            continue
+        fraction = inhibited_fraction(block[FOLD_CHANGE_COLUMN].to_numpy(float))
+        rows.append(
+            pd.DataFrame(
+                {
+                    "Molecule_Name": block["Molecule_Name"].to_numpy(),
+                    "SMILES": block["SMILES"].to_numpy(),
+                    "target": isoform,
+                    "assay": "direct_inhibition_screen",
+                    "value": fraction,
+                    "conf_low": np.clip(fraction - measurement_noise, 0.0, 1.0),
+                    "conf_high": np.clip(fraction + measurement_noise, 0.0, 1.0),
+                    "is_censored": False,
+                }
+            )
+        )
+    observations = pd.concat(rows, ignore_index=True)
+    logger.info(
+        "screen as curve constraints: %d rows, median inhibited fraction %.2f",
+        len(observations),
+        float(observations["value"].median()),
+    )
+    return observations

@@ -22,7 +22,6 @@ from cypshift.eval.uncertainty import summarise
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.ensemble import PerTargetEnsemble
 from cypshift.models.forest import PerTargetForest
-from cypshift.models.neural import OBJECTIVES, NeuralNetwork
 from cypshift.models.shared import SharedEnsemble
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
@@ -276,6 +275,10 @@ def loss_ablation(
         kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
         screen_labels, _ = pseudo_labels(kept, retained)
     observations = build_observations(retained, screen_labels=screen_labels)
+
+    # Imported here rather than at module scope, so the package and the commands that
+    # need no network work without the optional deep-learning dependencies.
+    from cypshift.models.neural import OBJECTIVES, NeuralNetwork
 
     submissions = {}
     for objective in OBJECTIVES:
