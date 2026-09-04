@@ -12,6 +12,7 @@ from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.decision.band import BandWidthModel
+from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.decision.placement import place
 from cypshift.eval.scoring import score_submission
 from cypshift.eval.uncertainty import summarise
@@ -87,7 +88,7 @@ def reference(
 @app.command()
 def baseline(
     directory: Path = DEFAULT_DATA_DIR,
-    holdout_fraction: float = 0.1,
+    holdout_fraction: float = 0.2,
     n_members: int = 5,
     n_estimators: int = 300,
     seed: int = 0,
@@ -117,11 +118,30 @@ def baseline(
             mask_path.parent.mkdir(parents=True, exist_ok=True)
             np.save(mask_path, mask)
 
-    retained, held_out = train.loc[~mask], train.loc[mask]
+    # Conformal calibration needs data exchangeable with what it will be applied to,
+    # so the matched holdout is split at random into a calibration and an evaluation
+    # half. Both then carry the same similarity profile.
+    held_index = np.flatnonzero(mask)
+    shuffled = np.random.default_rng(seed).permutation(held_index)
+    calibration_index, evaluation_index = np.array_split(shuffled, 2)
+
+    retained = train.loc[~mask]
+    calibration = train.iloc[calibration_index]
+    evaluation = train.iloc[evaluation_index]
+    logger.info(
+        "fit %d, calibrate %d, evaluate %d", len(retained), len(calibration), len(evaluation)
+    )
+
     route = LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
     route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
 
-    prediction = route.predict(held_out["SMILES"].tolist())
+    calibrator = ConformalCalibrator.fit(
+        route.predict(calibration["SMILES"].tolist()),
+        calibration[list(REGRESSION_ENDPOINTS)].to_numpy(float),
+    )
+
+    raw = route.predict(evaluation["SMILES"].tolist())
+    calibrated = calibrator.apply(raw)
 
     band_models = {
         endpoint: BandWidthModel.fit(
@@ -131,28 +151,34 @@ def baseline(
         )
         for endpoint in REGRESSION_ENDPOINTS
     }
-    placed = place(prediction, band_models, seed=seed)
 
-    diagnostics = pd.DataFrame(
-        {
-            endpoint.split("_")[0]: summarise(
-                held_out[endpoint].to_numpy(float),
-                prediction.mean[:, column],
-                prediction.total_std[:, column],
-            )
-            for column, endpoint in enumerate(REGRESSION_ENDPOINTS)
-        }
-    )
-    print("\n=== predictive distribution ===")
-    print(diagnostics.round(3).to_string())
+    for label, distribution in (("raw", raw), ("conformally calibrated", calibrated)):
+        diagnostics = pd.DataFrame(
+            {
+                endpoint.split("_")[0]: summarise(
+                    evaluation[endpoint].to_numpy(float),
+                    distribution.mean[:, column],
+                    distribution.total_std[:, column],
+                )
+                for column, endpoint in enumerate(REGRESSION_ENDPOINTS)
+            }
+        )
+        print(f"\n=== predictive distribution, {label} ===")
+        print(diagnostics.round(3).to_string())
 
-    for label, values in (("posterior mean", prediction.mean), ("expected-loss placement", placed)):
-        submission = held_out[["Molecule_Name"]].copy()
+    candidates = {
+        "posterior mean": raw.mean,
+        "placement, raw spread": place(raw, band_models, seed=seed),
+        "placement, calibrated spread": place(calibrated, band_models, seed=seed),
+    }
+    summary = {}
+    for label, values in candidates.items():
+        submission = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
             submission[endpoint] = values[:, column]
-        scores = score_submission(submission, held_out)
-        print(f"\n=== {label} ===")
-        print(scores[["ST-RAE_mean", "MAE_mean", "R2_mean"]].round(4).to_string())
+        summary[label] = score_submission(submission, evaluation)["ST-RAE_mean"]
+    print("\n=== ST-RAE (lower is better) ===")
+    print(pd.DataFrame(summary).round(4).to_string())
 
 
 if __name__ == "__main__":
