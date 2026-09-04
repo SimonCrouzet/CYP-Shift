@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
@@ -118,11 +119,15 @@ class Model(Protocol):
     name: str
     endpoints: tuple[str, ...]
 
-    def fit(self, smiles: list[str], targets: NDArray[np.float64]) -> "Model":
-        """Train on SMILES and a ``(n_compounds, n_endpoints)`` target matrix.
+    def fit(self, observations: pd.DataFrame) -> "Model":
+        """Train on the long observation table built by
+        :func:`cypshift.data.assembly.build_observations`.
 
-        Missing targets are NaN and must be handled by the model, since coverage is
-        26-48% per isoform and is not missing at random.
+        One row per (compound, enzyme, assay) measurement, carrying ``value``,
+        ``conf_low``, ``conf_high``, ``weight`` and ``is_censored``. Long rather than a
+        wide target matrix because coverage is 26-48% per isoform and not missing at
+        random, and because a censored screen reading is a different kind of
+        observation from a fitted midpoint rather than a missing one.
         """
         ...
 

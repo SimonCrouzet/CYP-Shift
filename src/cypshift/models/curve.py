@@ -31,10 +31,11 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS, TDI_SHIFT_THRESHOLD
 from cypshift.data.conditioning import describe_all
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
+from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,9 @@ class CurveModel:
     """Predicts a dose-response curve per compound, enzyme and arm."""
 
     name = "curve"
+    #: Required by :class:`cypshift.models.base.Model`. The curve model also predicts
+    #: the TDI endpoints, but those are scored on their own track.
+    endpoints = tuple(REGRESSION_ENDPOINTS)
 
     def __init__(
         self,
@@ -357,6 +361,21 @@ class CurveModel:
         features = self._features(smiles, fit=False)
         with torch.no_grad():
             return np.stack([self._model(features).numpy() for _ in range(self.n_forward_passes)])
+
+    def predict(self, smiles: list[str]) -> PredictiveDistribution:
+        """The regression track's prediction, satisfying the shared model interface.
+
+        The midpoint of the direct arm's curve, one column per enzyme, with the
+        Monte Carlo dropout passes kept as the member axis so the spread reaches the
+        interval machinery rather than being averaged away here.
+
+        This exists because :class:`cypshift.models.base.Model` requires it and the
+        pipeline calls it. Without it the curve model could be built and fitted but
+        never scored -- every run through the pipeline died at prediction.
+        """
+        curves = self._curves(smiles)
+        samples = curves[:, :, :, ARMS.index("direct"), PIC50]
+        return PredictiveDistribution(samples=samples, endpoints=tuple(REGRESSION_ENDPOINTS))
 
     def predict_pic50(self, smiles: list[str], arm: str = "direct") -> NDArray[np.float64]:
         """The curve's midpoint, which is what the regression track asks for."""

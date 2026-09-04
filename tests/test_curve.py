@@ -315,3 +315,54 @@ def test_every_described_mode_builds_its_descriptors_when_fitted(mode, tmp_path)
     )
     model.fit(observations)
     assert model.predict_pic50(["CCO"]).shape[1] == 4
+
+
+def test_curve_model_satisfies_the_shared_model_protocol():
+    """It did not: CurveModel had predict_pic50 but no predict, and no endpoints
+    attribute, so pipeline.run() died at prediction for every curve configuration."""
+    from cypshift.models.base import Model
+
+    assert isinstance(CurveModel(), Model)
+
+
+def test_predict_returns_one_column_per_regression_endpoint():
+    from cypshift.config import REGRESSION_ENDPOINTS
+
+    model = CurveModel(epochs=1, n_forward_passes=3)
+    observations = pd.DataFrame(
+        {
+            "Molecule_Name": [f"M{i}" for i in range(8)],
+            "SMILES": ["CCO", "c1ccccc1", "CCN", "CCCC"] * 2,
+            "target": ["CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"] * 2,
+            "assay": ["direct_inhibition_drc"] * 8,
+            "value": [5.0, 5.5, 6.0, 4.5] * 2,
+            "conf_low": [4.5, 5.0, 5.5, 4.0] * 2,
+            "conf_high": [5.5, 6.0, 6.5, 5.0] * 2,
+            "weight": [1.0] * 8,
+            "is_censored": [False] * 8,
+        }
+    )
+    model.fit(observations)
+    prediction = model.predict(["CCO", "CCN"])
+    assert prediction.endpoints == tuple(REGRESSION_ENDPOINTS)
+    assert prediction.mean.shape == (2, 4)
+
+
+def test_predict_keeps_the_dropout_passes_as_members():
+    """Averaging them here would throw away the spread the interval machinery needs."""
+    model = CurveModel(epochs=1, n_forward_passes=4)
+    observations = pd.DataFrame(
+        {
+            "Molecule_Name": [f"M{i}" for i in range(4)],
+            "SMILES": ["CCO", "c1ccccc1", "CCN", "CCCC"],
+            "target": ["CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"],
+            "assay": ["direct_inhibition_drc"] * 4,
+            "value": [5.0, 5.5, 6.0, 4.5],
+            "conf_low": [4.5, 5.0, 5.5, 4.0],
+            "conf_high": [5.5, 6.0, 6.5, 5.0],
+            "weight": [1.0] * 4,
+            "is_censored": [False] * 4,
+        }
+    )
+    model.fit(observations)
+    assert model.predict(["CCO"]).samples.shape[0] == 4
