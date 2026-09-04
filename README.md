@@ -189,39 +189,58 @@ constant mean predictor.
 | CYP2C9 | 0.831 | 0.538 | 0.194 | 0.479 |
 | **macro** | **0.768** | 0.606 | 0.297 | 0.553 |
 
-### What the decision layer is worth so far
+### What the decision layer is worth
 
-The same predictions scored three ways on the evaluation half. Lower is better.
+Everything below is scored with the official metric on the evaluation half of a
+similarity-matched holdout. Differences this small are only interpretable **paired**:
+the resampling seed is fixed, so both submissions are scored on identical bootstrap
+draws and the difference is taken within each sample. The win rate is the share of
+samples where the submission actually beats the posterior mean.
 
-| endpoint | posterior mean | placed, raw spread | placed, calibrated | gain |
+| route | submission | MA-ST-RAE | paired Δ | win rate |
 |---|---|---|---|---|
-| CYP3A4 | 0.638 | 0.603 | **0.589** | **+0.049** |
-| CYP1A2 | 0.775 | 0.777 | 0.775 | 0.000 |
-| CYP2D6 | 0.873 | 0.896 | 0.884 | −0.011 |
-| CYP2C9 | 0.798 | 0.918 | 0.824 | −0.026 |
-| **macro** | 0.771 | 0.798 | **0.768** | **+0.003** |
+| seeded | posterior mean | 0.7713 | — | — |
+| seeded | placement, all endpoints | 0.7683 | −0.0030 | 76% |
+| diverse | posterior mean | 0.7742 | — | — |
+| diverse | placement, all endpoints | 0.7674 | −0.0068 | 76% |
+| diverse | placement, selected at 0.60 | 0.7710 | −0.0032 | 68% |
+| **diverse** | **placement, selected at 0.95** | **0.7657** | **−0.0085** | **99%** |
 
-Two things are established and one is not.
+Three findings, in order of how much they cost to learn.
 
 **Placement trades the accuracy metrics for the scored one**, as designed. Mean
 absolute error and R² both worsen while ST-RAE improves. That is the same signature
 visible on the public leaderboard, where the entrant with the best mean absolute
 error of all 124 places seventh.
 
-**Its value tracks the quality of the posterior it optimises against.** On the raw
-spread it *loses* 0.027; conformally calibrated it gains 0.003. The mechanism is the
-one the theory predicts, and calibration is what turns a loss into a gain. The
-ensemble's raw spread was understating error by twelve to fifteen times, with
-nominal 90% intervals covering 4 to 10% of compounds.
+**Its value tracks how honestly the posterior states its own uncertainty.** A seeded
+ensemble understated error by twelve to fifteen times, with nominal 90% intervals
+covering 4 to 10% of compounds; on that spread placement *lost* ground. Conformal
+calibration turned the loss into a gain. Replacing seed diversity with genuine
+architectural diversity — different feature views, different inductive biases —
+widened the raw spread eightfold and doubled the gain again.
 
-**But the gain is small and comes entirely from one endpoint.** CYP3A4 has the best
-model, R² 0.56, and contributes +0.049; the three weaker endpoints give some back.
-The reason is visible in the diagnostics: even after calibration the spread's rank
-correlation with realised error is 0.03 to 0.07. Conformal prediction fixes the
-*size* of an interval but cannot manufacture *ordering* that was never there, and a
-seeded ensemble has almost none — every member saw the same data and shares the same
-failure modes. A useful posterior has to come from architectural diversity or from
-an orthogonal route, which is the next thing to build.
+**Selection on a few hundred compounds does not transfer, and assuming it does makes
+things worse.** Estimating the per-endpoint win rate on one half of the holdout and
+checking it on the other, two of four endpoints reversed:
+
+| endpoint | calibration half | evaluation half | replicates? |
+|---|---|---|---|
+| CYP3A4 | 100% | 99% | yes |
+| CYP1A2 | 16% | 24% | yes |
+| CYP2C9 | **81%** | **17%** | **reversed** |
+| CYP2D6 | **59%** | **84%** | **reversed** |
+
+Selecting at a threshold just above a coin flip scored 0.7710, *worse* than not
+selecting at all. Demanding near-unanimity instead — which is the property that
+separated what replicated from what did not — selects CYP3A4 alone and reaches
+0.7657, beating the posterior mean in 99% of paired samples. Restricting to the one
+replicated endpoint both increased the gain and made it resolvable.
+
+The general lesson is the sharper version of the validation problem below. It is not
+only that models cannot be ranked offline here; **a single binary decision per
+endpoint cannot be fitted reliably on this much held-out data.** Anything chosen on a
+few hundred compounds should be assumed not to transfer until it replicates.
 
 Read the baseline as a floor, not as a leaderboard prediction. The holdout is deliberately
 built to resemble the blinded test set, but it cannot reproduce the analog-series
@@ -317,7 +336,8 @@ hf auth whoami         # verify
 | ⬜ | Route A: swap in a Chemprop D-MPNN | the multi-task and pretraining path |
 | ⬜ | Auxiliary heads, measured one at a time | screen as censored bounds → Veith → ChEMBL, deduplicated |
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
-| ⬜ | **Build the decision layer** | the piece worth being right about |
+| ✅ | **Build the decision layer** | −0.0085 macro, 99% of paired samples |
+| ⬜ | Extend placement beyond CYP3A4 | needs a better posterior on the other three |
 
 ### 🧊 Structure work, if the blocking check clears it
 
