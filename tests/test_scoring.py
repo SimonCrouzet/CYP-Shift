@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
-from cypshift.eval.scoring import bootstrap_indices, score_submission
+from cypshift.eval.scoring import bootstrap_indices, paired_difference, score_submission
 
 RNG = np.random.default_rng(11)
 
@@ -77,3 +77,31 @@ def test_a_better_model_scores_lower():
         predictions[endpoint] = truth[endpoint] + RNG.normal(0, 2.0, len(truth))
     bad = score_submission(predictions, truth, n_repeats=25).loc[MACRO_LABEL, "ST-RAE_mean"]
     assert good < bad
+
+
+def test_paired_difference_detects_a_consistently_better_submission():
+    predictions, truth = _frames(n=200)
+    worse = predictions.copy()
+    for endpoint in REGRESSION_ENDPOINTS:
+        worse[endpoint] = truth[endpoint] + RNG.normal(0, 2.0, len(truth))
+    comparison = paired_difference(predictions, worse, truth, n_repeats=200)
+    assert comparison.loc[MACRO_LABEL, "delta_mean"] < 0
+    assert comparison.loc[MACRO_LABEL, "win_rate"] > 0.95
+
+
+def test_paired_difference_of_a_submission_with_itself_is_exactly_zero():
+    predictions, truth = _frames(n=120)
+    comparison = paired_difference(predictions, predictions, truth, n_repeats=50)
+    assert comparison["delta_mean"].abs().max() == pytest.approx(0.0)
+    assert comparison["delta_std"].max() == pytest.approx(0.0)
+
+
+def test_paired_comparison_is_more_sensitive_than_independent_spreads():
+    """A difference far smaller than either standalone spread can still be resolved."""
+    predictions, truth = _frames(n=200)
+    nudged = predictions.copy()
+    for endpoint in REGRESSION_ENDPOINTS:
+        nudged[endpoint] = predictions[endpoint] + 0.02
+    standalone = score_submission(predictions, truth, n_repeats=200)
+    comparison = paired_difference(nudged, predictions, truth, n_repeats=200)
+    assert comparison.loc[MACRO_LABEL, "delta_std"] < standalone.loc[MACRO_LABEL, "ST-RAE_std"]

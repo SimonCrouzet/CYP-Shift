@@ -77,6 +77,36 @@ def bootstrap_endpoint(
     return pd.DataFrame(rows)
 
 
+def _bootstrap_all_endpoints(
+    predictions: pd.DataFrame,
+    truth: pd.DataFrame,
+    key: str,
+    n_repeats: int,
+) -> dict[str, pd.DataFrame]:
+    """Per-sample metrics for every endpoint plus the macro row."""
+    merged = truth.merge(predictions, on=key, suffixes=("", "_pred"), validate="one_to_one")
+    per_sample: dict[str, pd.DataFrame] = {}
+    for endpoint in REGRESSION_ENDPOINTS:
+        measured = merged[endpoint].notna()
+        subset = merged.loc[measured]
+        predicted = subset[f"{endpoint}_pred"].to_numpy(dtype=float)
+        if not np.isfinite(predicted).all():
+            raise ValueError(f"{endpoint}: predictions must be finite where truth exists")
+        logger.info("scoring %s on %d compounds", endpoint, len(subset))
+        per_sample[endpoint] = bootstrap_endpoint(
+            subset[endpoint].to_numpy(dtype=float),
+            predicted,
+            subset[f"{endpoint}{CREDIBLE_LOWER_SUFFIX}"].to_numpy(dtype=float),
+            subset[f"{endpoint}{CREDIBLE_UPPER_SUFFIX}"].to_numpy(dtype=float),
+            n_repeats,
+        )
+    # The macro row is averaged within each bootstrap sample, not after aggregation.
+    per_sample[MACRO_LABEL] = (
+        pd.concat(per_sample.values(), keys=range(len(per_sample))).groupby(level=1).mean()
+    )
+    return per_sample
+
+
 def score_submission(
     predictions: pd.DataFrame,
     truth: pd.DataFrame,
@@ -100,28 +130,7 @@ def score_submission(
         One row per endpoint plus a macro row labelled ``MA``, with a ``_mean`` and
         ``_std`` column per metric taken over the bootstrap distribution.
     """
-    merged = truth.merge(predictions, on=key, suffixes=("", "_pred"), validate="one_to_one")
-    per_sample: dict[str, pd.DataFrame] = {}
-
-    for endpoint in REGRESSION_ENDPOINTS:
-        measured = merged[endpoint].notna()
-        subset = merged.loc[measured]
-        predicted = subset[f"{endpoint}_pred"].to_numpy(dtype=float)
-        if not np.isfinite(predicted).all():
-            raise ValueError(f"{endpoint}: predictions must be finite where truth exists")
-        logger.info("scoring %s on %d compounds", endpoint, len(subset))
-        per_sample[endpoint] = bootstrap_endpoint(
-            subset[endpoint].to_numpy(dtype=float),
-            predicted,
-            subset[f"{endpoint}{CREDIBLE_LOWER_SUFFIX}"].to_numpy(dtype=float),
-            subset[f"{endpoint}{CREDIBLE_UPPER_SUFFIX}"].to_numpy(dtype=float),
-            n_repeats,
-        )
-
-    # The macro row is averaged within each bootstrap sample, not after aggregation.
-    per_sample[MACRO_LABEL] = (
-        pd.concat(per_sample.values(), keys=range(len(per_sample))).groupby(level=1).mean()
-    )
+    per_sample = _bootstrap_all_endpoints(predictions, truth, key, n_repeats)
 
     summary = pd.DataFrame(
         [
@@ -134,3 +143,47 @@ def score_submission(
         ]
     )
     return summary.set_index("endpoint")
+
+
+def paired_difference(
+    predictions_a: pd.DataFrame,
+    predictions_b: pd.DataFrame,
+    truth: pd.DataFrame,
+    key: str = "Molecule_Name",
+    n_repeats: int = BOOTSTRAP_SAMPLES,
+) -> pd.DataFrame:
+    """Compare two submissions on identical bootstrap samples.
+
+    Because the resampling seed is fixed, both submissions are scored on exactly the
+    same draws, so their difference can be taken *within* each sample. That paired
+    difference is far more sensitive than comparing two independent standard
+    deviations, and it is how the challenge's own head-to-head comparison works.
+
+    A difference much smaller than the standalone standard deviation can still be
+    real if it is consistent across samples, and ``win_rate`` is what says so.
+
+    Args:
+        predictions_a: The submission under test.
+        predictions_b: The reference submission.
+        truth: Ground truth with credible bounds.
+        key: Compound identifier column.
+        n_repeats: Bootstrap samples.
+
+    Returns:
+        Per endpoint and macro: the mean paired difference in ST-RAE, its standard
+        deviation, and the fraction of samples where ``a`` scores lower than ``b``.
+    """
+    per_sample_a = _bootstrap_all_endpoints(predictions_a, truth, key, n_repeats)
+    per_sample_b = _bootstrap_all_endpoints(predictions_b, truth, key, n_repeats)
+    rows = []
+    for endpoint in per_sample_a:
+        difference = per_sample_a[endpoint][PRIMARY_METRIC] - per_sample_b[endpoint][PRIMARY_METRIC]
+        rows.append(
+            {
+                "endpoint": endpoint,
+                "delta_mean": difference.mean(),
+                "delta_std": difference.std(ddof=1),
+                "win_rate": float((difference < 0).mean()),
+            }
+        )
+    return pd.DataFrame(rows).set_index("endpoint")
