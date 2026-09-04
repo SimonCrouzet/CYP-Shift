@@ -13,6 +13,12 @@ Where the model is confident and wrong, committing to a mode commits to a wrong 
 So whether to place is itself a decision, and it is made here from held-out evidence
 rather than assumed. The choice is fitted on calibration data and applied to
 evaluation data, never selected on the same compounds it is then scored against.
+
+That discipline turned out to matter: the first version of this selector, with a
+threshold just above a coin flip, chose two endpoints whose advantage did not
+survive the crossing and scored worse than applying placement everywhere. See
+:data:`DEFAULT_WIN_RATE_THRESHOLD` for what the reversal looked like and why the bar
+is now set where it is.
 """
 
 import logging
@@ -27,10 +33,20 @@ from cypshift.eval.scoring import paired_difference
 
 logger = logging.getLogger(__name__)
 
-#: A placed endpoint must win this share of paired bootstrap samples. Set above a
-#: coin flip by a clear margin, because reverting to the posterior mean costs nothing
-#: while a wrongly placed endpoint costs real score.
-DEFAULT_WIN_RATE_THRESHOLD = 0.60
+#: A placed endpoint must win this share of paired bootstrap samples.
+#:
+#: The threshold is demanding on purpose, and the reason is measured rather than
+#: assumed. Estimating this win rate on one half of a similarity-matched holdout and
+#: checking it on the other, two of four endpoints *reversed*: CYP2C9 went from 81%
+#: to 17% and CYP2D6 from 59% to 84%. With sixty to a hundred and sixty measured
+#: compounds per endpoint per half the estimate is barely informative, and a
+#: threshold near a coin flip selects noise -- doing so scored worse than not
+#: selecting at all.
+#:
+#: Only near-unanimous effects survived the crossing: CYP3A4 at 100% and 99%,
+#: CYP1A2's rejection at 16% and 24%. Requiring near-unanimity is what separates a
+#: replicated effect from a large one.
+DEFAULT_WIN_RATE_THRESHOLD = 0.95
 
 
 @dataclass

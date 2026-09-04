@@ -67,10 +67,25 @@ def test_apply_takes_placed_values_only_where_selected():
         np.testing.assert_allclose(chosen[:, column], source[:, column])
 
 
+def test_the_default_threshold_demands_near_unanimity():
+    """A win rate just above a coin flip is not evidence at this sample size."""
+    from cypshift.decision.selection import DEFAULT_WIN_RATE_THRESHOLD
+
+    assert DEFAULT_WIN_RATE_THRESHOLD >= 0.9
+
+
+def test_a_marginal_advantage_is_not_selected_by_default():
+    truth = _truth()
+    placed, mean = _predictions(truth, good_columns={0, 3})
+    selector = PlacementSelector.fit(placed, mean, truth)
+    marginal = [e for e, rate in selector.win_rates.items() if 0.5 < rate < 0.9]
+    assert all(not selector.place_endpoint[e] for e in marginal)
+
+
 def test_a_stricter_threshold_selects_fewer_endpoints():
     truth = _truth()
     placed, mean = _predictions(truth, good_columns={0, 3})
-    lenient = PlacementSelector.fit(placed, mean, truth, threshold=0.50)
+    lenient = PlacementSelector.fit(placed, mean, truth, threshold=0.50)  # noqa: E501
     strict = PlacementSelector.fit(placed, mean, truth, threshold=0.99)
     assert sum(strict.place_endpoint.values()) <= sum(lenient.place_endpoint.values())
 
