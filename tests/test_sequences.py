@@ -31,8 +31,10 @@ def test_parse_strips_alignment_gaps():
 
 def test_unpinned_enzyme_is_refused():
     """Searching UniProt by name is not stable across releases."""
+    unpinned = "CYP51A1"
+    assert unpinned not in ACCESSIONS, "pick a name that is genuinely not pinned"
     with pytest.raises(KeyError, match="pinned"):
-        sequence_for("CYP2E1")
+        sequence_for(unpinned)
 
 
 def test_read_fasta_keys_on_the_first_header_field(tmp_path: Path):
