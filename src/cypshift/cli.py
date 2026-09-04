@@ -9,7 +9,9 @@ import pandas as pd
 import typer
 
 from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
+from cypshift.data.assembly import build_observations
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
+from cypshift.data.screen import pseudo_labels
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.decision.band import BandWidthModel
 from cypshift.decision.calibration import ConformalCalibrator
@@ -17,6 +19,7 @@ from cypshift.decision.placement import place
 from cypshift.decision.selection import PlacementSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
+from cypshift.models.conditioned import ConditionedRoute
 from cypshift.models.ensemble import DiverseEnsembleRoute
 from cypshift.models.ligand import LigandOnlyRoute
 
@@ -93,7 +96,10 @@ def baseline(
     holdout_fraction: float = 0.2,
     n_members: int = 5,
     n_estimators: int = 300,
-    diverse: Annotated[bool, typer.Option(help="Use the diverse ensemble.")] = False,
+    route_name: Annotated[
+        str, typer.Option("--route", help="ligand, diverse or conditioned.")
+    ] = "ligand",
+    with_screen: Annotated[bool, typer.Option(help="Add screen pseudo-labels.")] = False,
     seed: int = 0,
     mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
     verbose: bool = True,
@@ -135,13 +141,24 @@ def baseline(
         "fit %d, calibrate %d, evaluate %d", len(retained), len(calibration), len(evaluation)
     )
 
-    route = (
-        DiverseEnsembleRoute(seed=seed)
-        if diverse
-        else LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
-    )
-    logger.info("route: %s", route.name)
-    route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
+    if route_name == "conditioned":
+        screen_labels = None
+        if with_screen:
+            screen = load("screen", directory)
+            kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
+            screen_labels, _ = pseudo_labels(kept, retained)
+        observations = build_observations(retained, screen_labels=screen_labels)
+        route = ConditionedRoute(seed=seed)
+        logger.info("route: %s", route.name)
+        route.fit(observations)
+    else:
+        route = (
+            DiverseEnsembleRoute(seed=seed)
+            if route_name == "diverse"
+            else LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
+        )
+        logger.info("route: %s", route.name)
+        route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
 
     calibrator = ConformalCalibrator.fit(
         route.predict(calibration["SMILES"].tolist()),
