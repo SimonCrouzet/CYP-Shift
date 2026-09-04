@@ -13,6 +13,11 @@ inactive -- a one-sided band running down from a bound. Under this loss, predict
 anywhere below that bound costs nothing, which is precisely what the reading
 supports. The 2,855 censored CYP2D6 pseudo-labels become ordinary training rows.
 
+Feature scaling is per-kind rather than uniform, which matters here in a way it does
+not for a tree ensemble: see :mod:`cypshift.features.scaling`. Z-scoring the sparse
+fingerprint block alongside the dense descriptors destroys its sparsity and measurably
+costs accuracy.
+
 Uncertainty comes from dropout left active at prediction time rather than from
 reseeding. Members that differ only by seed were measured on this dataset to
 disagree by 0.03 log units while being wrong by 0.45, so their spread carries
@@ -29,7 +34,8 @@ from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, conditioning_matrix
-from cypshift.features.molecular import featurise
+from cypshift.features.molecular import featurise, physicochemical
+from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.conditioned import SCORED_ASSAY
 
@@ -118,17 +124,20 @@ class DeadZoneRoute:
         self.loss = loss
         self.seed = seed
         self._model: ConditionedMLP | None = None
-        self._centre: NDArray[np.float32] | None = None
-        self._scale: NDArray[np.float32] | None = None
+        self._scaler: BlockScaler | None = None
 
     def _features(self, smiles: list[str], context: NDArray[np.float32]) -> NDArray[np.float32]:
         return np.hstack([featurise(smiles, n_bits=self.n_bits), context]).astype(np.float32)
 
-    def _standardise(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
+    def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
+        """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
         if fit:
-            self._centre = features.mean(axis=0)
-            self._scale = features.std(axis=0) + 1e-6
-        return torch.from_numpy((features - self._centre) / self._scale)
+            n_dense = len(physicochemical(["CCO"]).columns)
+            self._scaler = BlockScaler(n_count_columns=self.n_bits, n_dense_columns=n_dense)
+            self._scaler.fit(features)
+        if self._scaler is None:
+            raise RuntimeError("route is not fitted")
+        return torch.from_numpy(self._scaler.transform(features))
 
     def fit(self, observations: pd.DataFrame) -> "DeadZoneRoute":
         """Train on the observation table, using each row's own band.
@@ -142,7 +151,7 @@ class DeadZoneRoute:
             raise ValueError("no finite measurements to fit on")
 
         context = conditioning_matrix(usable, self.targets, self.assays)
-        features = self._standardise(self._features(usable["SMILES"].tolist(), context), fit=True)
+        features = self._scale_blocks(self._features(usable["SMILES"].tolist(), context), fit=True)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
@@ -192,7 +201,7 @@ class DeadZoneRoute:
                     {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
                 )
                 context = conditioning_matrix(query, self.targets, self.assays)
-                features = self._standardise(self._features(smiles, context), fit=False)
+                features = self._scale_blocks(self._features(smiles, context), fit=False)
                 for pass_index in range(self.n_forward_passes):
                     samples[pass_index, :, column] = self._model(features).numpy()
         return PredictiveDistribution(samples, self.endpoints)
