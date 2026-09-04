@@ -10,7 +10,9 @@ import typer
 
 from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
+from cypshift.data.splits import similarity_matched_holdout
 from cypshift.eval.scoring import score_submission
+from cypshift.models.ligand import LigandOnlyRoute
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
 logger = logging.getLogger(__name__)
@@ -77,6 +79,51 @@ def reference(
     table = table[[MACRO_LABEL, *REGRESSION_ENDPOINTS]]
     table.columns = [c.split("_")[0] for c in table.columns]
     print(table.to_string())
+
+
+@app.command()
+def baseline(
+    directory: Path = DEFAULT_DATA_DIR,
+    holdout_fraction: float = 0.1,
+    n_members: int = 5,
+    n_estimators: int = 300,
+    seed: int = 0,
+    mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
+    verbose: bool = True,
+) -> None:
+    """Fit the ligand-only route and score it on the similarity-matched holdout.
+
+    This is the floor every other route has to beat, measured through the official
+    metric on a split built to resemble the blinded test set.
+    """
+    _configure_logging(verbose)
+    train = load("inhibition", directory)
+    test = load("test", directory)
+
+    if mask_path and mask_path.exists():
+        mask = np.load(mask_path)
+        logger.info("reusing cached holdout of %d compounds", mask.sum())
+    else:
+        mask = similarity_matched_holdout(
+            train["SMILES"].tolist(),
+            test["SMILES"].tolist(),
+            holdout_fraction=holdout_fraction,
+            seed=seed,
+        )
+        if mask_path:
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(mask_path, mask)
+
+    retained, held_out = train.loc[~mask], train.loc[mask]
+    route = LigandOnlyRoute(n_members=n_members, n_estimators=n_estimators, seed=seed)
+    route.fit(retained["SMILES"].tolist(), retained[list(REGRESSION_ENDPOINTS)].to_numpy(float))
+
+    prediction = route.predict(held_out["SMILES"].tolist())
+    submission = held_out[["Molecule_Name"]].copy()
+    for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+        submission[endpoint] = prediction.mean[:, column]
+
+    print(score_submission(submission, held_out).round(4).to_string())
 
 
 if __name__ == "__main__":

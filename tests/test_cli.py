@@ -31,7 +31,7 @@ def _truth_and_predictions(tmp_path, n=40):
 def test_help_lists_every_command():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("fetch", "score", "reference"):
+    for command in ("fetch", "score", "reference", "baseline"):
         assert command in result.stdout
 
 
