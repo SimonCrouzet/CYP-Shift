@@ -40,6 +40,17 @@ CYP3A4 additionally contacts residues 53 to 76, upstream of every band the other
 This is not an artefact: Zawaira's expanded map (Curr Drug Metab 2011) adds SRS1a and
 SRS1b ahead of Gotoh's SRS1 for exactly this reason, raising coverage from 16% to 33%
 of the sequence, and it fits CYP3A4's much larger cavity.
+
+The bands are the observed contact spans widened by four residues on each side. That
+puts them across 30% of the chain, against Gotoh's 16% for the original six segments
+and Zawaira's 33% for the expanded map -- an independent measurement from four
+structures landing where the published map says it should.
+
+**A structure is needed to find the bands, not to use them.** Because a band is an
+offset from the heme loop and :func:`cypshift.data.motifs.scan` locates that loop in
+any P450 sequence, the binding site can be read off a bare sequence once the offsets
+are known. :func:`region_sequences` does that, which is what lets an auxiliary enzyme
+with no co-crystal still be described and compared.
 """
 
 import logging
@@ -50,7 +61,7 @@ from numpy.typing import NDArray
 
 from cypshift.data.motifs import scan
 from cypshift.data.pocket import PocketComposition
-from cypshift.data.zscales import residue_zscales
+from cypshift.data.zscales import residue_zscales, sequence_zscales
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +89,13 @@ class Region:
 #: Bands are the measured ranges widened by a margin, since other CYP families vary
 #: more than the four these were calibrated on.
 REGIONS: tuple[Region, ...] = (
-    Region("SRS1a", 346, 400, "beta1 sheet and A helix; only CYP3A4 reaches this far"),
-    Region("SRS1", 300, 345, "B' helix and the B'-C loop"),
-    Region("SRS2", 200, 245, "C-terminal end of helix F"),
-    Region("SRS3", 175, 199, "N-terminal region of helix G"),
-    Region("SRS4", 110, 165, "central helix I, the groove directly above the heme"),
-    Region("SRS5", 45, 85, "beta1-4 strand, downstream of the ExxR motif"),
-    Region("SRS6", -60, -30, "beta4 hairpin, C-terminal to the heme loop"),
+    Region("SRS1a", 355, 386, "beta1 sheet and A helix; only CYP3A4 reaches this far"),
+    Region("SRS1", 310, 338, "B' helix and the B'-C loop"),
+    Region("SRS2", 207, 232, "C-terminal end of helix F"),
+    Region("SRS3", 184, 199, "N-terminal region of helix G"),
+    Region("SRS4", 122, 143, "central helix I, the groove directly above the heme"),
+    Region("SRS5", 57, 73, "beta1-4 strand, downstream of the ExxR motif"),
+    Region("SRS6", -51, -42, "beta4 hairpin, C-terminal to the heme loop"),
 )
 
 REGION_NAMES = tuple(region.name for region in REGIONS)
@@ -138,6 +149,60 @@ def assign_regions(pocket: PocketComposition, sequence: str) -> dict[str, tuple[
     if unassigned:
         logger.info("%s: %d contacts fell outside every region", pocket.pdb_id, unassigned)
     return {name: tuple(residues) for name, residues in grouped.items()}
+
+
+def region_sequences(sequence: str) -> dict[str, str]:
+    """The binding-site subsequence of each recognition site, from sequence alone.
+
+    No structure is involved. The bands were found using four co-crystals, but a band
+    is an offset from the heme loop, and :func:`cypshift.data.motifs.scan` locates that
+    loop in any P450 sequence -- so an auxiliary enzyme with no solved structure can
+    still have its binding site read off.
+
+    Returns:
+        Subsequence per region name, in N-to-C order. A region running off either end
+        of the sequence is truncated to what exists.
+
+    Raises:
+        ValueError: If the sequence carries no heme-binding loop to anchor on.
+    """
+    anchor = scan(sequence).heme_loop
+    if anchor is None:
+        raise ValueError("sequence has no heme-binding loop to anchor regions on")
+    position = anchor + 1
+    extracted: dict[str, str] = {}
+    for region in REGIONS:
+        start = max(position - region.high - 1, 0)
+        stop = min(position - region.low, len(sequence))
+        if start < stop:
+            extracted[region.name] = sequence[start:stop]
+    return extracted
+
+
+def binding_site(sequence: str) -> str:
+    """Every recognition site concatenated, N to C.
+
+    About 30% of the chain. This is the part worth comparing between enzymes: the
+    conserved scaffold is identical across the superfamily and contributes nothing to
+    a similarity that is meant to predict shared ligand preference.
+    """
+    return "".join(region_sequences(sequence).values())
+
+
+def srs_descriptor_from_sequence(sequence: str) -> NDArray[np.float32]:
+    """Mean Z-scales per recognition site, needing no structure.
+
+    The counterpart to :func:`srs_descriptor`. It averages over the whole band rather
+    than over the residues a ligand was seen to touch, so it is the blunter of the two
+    -- but it is defined for every enzyme, which is what pretraining on auxiliaries
+    requires.
+    """
+    extracted = region_sequences(sequence)
+    blocks = []
+    for region in REGIONS:
+        table = sequence_zscales(extracted.get(region.name, ""))
+        blocks.append(table.mean(axis=0) if len(table) else np.zeros(3))
+    return np.concatenate(blocks).astype(np.float32)
 
 
 def srs_descriptor(pocket: PocketComposition, sequence: str) -> NDArray[np.float32]:

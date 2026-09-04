@@ -36,6 +36,7 @@ parameters:
       - [curated]
       - [curated, zscales]
       - [curated, srs]
+      - [curated, site]
       - [ctd]
       - [curated, pocket, srs]
 

@@ -55,6 +55,33 @@ ZSCALES: dict[str, tuple[float, float, float]] = {
     "VAL": (-2.59, -2.64, -1.54),
 }
 
+#: Three-letter to one-letter, so structures (which use three) and sequences (which
+#: use one) can be scored against the same table.
+THREE_TO_ONE = {
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
+}
+
+ZSCALES_BY_LETTER = {THREE_TO_ONE[name]: value for name, value in ZSCALES.items()}
+
 ZSCALE_DESCRIPTOR_NAMES = (
     "zscale_1_mean",
     "zscale_2_mean",
@@ -75,6 +102,12 @@ def residue_zscales(residues: tuple[str, ...]) -> NDArray[np.float64]:
     known = [ZSCALES[r] for r in residues if r in ZSCALES]
     if len(known) < len(residues):
         logger.info("skipped %d non-standard residues", len(residues) - len(known))
+    return np.array(known, dtype=np.float64).reshape(-1, 3)
+
+
+def sequence_zscales(sequence: str) -> NDArray[np.float64]:
+    """Z-scales for a one-letter sequence, skipping non-standard residues."""
+    known = [ZSCALES_BY_LETTER[r] for r in sequence if r in ZSCALES_BY_LETTER]
     return np.array(known, dtype=np.float64).reshape(-1, 3)
 
 

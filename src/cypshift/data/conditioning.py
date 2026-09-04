@@ -10,7 +10,8 @@ source        dims   needs          what it encodes
 ``curated``   9      nothing        the hand-written table, one citation each
 ``pocket``    8      a structure    residue counts and fractions
 ``zscales``   6      a structure    Z-scales pooled over all contacts
-``srs``       21     both           Z-scales per substrate recognition site
+``srs``       21     both           Z-scales per site, over ligand contacts
+``site``      21     a sequence     Z-scales per site, over the whole band
 ``ctd``       42     a sequence     the published CYP PCM descriptors
 ============  =====  =============  ==========================================
 
@@ -21,10 +22,18 @@ disguise -- it fits, and no validation curve reveals the difference.
 source above ``curated`` should earn its width there before being switched on.
 
 The sources also differ in reach, which matters because pretraining on auxiliary
-enzymes is the point of describing an enzyme at all. ``ctd`` and ``curated`` need only
-a UniProt accession or a table row, so they cover every registered enzyme. The
-structure-derived three cover the four scored enzymes, since the auxiliaries have no
-comparable co-crystal here.
+enzymes is the point of describing an enzyme at all. ``curated``, ``ctd`` and ``site``
+need only a table row or a UniProt accession, so they cover every registered enzyme.
+``pocket``, ``zscales`` and ``srs`` cover the four scored enzymes, since the
+auxiliaries have no comparable co-crystal here.
+
+``site`` and ``srs`` are the same encoding computed two ways, and the pair is worth
+understanding. ``srs`` averages over the residues a ligand was actually seen to touch,
+which is sharper but needs a co-crystal. ``site`` averages over the whole band, which
+is blunter -- it includes residues facing away from the cavity -- but is defined for
+any P450 sequence. Structures were needed to find where the bands are; they are not
+needed to use them. So an auxiliary enzyme can be described and pretrained on without
+one, which is the whole reason for describing an enzyme rather than indexing it.
 """
 
 import logging
@@ -41,14 +50,18 @@ from cypshift.data.pocket import (
     fetch_structure,
 )
 from cypshift.data.sequences import sequence_for
-from cypshift.data.srs import SRS_DESCRIPTOR_NAMES, srs_descriptor
+from cypshift.data.srs import (
+    SRS_DESCRIPTOR_NAMES,
+    srs_descriptor,
+    srs_descriptor_from_sequence,
+)
 from cypshift.data.zscales import ZSCALE_DESCRIPTOR_NAMES
 
 logger = logging.getLogger(__name__)
 
 #: Selectable sources, ordered narrowest first. ``curated`` is the default because it
 #: is the only one whose every dimension was chosen for a stated reason.
-DESCRIPTOR_SOURCES = ("curated", "pocket", "zscales", "srs", "ctd")
+DESCRIPTOR_SOURCES = ("curated", "pocket", "zscales", "srs", "site", "ctd")
 
 #: Sources that cannot be computed without a co-crystal structure.
 STRUCTURAL_SOURCES = frozenset({"pocket", "zscales", "srs"})
@@ -65,6 +78,8 @@ def source_names(source: str) -> tuple[str, ...]:
             return ZSCALE_DESCRIPTOR_NAMES
         case "srs":
             return SRS_DESCRIPTOR_NAMES
+        case "site":
+            return tuple(name.replace("_zscale_", "_band_zscale_") for name in SRS_DESCRIPTOR_NAMES)
         case "ctd":
             return CTD_DESCRIPTOR_NAMES
         case _:
@@ -85,7 +100,7 @@ def covered_enzymes(sources: tuple[str, ...]) -> set[str]:
     covered = set(enzymes.ENZYMES)
     if STRUCTURAL_SOURCES & set(sources):
         covered &= set(STRUCTURES)
-    if "ctd" in sources:
+    if {"ctd", "site"} & set(sources):
         covered &= set(enzymes.ENZYMES) & _sequenced()
     return covered
 
@@ -125,6 +140,8 @@ def enzyme_descriptor(name: str, sources: tuple[str, ...] = ("curated",)) -> NDA
                 blocks.append(pocket.zscale_descriptor())
             case "srs":
                 blocks.append(srs_descriptor(pocket, sequence_for(name)))
+            case "site":
+                blocks.append(srs_descriptor_from_sequence(sequence_for(name)))
             case "ctd":
                 blocks.append(ctd_descriptor(sequence_for(name)))
 
