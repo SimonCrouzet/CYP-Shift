@@ -24,6 +24,9 @@ analysis = ["matplotlib>=3.8", "seaborn>=0.13"]
 track = ["wandb>=0.17"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
 
+[project.scripts]
+cypshift = "cypshift.cli:app"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/cypshift"]
 
