@@ -138,6 +138,21 @@ def descriptor(name: str, families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> ND
     return np.array(values, dtype=np.float32)
 
 
+def descriptor_names(families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> tuple[str, ...]:
+    """Column names the curated table contributes, in order.
+
+    Named per family and position rather than per attribute, because a family is free
+    to change how many values it emits without every caller needing to know.
+    """
+    reference = next(iter(ENZYMES.values()))
+    names: list[str] = []
+    for group in families:
+        if group not in DESCRIPTOR_FAMILIES:
+            raise ValueError(f"unknown descriptor family {group!r}")
+        names.extend(f"{group}_{index + 1}" for index in range(len(getattr(reference, group)())))
+    return tuple(names)
+
+
 def descriptor_width(families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> int:
     """Width of the descriptor a family selection produces."""
     return len(descriptor(next(iter(ENZYMES)), families))

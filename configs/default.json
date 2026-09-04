@@ -57,6 +57,9 @@
       "learning_rate": 0.001,
       "forward_passes": 30,
       "conditioning": "heads",
+      "descriptor_sources": [
+        "curated"
+      ],
       "screen_noise": 0.1
     }
   },

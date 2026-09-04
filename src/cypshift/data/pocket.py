@@ -37,6 +37,18 @@ from cypshift.data.zscales import ZSCALE_DESCRIPTOR_NAMES, pooled_zscales
 logger = logging.getLogger(__name__)
 
 RCSB_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+
+#: Holo structures, one per enzyme, chosen because the pocket is defined by what a
+#: bound ligand touches -- an apo structure has nothing to measure contacts against.
+#: This is why structure-derived descriptors cover only the four scored enzymes: the
+#: auxiliaries considered for pretraining have no comparable co-crystal here, so they
+#: fall back to the sequence-derived sources, which need only a UniProt accession.
+STRUCTURES: dict[str, str] = {
+    "CYP1A2": "2HI4",
+    "CYP2C9": "1R9O",
+    "CYP2D6": "4WNW",
+    "CYP3A4": "3NXU",
+}
 DEFAULT_STRUCTURE_DIR = Path("data/structures")
 
 #: Radius around the heme iron, in angstrom, within which a residue is taken to line

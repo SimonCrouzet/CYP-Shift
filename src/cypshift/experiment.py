@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("configs/default.json")
@@ -43,6 +45,9 @@ CONDITIONING_STRATEGIES = ("factorised", "metadata")
 #: describing the enzyme's pocket, which is less free per enzyme but lets an auxiliary
 #: enzyme's data improve the scored ones. Which wins is measured, not assumed.
 CURVE_CONDITIONING = ("heads", "descriptor")
+
+#: Re-exported so a config can be validated without importing the data package.
+DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES
 
 MULTIFIDELITY_STRATEGIES = ("none", "extra_rows", "predicted_label", "embedding")
 
@@ -111,8 +116,13 @@ class CurveConfig:
     batch_size: int = 256
     learning_rate: float = 1e-3
     forward_passes: int = 30
-    #: ``heads`` or ``descriptor``; see :data:`CONDITIONING_STRATEGIES`.
+    #: ``heads`` or ``descriptor``; see :data:`CURVE_CONDITIONING`.
     conditioning: str = "heads"
+    #: Which descriptor sources build the vector when ``conditioning`` is
+    #: ``descriptor``; see :data:`cypshift.data.conditioning.DESCRIPTOR_SOURCES`.
+    #: Defaults to the curated table alone, since eight enzymes will not support a
+    #: wide vector without leave-one-target-out evidence that it transfers.
+    descriptor_sources: tuple[str, ...] = ("curated",)
     #: Half-width of the interval placed around a single-well screen reading, as an
     #: inhibited fraction. One measurement with no replicate does not support a tight
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
@@ -163,6 +173,10 @@ class ExperimentConfig:
         checks = [
             (self.conditioning.strategy, CONDITIONING_STRATEGIES, "conditioning.strategy"),
             (self.model.curve.conditioning, CURVE_CONDITIONING, "model.curve.conditioning"),
+            *(
+                (source, DESCRIPTOR_SOURCES, "model.curve.descriptor_sources")
+                for source in self.model.curve.descriptor_sources
+            ),
             (self.multifidelity.strategy, MULTIFIDELITY_STRATEGIES, "multifidelity.strategy"),
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),

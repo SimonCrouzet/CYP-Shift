@@ -24,6 +24,21 @@ parameters:
   model.curve.conditioning:
     values: [heads, descriptor]
 
+  # Which sources build that pocket description. Eight enzymes means eight distinct
+  # vectors, so width is the risk: a descriptor wide enough to identify each enzyme is
+  # a one-hot index in disguise, and it fits just as well. The narrow selections come
+  # first for that reason, and cypshift.eval.transfer is what decides whether a wider
+  # one earns its dimensions. Selecting a structure-derived source (pocket, zscales,
+  # srs) restricts training to the four enzymes that have a co-crystal here; ctd and
+  # curated cover all nine, which is what pretraining on auxiliaries needs.
+  model.curve.descriptor_sources:
+    values:
+      - [curated]
+      - [curated, zscales]
+      - [curated, srs]
+      - [ctd]
+      - [curated, pocket, srs]
+
   # How the cheap single-concentration screen is combined with the dose-response
   # curves. A large multi-fidelity benchmark found "extra_rows" loses high-fidelity
   # signal when the cheap data dominates, and that feeding a screen-trained model's
