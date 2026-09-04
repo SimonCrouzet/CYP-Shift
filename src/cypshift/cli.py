@@ -14,6 +14,7 @@ from cypshift.data.splits import similarity_matched_holdout
 from cypshift.decision.band import BandWidthModel
 from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.decision.placement import place
+from cypshift.decision.selection import PlacementSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.models.ensemble import DiverseEnsembleRoute
@@ -149,6 +150,7 @@ def baseline(
 
     raw = route.predict(evaluation["SMILES"].tolist())
     calibrated = calibrator.apply(raw)
+    calibration_prediction = calibrator.apply(route.predict(calibration["SMILES"].tolist()))
 
     band_models = {
         endpoint: BandWidthModel.fit(
@@ -173,10 +175,20 @@ def baseline(
         print(f"\n=== predictive distribution, {label} ===")
         print(diagnostics.round(3).to_string())
 
+    # Whether placement helps is decided on the calibration half and applied to the
+    # evaluation half, never chosen on the compounds it is then scored against.
+    selector = PlacementSelector.fit(
+        place(calibration_prediction, band_models, seed=seed),
+        calibration_prediction.mean,
+        calibration,
+    )
+    placed_calibrated = place(calibrated, band_models, seed=seed)
+
     candidates = {
         "posterior mean": raw.mean,
         "placement, raw spread": place(raw, band_models, seed=seed),
-        "placement, calibrated spread": place(calibrated, band_models, seed=seed),
+        "placement, calibrated spread": placed_calibrated,
+        "placement, selected endpoints": selector.apply(placed_calibrated, raw.mean),
     }
     submissions = {}
     for label, values in candidates.items():
