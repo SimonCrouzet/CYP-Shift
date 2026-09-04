@@ -40,6 +40,9 @@ ignore = ["ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN"]
+# Vendored verbatim from the challenge's own scorer; reformatting would break the
+# claim that it is an unmodified copy.
+"tests/reference/*" = ["ALL"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
