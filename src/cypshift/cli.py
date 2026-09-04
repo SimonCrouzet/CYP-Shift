@@ -19,6 +19,7 @@ from cypshift.decision.point_estimate import choose_estimates
 from cypshift.decision.selection import EstimatorSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
+from cypshift.models.boosted import BoostedTrees
 from cypshift.models.ensemble import PerTargetEnsemble
 from cypshift.models.forest import PerTargetForest
 from cypshift.models.neural import OBJECTIVES, NeuralNetwork
@@ -238,6 +239,7 @@ def loss_ablation(
     directory: Path = DEFAULT_DATA_DIR,
     holdout_fraction: float = 0.2,
     with_screen: Annotated[bool, typer.Option(help="Add screen pseudo-labels.")] = True,
+    learner: Annotated[str, typer.Option(help="boosted or neural.")] = "boosted",
     epochs: int = 60,
     seed: int = 0,
     mask_path: Annotated[Path | None, typer.Option(help="Cache for the holdout mask.")] = None,
@@ -278,7 +280,11 @@ def loss_ablation(
     submissions = {}
     for objective in OBJECTIVES:
         logger.info("training with the %s objective", objective)
-        model = NeuralNetwork(loss=objective, epochs=epochs, seed=seed).fit(observations)
+        model = (
+            BoostedTrees(loss=objective, seed=seed)
+            if learner == "boosted"
+            else NeuralNetwork(loss=objective, epochs=epochs, seed=seed)
+        ).fit(observations)
         predicted = model.predict(evaluation["SMILES"].tolist()).mean
         frame = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
