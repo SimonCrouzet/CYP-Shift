@@ -189,7 +189,41 @@ constant mean predictor.
 | CYP2C9 | 0.831 | 0.538 | 0.194 | 0.479 |
 | **macro** | **0.768** | 0.606 | 0.297 | 0.553 |
 
-Read this as a floor, not as a leaderboard prediction. The holdout is deliberately
+### What the decision layer is worth so far
+
+The same predictions scored three ways on the evaluation half. Lower is better.
+
+| endpoint | posterior mean | placed, raw spread | placed, calibrated | gain |
+|---|---|---|---|---|
+| CYP3A4 | 0.638 | 0.603 | **0.589** | **+0.049** |
+| CYP1A2 | 0.775 | 0.777 | 0.775 | 0.000 |
+| CYP2D6 | 0.873 | 0.896 | 0.884 | −0.011 |
+| CYP2C9 | 0.798 | 0.918 | 0.824 | −0.026 |
+| **macro** | 0.771 | 0.798 | **0.768** | **+0.003** |
+
+Two things are established and one is not.
+
+**Placement trades the accuracy metrics for the scored one**, as designed. Mean
+absolute error and R² both worsen while ST-RAE improves. That is the same signature
+visible on the public leaderboard, where the entrant with the best mean absolute
+error of all 124 places seventh.
+
+**Its value tracks the quality of the posterior it optimises against.** On the raw
+spread it *loses* 0.027; conformally calibrated it gains 0.003. The mechanism is the
+one the theory predicts, and calibration is what turns a loss into a gain. The
+ensemble's raw spread was understating error by twelve to fifteen times, with
+nominal 90% intervals covering 4 to 10% of compounds.
+
+**But the gain is small and comes entirely from one endpoint.** CYP3A4 has the best
+model, R² 0.56, and contributes +0.049; the three weaker endpoints give some back.
+The reason is visible in the diagnostics: even after calibration the spread's rank
+correlation with realised error is 0.03 to 0.07. Conformal prediction fixes the
+*size* of an interval but cannot manufacture *ordering* that was never there, and a
+seeded ensemble has almost none — every member saw the same data and shares the same
+failure modes. A useful posterior has to come from architectural diversity or from
+an orthogonal route, which is the next thing to build.
+
+Read the baseline as a floor, not as a leaderboard prediction. The holdout is deliberately
 built to resemble the blinded test set, but it cannot reproduce the analog-series
 structure that makes the real test set easier, so the same model should score better
 there. Note also that the endpoint ordering differs from the public leaderboard,
