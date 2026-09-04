@@ -16,14 +16,14 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 | | |
 |---|---|
-| **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
-| **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
-| **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
-| **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
-| **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
-| **Ranked on** | macro-averaged soft-threshold relative absolute error |
-| **Submission limit** | 1 per 12 h, latest counts |
-| **Training data** | 4,905 dose-response · 17,504 single-concentration · 6,145 TDI |
+| 🎯 **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
+| 📈 **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
+| 🔀 **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
+| 🧊 **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
+| 🔬 **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
+| 📏 **Ranked on** | macro-averaged soft-threshold relative absolute error |
+| 🔁 **Submission limit** | 1 per 12 h, latest counts |
+| 📦 **Training data** | 4,905 dose-response · 17,504 single-concentration · 6,145 TDI |
 
 ### Timeline
 
@@ -241,7 +241,7 @@ hf auth whoami         # verify
 
 ## 🗺️ Roadmap
 
-### Blocking — cheap, and everything else depends on them
+### 🚧 Blocking — cheap, and everything else depends on them
 
 | | task | why it blocks |
 |---|---|---|
@@ -249,7 +249,7 @@ hf auth whoami         # verify
 | ⬜ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
 | ⬜ | Build and freeze a similarity-matched holdout | random-split CV is biased against the features that matter most |
 
-### The shared spine
+### 🔧 The shared spine
 
 | | task | notes |
 |---|---|---|
@@ -260,7 +260,7 @@ hf auth whoami         # verify
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
 | ⬜ | **Build the decision layer** | the piece worth being right about |
 
-### Structure work, if the blocking check clears it
+### 🧊 Structure work, if the blocking check clears it
 
 | | task | notes |
 |---|---|---|
@@ -269,17 +269,17 @@ hf auth whoami         # verify
 | ⬜ | Cross-route disagreement as epistemic uncertainty | a lower bar than beating a fingerprint on accuracy |
 | ⬜ | CYP2D6 as a dedicated project | it decides the macro average |
 
-### Open directions, not yet committed
+### 🔭 Open directions, not yet committed
 
 | direction | rationale |
 |---|---|
-| **Pocket-shape target selection** | CYP1B1 and CYP1A1 share CYP1A2's narrow planar slot — the cleanest available test of the criterion |
-| **Binding-motif target selection** | aromatase, CYP11B1/B2 and thromboxane-A synthase total 11,700 compounds saturated with heme-coordinating azoles |
-| **Adversarial pose sampling** | the affinity head scores one pose, in pockets known for multiple simultaneous occupancy |
-| **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
-| **Time-dependent inhibition** | the label is a deterministic function of two continuous quantities we already model |
+| 🧩 **Pocket-shape target selection** | CYP1B1 and CYP1A1 share CYP1A2's narrow planar slot — the cleanest available test of the criterion |
+| ⚗️ **Binding-motif target selection** | aromatase, CYP11B1/B2 and thromboxane-A synthase total 11,700 compounds saturated with heme-coordinating azoles |
+| 🎲 **Adversarial pose sampling** | the affinity head scores one pose, in pockets known for multiple simultaneous occupancy |
+| 🧊 **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
+| ⏱️ **Time-dependent inhibition** | the label is a deterministic function of two continuous quantities we already model |
 
-### Approaches evaluated and set aside
+### ⛔ Approaches evaluated and set aside
 
 | approach | why |
 |---|---|
