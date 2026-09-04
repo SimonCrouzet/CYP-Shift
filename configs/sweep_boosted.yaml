@@ -29,6 +29,15 @@ parameters:
   features.fingerprint_bits:
     values: [1024, 2048, 4096]
 
+  # The surrogate strategies belong here rather than in stage one, because they apply
+  # only to a model that predicts a scalar pIC50 and so cannot consume a response
+  # measurement directly. They fit a model to the screen and pass its output, or its
+  # hidden layer, in as input columns -- a way of using the cheap data without letting
+  # its 17,504 readings outvote 6,325 dose-response labels. The curve model needs none
+  # of this: the screen is already a point on the curve it predicts.
+  multifidelity.strategy:
+    values: [none, extra_rows, predicted_label, embedding]
+
   data.holdout_fraction:
     value: 0.2
 

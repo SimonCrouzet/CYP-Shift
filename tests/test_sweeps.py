@@ -79,3 +79,30 @@ class TestSweepFile:
         for body in spec["parameters"].values():
             grid *= len(body.get("values", [1]))
         assert grid <= 200, f"{path.name} has {grid} grid points; split it"
+
+
+@pytest.mark.parametrize("path", SWEEPS, ids=lambda p: p.name)
+def test_no_sweep_proposes_a_combination_the_pipeline_refuses(path: Path):
+    """Multi-fidelity strategies are not available to every model family: the curve
+    model reads the screen directly as a point on the curve, and the graph model has
+    no dense matrix to append a column to. A sweep pairing them would fail at run time
+    rather than at review time."""
+    from cypshift.pipeline import supported_multifidelity
+
+    spec = yaml.safe_load(path.read_text())
+    parameters = spec["parameters"]
+
+    def options(key: str, fallback: list) -> list:
+        body = parameters.get(key)
+        if body is None:
+            return fallback
+        return body.get("values", [body["value"]] if "value" in body else fallback)
+
+    kinds = options("model.kind", ["boosted", "neural", "graph", "curve"])
+    strategies = options("multifidelity.strategy", ["none"])
+    for kind in kinds:
+        for strategy in strategies:
+            assert strategy in supported_multifidelity(kind), (
+                f"{path.name} pairs model.kind={kind} with "
+                f"multifidelity.strategy={strategy}, which it does not support"
+            )

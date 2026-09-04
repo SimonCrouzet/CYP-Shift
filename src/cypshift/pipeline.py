@@ -93,6 +93,33 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
     raise ValueError(f"model.kind={kind!r} has no builder")
 
 
+def supported_multifidelity(kind: str) -> tuple[str, ...]:
+    """Which multi-fidelity strategies a model family can actually use.
+
+    The surrogate strategies fit a model to the screen and hand its output, or its
+    hidden layer, to the real model as an input column. That is a way of using a cheap
+    measurement when the model cannot consume the measurement itself, and two families
+    do not need it:
+
+    ``curve``
+        The screen is a reading of inhibition at 4.95e-5 M, which is a point on the very
+        curve this model predicts. It enters through ``extra_rows`` as an observation in
+        its own units, with no calibration and nothing fitted in between. Passing the
+        same readings through a surrogate instead would replace a direct measurement
+        with a prediction of it, which is strictly worse and was the reason for
+        modelling a curve in the first place.
+    ``graph``
+        Consumes molecular graphs rather than a dense feature matrix, so a surrogate
+        column has nowhere to go.
+
+    Refusing beats accepting the setting and quietly training without it, which would
+    report a comparison that never happened.
+    """
+    if kind in ("curve", "graph"):
+        return ("none", "extra_rows")
+    return MULTIFIDELITY_STRATEGIES
+
+
 def assemble_training_data(
     config: ExperimentConfig, retained: pd.DataFrame
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray] | None]:
@@ -104,13 +131,11 @@ def assemble_training_data(
     strategy = config.multifidelity.strategy
     if strategy not in MULTIFIDELITY_STRATEGIES:
         raise ValueError(f"unknown multi-fidelity strategy {strategy!r}")
-    # The graph model consumes molecular graphs, not the dense feature matrix, so a
-    # surrogate column has nowhere to go. Refusing beats accepting the setting and
-    # quietly training without it, which would report a comparison that never happened.
-    if strategy in SURROGATE_STRATEGIES and config.model.kind == "graph":
+    allowed = supported_multifidelity(config.model.kind)
+    if strategy not in allowed:
         raise ValueError(
-            f"multifidelity.strategy={strategy!r} needs a dense feature matrix, "
-            "which the graph model does not use; pair it with another model.kind"
+            f"multifidelity.strategy={strategy!r} is not available for "
+            f"model.kind={config.model.kind!r}; it supports {allowed}"
         )
 
     weights = SourceWeights(

@@ -34,12 +34,16 @@ parameters:
   conditioning.strategy:
     values: [factorised, metadata]
 
-  # How the cheap single-concentration screen is combined with the dose-response
-  # curves. A large multi-fidelity benchmark found "extra_rows" loses high-fidelity
-  # signal when the cheap data dominates, and that feeding a screen-trained model's
-  # output or embedding in as a feature wins instead.
+  # Whether the cheap single-concentration screen is used at all. Only the two
+  # strategies every model family supports are swept here, because what "extra_rows"
+  # means differs by family and the surrogate strategies do not apply to all of them.
+  # For the curve model the screen enters as what it measured -- inhibition at
+  # 4.95e-5 M, a point on the curve being predicted, with nothing fitted in between.
+  # For a model predicting a scalar pIC50 the same reading has to be calibrated onto
+  # that scale first. The surrogate strategies are swept in configs/sweep_boosted.yaml,
+  # where they apply.
   multifidelity.strategy:
-    values: [none, extra_rows, predicted_label, embedding]
+    values: [none, extra_rows]
   multifidelity.screen_weight:
     distribution: uniform
     min: 0.05

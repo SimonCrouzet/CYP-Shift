@@ -61,15 +61,26 @@ def test_an_unknown_strategy_says_so_rather_than_falling_back():
 
 
 @pytest.mark.parametrize("strategy", ["predicted_label", "embedding"])
-def test_a_surrogate_strategy_is_refused_for_the_graph_model(strategy):
-    """The graph model consumes molecular graphs, so a surrogate column has nowhere to
-    go. Accepting the setting and training without it would report a comparison that
-    never happened."""
+@pytest.mark.parametrize("kind", ["graph", "curve"])
+def test_a_surrogate_strategy_is_refused_where_it_makes_no_sense(kind, strategy):
+    """A surrogate predicts what the screen would have said, for a model that cannot
+    use the reading itself. The curve model can: the screen is inhibition at 4.95e-5 M,
+    a point on the curve it predicts, so substituting a prediction of a measurement we
+    hold would be strictly worse. The graph model has no dense matrix to append to."""
     config = ExperimentConfig()
     config.override("multifidelity.strategy", strategy)
-    config.override("model.kind", "graph")
-    with pytest.raises(ValueError, match="does not use"):
+    config.override("model.kind", kind)
+    with pytest.raises(ValueError, match="is not available for"):
         assemble_training_data(config, _retained())
+
+
+@pytest.mark.parametrize("kind", ["boosted", "neural"])
+def test_scalar_models_keep_the_surrogate_strategies(kind):
+    """They predict a pIC50 and so cannot consume a response measurement; the surrogate
+    is the only route the screen has into them."""
+    from cypshift.pipeline import supported_multifidelity
+
+    assert set(supported_multifidelity(kind)) >= {"predicted_label", "embedding"}
 
 
 def test_source_weights_reach_the_observation_table():
