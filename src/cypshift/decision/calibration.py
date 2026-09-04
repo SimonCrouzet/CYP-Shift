@@ -28,14 +28,17 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.stats import norm
 
 from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
 
-#: Floor on the predicted deviation before dividing, so a near-zero spread cannot
-#: produce an unbounded conformal score.
-DEFAULT_STD_FLOOR = 0.05
+#: The floor guarding against division by a near-zero spread is set as a low quantile
+#: of the observed spread rather than as an absolute constant. A fixed floor clamps
+#: every compound whenever a route is confident, which flattens the spread to a
+#: constant and destroys the per-compound ranking conformal is meant to preserve.
+DEFAULT_FLOOR_QUANTILE = 0.05
 
 
 @dataclass
@@ -43,8 +46,8 @@ class ConformalCalibrator:
     """Per-endpoint multipliers taking a predicted spread to its honest size."""
 
     multipliers: dict[str, float] = field(default_factory=dict)
+    floors: dict[str, float] = field(default_factory=dict)
     level: float = 0.90
-    std_floor: float = DEFAULT_STD_FLOOR
 
     @classmethod
     def fit(
@@ -52,7 +55,7 @@ class ConformalCalibrator:
         distribution: PredictiveDistribution,
         y_true: NDArray[np.float64],
         level: float = 0.90,
-        std_floor: float = DEFAULT_STD_FLOOR,
+        floor_quantile: float = DEFAULT_FLOOR_QUANTILE,
     ) -> "ConformalCalibrator":
         """Learn a multiplier per endpoint on data the route did not train on.
 
@@ -61,32 +64,41 @@ class ConformalCalibrator:
             y_true: Their measured values, shape ``(n_compounds, n_endpoints)``, NaN
                 where unmeasured.
             level: Nominal coverage the calibrated interval should achieve.
-            std_floor: Lower bound on the predicted deviation before dividing.
+            floor_quantile: Quantile of the observed spread used as the division floor.
 
         Raises:
             ValueError: If an endpoint has no measured calibration compound.
         """
         mean, std = distribution.mean, distribution.total_std
-        multipliers = {}
+        multipliers, floors = {}, {}
         for column, endpoint in enumerate(distribution.endpoints):
             measured = np.isfinite(y_true[:, column])
             if not measured.any():
                 raise ValueError(f"{endpoint}: no measured compounds to calibrate on")
+            observed_std = std[measured, column]
+            floor = float(max(np.quantile(observed_std, floor_quantile), 1e-6))
             residual = np.abs(y_true[measured, column] - mean[measured, column])
-            scores = residual / np.maximum(std[measured, column], std_floor)
+            scores = residual / np.maximum(observed_std, floor)
             n = len(scores)
             rank = min(int(np.ceil((n + 1) * level)), n)
             multipliers[endpoint] = float(np.sort(scores)[rank - 1])
+            floors[endpoint] = floor
             logger.info(
-                "%s: conformal multiplier %.1f from %d compounds",
+                "%s: conformal multiplier %.1f, floor %.3f, from %d compounds",
                 endpoint,
                 multipliers[endpoint],
+                floor,
                 n,
             )
-        return cls(multipliers, level, std_floor)
+        return cls(multipliers, floors, level)
 
     def apply(self, distribution: PredictiveDistribution) -> PredictiveDistribution:
         """Return a copy whose total spread is the calibrated one.
+
+        The conformal quantile is an interval *half-width* at the nominal level, not a
+        standard deviation, so it is divided by the corresponding normal quantile
+        before being used as one. Skipping that conversion inflates the interval by
+        the same factor and overshoots coverage.
 
         The shortfall is added as aleatoric variance, so the route's own sample shape
         is preserved and only the width changes.
@@ -96,7 +108,10 @@ class ConformalCalibrator:
             raise KeyError(f"no multiplier for {sorted(missing)}")
 
         multiplier = np.array([self.multipliers[e] for e in distribution.endpoints])
-        target_variance = (np.maximum(distribution.total_std, self.std_floor) * multiplier) ** 2
+        floor = np.array([self.floors[e] for e in distribution.endpoints])
+        z = norm.ppf(0.5 + self.level / 2)
+        half_width = np.maximum(distribution.total_std, floor) * multiplier
+        target_variance = (half_width / z) ** 2
         shortfall = np.clip(target_variance - distribution.epistemic_variance, 0.0, None)
         added = np.broadcast_to(shortfall, distribution.samples.shape).copy()
         if distribution.aleatoric_variance is not None:
