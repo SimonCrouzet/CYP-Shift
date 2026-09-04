@@ -31,6 +31,8 @@ import numpy as np
 import requests
 from numpy.typing import NDArray
 
+from cypshift.data.zscales import ZSCALE_DESCRIPTOR_NAMES, pooled_zscales
+
 logger = logging.getLogger(__name__)
 
 RCSB_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
@@ -81,6 +83,9 @@ POCKET_DESCRIPTOR_NAMES = (
     "mean_distance_to_iron",
 )
 
+#: Compositional descriptors followed by the Z-scale summary of the same residues.
+FULL_DESCRIPTOR_NAMES = POCKET_DESCRIPTOR_NAMES + ZSCALE_DESCRIPTOR_NAMES
+
 
 @dataclass(frozen=True)
 class PocketComposition:
@@ -92,6 +97,25 @@ class PocketComposition:
 
     def _fraction(self, group: frozenset[str]) -> float:
         return sum(r in group for r in self.residues) / max(len(self.residues), 1)
+
+    def zscale_descriptor(self) -> NDArray[np.float32]:
+        """Z-scale summary of the lining residues, from :mod:`cypshift.data.zscales`.
+
+        Complements :meth:`descriptor` rather than replacing it. The compositional
+        version counts residues by class; this one keeps the chemistry of each
+        identity, so Asp and Glu are no longer the same symbol.
+        """
+        return pooled_zscales(self.residues)
+
+    def full_descriptor(self) -> NDArray[np.float32]:
+        """Compositional and Z-scale descriptors concatenated.
+
+        Fourteen dimensions across eight enzymes, which is already generous: the
+        proteochemometrics benchmarks favour few dimensions, and a vector wide enough
+        to identify each enzyme is a one-hot index by another name. Prefer this only
+        with leave-one-target-out evidence that it transfers.
+        """
+        return np.concatenate([self.descriptor(), self.zscale_descriptor()])
 
     def descriptor(self) -> NDArray[np.float32]:
         """Fixed-length vector in the order of :data:`POCKET_DESCRIPTOR_NAMES`."""

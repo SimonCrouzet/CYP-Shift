@@ -145,12 +145,48 @@ That is what transfers: CYP2C9 and CYP2C19 are ~91% identical, so their descript
 nearly coincide and 14,492 auxiliary compounds pool into a scored endpoint. Adding an
 enzyme is a `register()` call, not an architecture change.
 
-Descriptors come from two places, and both are recorded: a curated table with the
-crystallographic paper cited per entry, and values computed from a structure by
-`cypshift.data.pocket`, which defines the pocket by **what a bound ligand touches**
-rather than by distance from the heme. That distinction was measured — a 10 Å shell
-around the iron averages the one anchoring residue away among ~38 others and gets the
-charges backwards.
+Descriptors come from three places, and all are recorded.
+
+| source | dims | what it encodes |
+|---|---|---|
+| `cypshift.data.enzymes` | 5 | curated table, crystallographic paper cited per entry |
+| `cypshift.data.pocket` | 8 | residue counts and fractions, computed from a PDB entry |
+| `cypshift.data.zscales` | 6 | Z-scales of the same residues — chemistry, not class counts |
+
+The pocket is defined by **what a bound ligand touches**, not by distance from the
+heme. That distinction was measured: a 10 Å shell around the iron averages the one
+anchoring residue away among ~38 others and gets the charges backwards.
+
+Counting residues by class discards which residue it was — Asp and Glu become the same
+symbol. **Z-scales** keep it, mapping each amino acid to three numbers from a principal
+component analysis of 26 measured properties (Sandberg 1998). Three dimensions is not
+an arbitrary truncation: van Westen benchmarked thirteen protein-descriptor sets for
+proteochemometrics and Z-scales(3) with a per-target average won, while the
+higher-dimensional sets came out worst.
+
+Conserved P450 motifs are deliberately **not** encoded. FxxGxxxCxG on the heme loop,
+ExxR in helix K and the I-helix oxygen-activation motif are invariant across the
+superfamily — which is what makes them good for recognising a P450 and useless for
+telling two apart. The variable regions are the substrate recognition sites (Gotoh
+1992), and the ligand-contact residues are largely drawn from them.
+
+Measured on the four scored enzymes, mean-pooled Z-scales put CYP3A4 furthest from
+every other (~1.0 against 0.5–0.9 among the rest), matching its promiscuous cavity.
+The known limit: pooling over 16–26 contacts dilutes a one- or two-residue anchor, so
+CYP2D6's Asp/Glu pair barely moves the mean. Net charge stays in the compositional
+block precisely because it does not average that away.
+
+### Proving a descriptor does anything
+
+With eight enzymes the model ever sees eight distinct conditioning vectors, so a
+descriptor wide enough to identify each one is a one-hot index wearing a costume —
+and no validation curve can tell the difference, because both fit.
+
+`cypshift.eval.transfer` is the test that can. Hold one enzyme out of training
+entirely: a one-hot has never seen that index and must fall back to the population
+mean, while a descriptor can do better *if and only if* it encodes something
+transferable. The gap between them is the effect. Without it, adding a pocket vector
+is unfalsifiable, which is why the descriptor set is kept narrow until it earns width.
 
 ---
 
@@ -452,6 +488,10 @@ replaced if the field turns out to have a name for it.
 | **conformal prediction** | rescaling an interval on held-out data so its coverage is honest | statistics |
 | **conditioning** | making a model's output depend on which isoform and assay a row came from | machine learning standard |
 | **one-hot encoding** | the current implementation of that conditioning; swappable for an embedding | machine learning standard |
+| **proteochemometrics** | modelling ligand and protein jointly, so one model spans several targets | field standard — van Westen, *J Cheminform* 2013;5:41 |
+| **Z-scales** | three principal components of 26 measured amino-acid properties | field standard — Sandberg, *J Med Chem* 1998;41:2481 |
+| **substrate recognition site** | the hypervariable CYP segments that set substrate specificity | field standard — Gotoh, *J Biol Chem* 1992;267:83 |
+| **leave-one-target-out** | holding one enzyme out of training entirely to test whether a descriptor transfers | machine learning standard |
 | **structure-free** | uses no 3D structure; the protein still enters as isoform identity | *plain description* |
 | **similarity-matched holdout** | a holdout whose nearest-neighbour similarity profile matches the test set's | *plain description* |
 
