@@ -144,6 +144,80 @@ def build_observations(
     return observations
 
 
+#: Scalar properties of each assay, so the encoding can describe the experiment rather
+#: than merely index it. A model given these can learn "preincubation" as one direction
+#: shared across every enzyme, instead of treating each (enzyme, condition) pair as an
+#: unrelated column.
+ASSAY_METADATA = {
+    #                          preincubated  dose_response  log10(top molar conc.)
+    "direct_inhibition_drc": (0.0, 1.0, -4.0),
+    "tdi_drc": (1.0, 1.0, -4.0),
+    "direct_inhibition_screen": (0.0, 0.0, float(np.log10(4.95e-5))),
+}
+N_METADATA_COLUMNS = 3
+
+
+def encode_conditions(
+    observations: pd.DataFrame,
+    strategy: str = "factorised",
+    targets: tuple[str, ...] = ISOFORMS,
+    assays: tuple[str, ...] = ASSAYS,
+) -> np.ndarray:
+    """Encode which target and assay each observation came from.
+
+    Args:
+        observations: Rows carrying ``target`` and ``assay`` columns.
+        strategy: ``flat`` gives one column per (target, assay) pair, sharing nothing
+            between conditions. ``factorised`` uses a target block and an assay block,
+            so a condition is one direction common to every enzyme. ``metadata``
+            extends that with scalar properties of the assay.
+        targets: Target vocabulary.
+        assays: Assay vocabulary.
+
+    Returns:
+        Shape ``(n_observations, n_columns)``.
+
+    Raises:
+        ValueError: On an unknown strategy, target or assay.
+    """
+    if strategy == "flat":
+        pairs = [(t, a) for t in targets for a in assays]
+        index = {pair: position for position, pair in enumerate(pairs)}
+        encoded = np.zeros((len(observations), len(pairs)), dtype=np.float32)
+        for row, (target, assay) in enumerate(
+            zip(observations["target"], observations["assay"], strict=True)
+        ):
+            if (target, assay) not in index:
+                raise ValueError(f"unrecognised pair {(target, assay)}")
+            encoded[row, index[(target, assay)]] = 1.0
+        return encoded
+    if strategy in ("factorised", "metadata"):
+        blocks = [one_hot_encode(observations, targets, assays)]
+        if strategy == "metadata":
+            blocks.append(
+                np.array(
+                    [ASSAY_METADATA[assay] for assay in observations["assay"]], dtype=np.float32
+                )
+            )
+        return np.hstack(blocks)
+    raise ValueError(f"unknown conditioning strategy {strategy!r}")
+
+
+def n_condition_columns(
+    strategy: str = "factorised",
+    targets: tuple[str, ...] = ISOFORMS,
+    assays: tuple[str, ...] = ASSAYS,
+) -> int:
+    """Width of the encoding a strategy produces, without building it."""
+    if strategy == "flat":
+        return len(targets) * len(assays)
+    if strategy == "factorised":
+        return len(targets) + len(assays)
+    if strategy == "metadata":
+        return len(targets) + len(assays) + N_METADATA_COLUMNS
+    raise ValueError(f"unknown conditioning strategy {strategy!r}")
+
+
 def one_hot_encode(
     observations: pd.DataFrame,
     targets: tuple[str, ...] = ISOFORMS,

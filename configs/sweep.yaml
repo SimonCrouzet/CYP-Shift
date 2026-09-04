@@ -1,0 +1,57 @@
+# Weights & Biases sweep over the choices the literature does not settle.
+#
+#   wandb sweep configs/sweep.yaml
+#   wandb agent <sweep-id>
+#
+# Bayesian rather than grid: the space is 4 x 3 x 3 x 3 in the categorical axes alone,
+# and a full grid would spend most of its budget on combinations that are already
+# clearly worse.
+program: scripts/run_experiment.py
+method: bayes
+metric:
+  name: holdout/MA_ST-RAE
+  goal: minimize
+
+parameters:
+  # How the assay condition enters the model. No head-to-head comparison exists in
+  # molecular property prediction, so this is measured rather than assumed.
+  conditioning.strategy:
+    values: [flat, factorised, metadata]
+
+  # How the cheap single-concentration screen is combined with the dose-response
+  # curves. A large multi-fidelity benchmark found "extra_rows" loses high-fidelity
+  # signal when the cheap data dominates, and that feeding a screen-trained model's
+  # output or embedding in as a feature wins instead.
+  multifidelity.strategy:
+    values: [none, extra_rows, predicted_label, embedding]
+  multifidelity.screen_weight:
+    distribution: uniform
+    min: 0.05
+    max: 1.0
+
+  model.kind:
+    values: [boosted, neural, graph]
+  model.objective:
+    values: [squared, absolute, soft_threshold]
+
+  model.boosted.num_leaves:
+    values: [31, 63, 127]
+  model.boosted.learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.2
+  model.boosted.n_estimators:
+    values: [300, 600, 1200]
+
+  features.fingerprint_bits:
+    values: [1024, 2048, 4096]
+
+  # Held fixed so runs stay comparable; the split is the measuring instrument.
+  data.seed:
+    value: 0
+  data.holdout_fraction:
+    value: 0.2
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
