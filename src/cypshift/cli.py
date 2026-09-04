@@ -285,18 +285,18 @@ def loss_ablation(
             frame[endpoint] = predicted[:, column]
         submissions[objective] = frame
 
-    summary = {
-        label: score_submission(frame, evaluation)["ST-RAE_mean"]
-        for label, frame in submissions.items()
-    }
-    print("\n=== ST-RAE, same network, only the objective differs ===")
-    print(pd.DataFrame(summary).round(4).to_string())
+    scored = {label: score_submission(frame, evaluation) for label, frame in submissions.items()}
+    for metric in [c for c in next(iter(scored.values())).columns if c.endswith("_mean")]:
+        table = pd.DataFrame({label: frame[metric] for label, frame in scored.items()})
+        print(f"\n=== {metric.removesuffix('_mean')}, by training objective ===")
+        print(table.round(4).to_string())
 
-    comparison = paired_difference(
-        submissions["soft_threshold"], submissions["squared"], evaluation
-    )
-    print("\n=== dead-zone minus squared error, paired ===")
-    print(comparison.round(4).to_string())
+    for objective in OBJECTIVES:
+        if objective == "squared":
+            continue
+        comparison = paired_difference(submissions[objective], submissions["squared"], evaluation)
+        print(f"\n=== ST-RAE: {objective} minus squared error, paired ===")
+        print(comparison.round(4).to_string())
 
 
 if __name__ == "__main__":
