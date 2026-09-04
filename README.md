@@ -482,6 +482,7 @@ hf auth whoami         # verify
 | ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
 | ✅ | Define the shared model interface | predictive distribution in, nothing else |
 | ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **MA-ST-RAE 0.768**, see below |
+| ✅ | **Use the single-concentration screen** | pooled as pseudo-labels: **+0.0304 macro on 3/3 splits**, now the default |
 | ⬜ | Swap in a Chemprop D-MPNN | the multi-task and pretraining path |
 | ⬜ | Auxiliary heads, measured one at a time | screen as censored bounds → Veith → ChEMBL, deduplicated |
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
