@@ -304,8 +304,12 @@ data/              inputs (gitignored)
 
 ```bash
 mamba env create -f environment.yml && mamba activate cypshift
-pip install -e ".[dev]"
+pip install -e ".[dev]"     # everything, including the deep-learning stack
 ```
+
+`dev` pulls in every runtime extra, so the full test suite runs. To install only what
+a given model needs, use the extras directly: the package alone gives the boosted
+model, and `.[nn]` adds the neural, graph and curve models.
 
 Gated HuggingFace assets need an authenticated account with access granted:
 

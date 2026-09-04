@@ -20,10 +20,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Runtime extras, so a user who only wants the boosted model need not install torch.
 nn = ["torch>=2.2", "chemprop>=2.3"]
 analysis = ["matplotlib>=3.8", "seaborn>=0.13"]
 track = ["wandb>=0.17"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
+
+# The developer install pulls in every runtime extra, because the test suite covers
+# all of them. A `dev` install that cannot collect the tests is not a dev install.
+dev = [
+    "cypshift[nn,analysis,track]",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 cypshift = "cypshift.cli:app"

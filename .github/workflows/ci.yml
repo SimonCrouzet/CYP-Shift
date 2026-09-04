@@ -16,10 +16,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # The optional deep-learning extra is installed deliberately: the suite covers
-      # the neural and graph models, and a green run that silently skipped them would
-      # be worse than no run at all.
-      - run: pip install -e ".[dev,nn]"
+      # `dev` pulls in every runtime extra, so the suite runs in full. A green run
+      # that silently skipped the neural models would be worse than a red one.
+      - run: pip install -e ".[dev]"
       - run: ruff check src tests scripts
       - run: ruff format --check src tests scripts
       - run: pytest
