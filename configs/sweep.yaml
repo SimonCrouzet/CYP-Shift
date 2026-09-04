@@ -1,11 +1,18 @@
-# Weights & Biases sweep over the choices the literature does not settle.
+# Stage 1: which model family and training objective, before tuning anything.
 #
 #   wandb sweep configs/sweep.yaml
-#   wandb agent <sweep-id>
 #
-# Bayesian rather than grid: the space is 4 x 3 x 3 x 3 in the categorical axes alone,
-# and a full grid would spend most of its budget on combinations that are already
-# clearly worse.
+# Three staged sweeps rather than one, because most parameters are conditional and a
+# joint sweep spends its budget on combinations that do not differ. model.boosted.*
+# means nothing when the model is the curve, and model.curve.* means nothing when it is
+# the boosted tree; sweeping them together made 46,656 grid points, most of them
+# duplicates of each other under a different name.
+#
+#   1. this file                        pick the family and objective       48 points
+#   2. configs/sweep_boosted.yaml       tune whichever family wins          18 points
+#   3. configs/sweep_conditioning.yaml  the conditioning questions          96 points
+#
+# Bayesian rather than grid throughout, so a stage need not exhaust its space.
 program: scripts/run_experiment.py
 method: bayes
 metric:
@@ -13,37 +20,19 @@ metric:
   goal: minimize
 
 parameters:
-  # How the assay condition enters the model. No head-to-head comparison exists in
-  # molecular property prediction, so this is measured rather than assumed.
+  model.kind:
+    values: [boosted, neural, graph, curve]
+
+  # Training on the ranked metric rather than on squared error. Worth 13x for the
+  # underfit neural network and nothing for boosted trees, where it measured -0.0026 at
+  # p=0.421 -- so this axis interacts with model.kind and belongs in the same stage.
+  model.objective:
+    values: [squared, absolute, soft_threshold]
+
+  # How the assay condition enters. No head-to-head comparison exists in molecular
+  # property prediction, so it is measured rather than assumed.
   conditioning.strategy:
     values: [factorised, metadata]
-
-  # For the curve model the condition is structural, so the choice is between one
-  # head per enzyme and one shared head given a description of the pocket. Only the
-  # second can pretrain on enzymes outside the scored set.
-  # "descriptor" concatenates the pocket vector, which a linear head reduces to a
-  # per-enzyme offset -- measured at standard deviation 0.0000 across molecules, so the
-  # enzyme shifts every compound by the same amount. "film" makes the descriptor scale
-  # the molecular representation instead, which is the cross-term the PCM literature
-  # points to. Whether the extra freedom pays is what the sweep is for.
-  model.curve.conditioning:
-    values: [heads, descriptor, film]
-
-  # Which sources build that pocket description. Eight enzymes means eight distinct
-  # vectors, so width is the risk: a descriptor wide enough to identify each enzyme is
-  # a one-hot index in disguise, and it fits just as well. The narrow selections come
-  # first for that reason, and cypshift.eval.transfer is what decides whether a wider
-  # one earns its dimensions. Selecting a structure-derived source (pocket, zscales,
-  # srs) restricts training to the four enzymes that have a co-crystal here; ctd and
-  # curated cover all nine, which is what pretraining on auxiliaries needs.
-  model.curve.descriptor_sources:
-    values:
-      - [curated]
-      - [curated, zscales]
-      - [curated, srs]
-      - [curated, site]
-      - [ctd]
-      - [curated, pocket, srs]
 
   # How the cheap single-concentration screen is combined with the dose-response
   # curves. A large multi-fidelity benchmark found "extra_rows" loses high-fidelity
@@ -56,48 +45,9 @@ parameters:
     min: 0.05
     max: 1.0
 
-  model.kind:
-    values: [boosted, neural, graph, curve]
-  model.objective:
-    values: [squared, absolute, soft_threshold]
-
-  model.boosted.num_leaves:
-    values: [31, 63, 127]
-  model.boosted.learning_rate:
-    distribution: log_uniform_values
-    min: 0.01
-    max: 0.2
-  model.boosted.n_estimators:
-    values: [300, 600, 1200]
-
-  features.fingerprint_bits:
-    values: [1024, 2048, 4096]
-
-  # Held fixed so runs stay comparable; the split is the measuring instrument.
-  data.seed:
-    value: 0
   data.holdout_fraction:
     value: 0.2
 
 early_terminate:
   type: hyperband
   min_iter: 3
-
-  # Which enzymes outside the scored four to train on. Distance is a mean Z-scale
-  # difference per aligned binding-site position, where two unrelated sites score 5.27
-  # and a conservative Leu-to-Ile swap scores 0.62. 1.5 admits seven human CYPs, 3.0
-  # admits seventeen. Note CYP2D6 has no relative at any of these: its nearest is
-  # CYP2B6 at 3.16, so it trains alone whatever is chosen here.
-  auxiliary.max_distance:
-    values: [1.0, 1.5, 3.0]
-
-  # How an admitted enzyme's weight falls off. "uniform" is the baseline that says
-  # distance weighting is doing nothing, and the one to beat.
-  auxiliary.weighting:
-    values: [uniform, inverse, exponential]
-
-  # Weight on the scored enzymes' own rows. Worth raising above 1: CYP2C19 alone brings
-  # about 17,000 Veith rows against roughly 6,000 dose-response labels across all four
-  # scored enzymes, so auxiliaries can decide the fit even after downweighting.
-  auxiliary.target_weight:
-    values: [1.0, 2.0, 5.0]

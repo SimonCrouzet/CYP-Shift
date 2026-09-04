@@ -1,0 +1,67 @@
+# Stage 2: the conditioning questions, on the curve model only.
+#
+#   wandb sweep configs/sweep_conditioning.yaml
+#
+# Split out of configs/sweep.yaml because these parameters are conditional on the curve
+# model and mean nothing for the others -- a joint sweep spends most of its budget on
+# combinations that differ only in values the run never reads. It also keeps the grid
+# legible: 3 x 4 x 2 x 2 x 2 = 96 points here, against 46,656 when everything was in one
+# file.
+#
+# A caution about what this sweep can and cannot settle. Holdout score rewards a model
+# that memorises which enzyme a row came from, and with eight enzymes a wide descriptor
+# does exactly that while scoring well. Whether a descriptor carries anything
+# transferable is decided by cypshift.eval.transfer, not here. Read this sweep for the
+# leaderboard and that for the science; where they disagree, the leave-one-target-out
+# result is the one about the descriptor.
+program: scripts/run_experiment.py
+method: bayes
+metric:
+  name: holdout/MA_ST-RAE
+  goal: minimize
+
+parameters:
+  model.kind:
+    value: curve
+
+  # heads is the baseline: one output head per enzyme and arm, no descriptor involved.
+  # descriptor concatenates a pocket vector, which a linear head reduces to a constant
+  # per-enzyme offset -- measured at standard deviation 0.0000 across molecules. film
+  # multiplies instead, so the enzyme can change how a molecular feature is used.
+  # Whether that freedom pays on real data is the open question; it is demonstrable
+  # only that concatenation cannot express it.
+  model.curve.conditioning:
+    values: [heads, descriptor, film]
+
+  # Narrowest first. Eight enzymes give eight distinct vectors, so a wide descriptor is
+  # a one-hot index in disguise and fits just as well.
+  model.curve.descriptor_sources:
+    values:
+      - [curated]
+      - [curated, zscales]
+      - [curated, srs]
+      - [ctd]
+
+  # 1.5 admits seven human CYPs, 3.0 admits seventeen at up to half the distance two
+  # unrelated binding sites score. CYP2D6 has no relative at either and trains alone.
+  auxiliary.max_distance:
+    values: [1.5, 3.0]
+
+  # uniform is the null hypothesis: distance weighting does nothing. Only the sharper
+  # of the two decay schemes is swept against it, since inverse and exponential
+  # differed by less than either differed from uniform.
+  auxiliary.weighting:
+    values: [uniform, exponential]
+
+  # CYP2C19 alone brings about 17,000 Veith rows against roughly 6,000 dose-response
+  # labels across all four scored enzymes, so auxiliaries can decide the fit even after
+  # downweighting.
+  auxiliary.target_weight:
+    values: [1.0, 5.0]
+
+  data.holdout_fraction:
+    value: 0.2
+
+early_terminate:
+  type: hyperband
+  min_iter: 3

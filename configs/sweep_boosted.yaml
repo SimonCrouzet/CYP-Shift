@@ -1,0 +1,37 @@
+# Stage 2: tune the boosted tree, which is the strongest model measured so far
+# (macro ST-RAE 0.6785 against 0.7533 for the next best).
+#
+#   wandb sweep configs/sweep_boosted.yaml
+#
+# Run this only after stage 1 says the boosted tree wins. If a different family wins,
+# tune that one instead -- these parameters are read by nobody else.
+program: scripts/run_experiment.py
+method: bayes
+metric:
+  name: holdout/MA_ST-RAE
+  goal: minimize
+
+parameters:
+  model.kind:
+    value: boosted
+
+  model.boosted.num_leaves:
+    values: [31, 63, 127]
+  model.boosted.n_estimators:
+    values: [400, 800, 1600]
+  model.boosted.learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.2
+
+  # Fingerprint width. Uniform scaling across a sparse fingerprint and a dense
+  # descriptor block was measured to cost 0.089, so the block scaler stays on.
+  features.fingerprint_bits:
+    values: [1024, 2048, 4096]
+
+  data.holdout_fraction:
+    value: 0.2
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
