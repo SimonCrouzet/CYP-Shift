@@ -35,6 +35,17 @@ ACCESSIONS: dict[str, str] = {
     "CYP1B1": "Q16678",
     "CYP2C8": "P10632",
     "CYP2B6": "P20813",
+    # Ranked as pretraining candidates by scripts/rank_pretraining_candidates.py.
+    # Kept even where public data is thin, because the ranking has to be able to say
+    # "similar but nothing to learn from" -- which is the answer for most of CYP3A4's
+    # close relatives.
+    "CYP3A5": "P20815",
+    "CYP3A7": "P24462",
+    "CYP3A43": "Q9HB55",
+    "CYP2C18": "P33260",
+    "CYP2E1": "P05181",
+    "CYP2A6": "P11509",
+    "CYP2J2": "P51589",
 }
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"

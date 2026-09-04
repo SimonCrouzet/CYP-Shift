@@ -114,6 +114,10 @@ register(Enzyme("CYP1A1", 375, False, False, True, False, 1, "family 1 planar sl
 register(Enzyme("CYP1B1", 375, False, False, True, False, 1, "family 1 planar slot"))
 register(Enzyme("CYP2C8", 1438, False, True, False, True, 2, "Schoch 2004, JBC 279:9497, PDB 1PQ2"))
 register(Enzyme("CYP2B6", 1600, False, False, False, True, 2, "Gay 2010, plastic cavity"))
+# CYP3A4's nearest relative that has any measured inhibition at all: binding-site
+# distance 0.94, against 0.72 for CYP3A7 and 1.30 for CYP3A43, which have five and two
+# ChEMBL IC50/Ki records between them.
+register(Enzyme("CYP3A5", 1386, False, False, False, True, 3, "84% identical to CYP3A4; PDB 5VEU"))
 
 
 def descriptor(name: str, families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> NDArray[np.float32]:
