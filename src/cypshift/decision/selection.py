@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
 #: Only near-unanimous effects survived the crossing: CYP3A4 at 100% and 99%,
 #: CYP1A2's rejection at 16% and 24%. Requiring near-unanimity is what separates a
 #: replicated effect from a large one.
-DEFAULT_P_VALUE_THRESHOLD = 0.95
+# 0.95 was the old win-rate form of this threshold; as a p-value the direction
+# inverts, and leaving the number alone would accept almost every endpoint.
+DEFAULT_P_VALUE_THRESHOLD = 0.05
 
 
 @dataclass
