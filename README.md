@@ -153,6 +153,7 @@ Descriptors come from three places, and all are recorded.
 | `cypshift.data.pocket` | 8 | residue counts and fractions, computed from a PDB entry |
 | `cypshift.data.zscales` | 6 | Z-scales of those residues — chemistry, not class counts |
 | `cypshift.data.srs` | 21 | the same Z-scales, **per recognition site** |
+| `cypshift.data.site` | 21 | the same, from sequence alone — covers all nine enzymes |
 | `cypshift.data.ctd` | 42 | the published CYP PCM descriptors, from sequence alone |
 
 The pocket is defined by **what a bound ligand touches**, not by distance from the
@@ -201,6 +202,40 @@ and separation rises **5.1× per dimension** over the pooled version (1.803 agai
 CYP3A4 also contacts residues 53–76, upstream of every band the others use. Not an
 artefact — Zawaira's expanded map adds SRS1a and SRS1b ahead of Gotoh's SRS1 for
 exactly this reason, and it fits CYP3A4's much larger cavity.
+
+**A structure is needed to find the bands, not to use them.** A band is an offset from
+the heme loop, and that loop is locatable in any P450 sequence — so once the offsets
+are known the binding site can be read straight off a sequence. That is what lets an
+auxiliary enzyme with no co-crystal still be described, which is the whole point of
+describing an enzyme rather than indexing it. The bands are the observed contact spans
+widened by four residues, covering **30% of the chain** against Zawaira's published
+33% — four structures measured independently landing on the published figure.
+
+### Comparing enzymes over the binding site
+
+Whole-chain identity is the wrong criterion for choosing what to pretrain on. Two P450s
+share an invariant scaffold that inflates any global similarity without saying whether
+they prefer the same ligands. `cypshift.data.site` compares only the recognition sites,
+and takes an arbitrary pattern, so a hypothesis can be checked directly rather than
+against a fixed list of signatures.
+
+Bands are fixed offsets, so sites are the same length and align by construction — but
+not quite. A single indel between the anchor and a band slides that band by one, and a
+strict comparison then calls two homologous regions unrelated. Measured on CYP1A2
+against CYP1A1: SRS4 is `VNLVNDIFGAGFDTVTTAISWS` against `IINIVLDLFGAGFDTVTTAISW`,
+plainly homologous and off by one, scored at **0.05**. Sliding each band to its best
+offset recovers it to **0.81**, and changes nothing for CYP2C9 against CYP2C19, which
+needs no shift anywhere.
+
+| target | closest | next | reads as |
+|---|---|---|---|
+| CYP1A2 | **CYP1A1** 0.87 | CYP1B1 2.36 | family 1 recovered |
+| CYP2C9 | **CYP2C19** 0.53 | CYP2C8 1.28 | subfamily 2C recovered |
+| CYP2D6 | CYP2B6 3.16 | CYP2C8 3.18 | no close relative — correct |
+| CYP3A4 | CYP2C8 3.96 | CYP2B6 4.01 | no close relative — correct |
+
+The shifts a pair needs are themselves diagnostic: consistent shifts mean one indel,
+scattered ones mean the bands are not lining up and the summary number is not safe.
 
 ### Reusing the published model's descriptors
 
