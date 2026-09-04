@@ -175,6 +175,30 @@ itself, ~91% identical, same pocket.
 
 ---
 
+## 📈 Measured so far
+
+Ligand-only ensemble, untuned, scored with the official metric on the
+similarity-matched holdout (491 compounds). Lower ST-RAE is better; 1.0 is the
+constant mean predictor.
+
+| endpoint | ST-RAE | MAE | R² | Spearman ρ |
+|---|---|---|---|---|
+| CYP3A4 | **0.607** | 0.543 | 0.558 | 0.721 |
+| CYP2D6 | 0.806 | 0.614 | 0.224 | 0.556 |
+| CYP1A2 | 0.827 | 0.728 | 0.212 | 0.456 |
+| CYP2C9 | 0.831 | 0.538 | 0.194 | 0.479 |
+| **macro** | **0.768** | 0.606 | 0.297 | 0.553 |
+
+Read this as a floor, not as a leaderboard prediction. The holdout is deliberately
+built to resemble the blinded test set, but it cannot reproduce the analog-series
+structure that makes the real test set easier, so the same model should score better
+there. Note also that the endpoint ordering differs from the public leaderboard,
+where CYP2C9 is the *easiest* endpoint and CYP2D6 the hardest. That difference is
+itself informative: it says CYP2C9 benefits most from the test set's local analog
+structure, which a holdout drawn from a diversity library cannot supply.
+
+---
+
 ## 📊 The isoforms are not equally hard
 
 Five-fold cross-validated R² on the challenge training data, random split:
@@ -246,16 +270,17 @@ hf auth whoami         # verify
 | | task | why it blocks |
 |---|---|---|
 | ⬜ | Verify whether AQAffinity replicates the Boltz-2 heme mask | decides whether routes B and C are redundant |
-| ⬜ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
-| ⬜ | Build and freeze a similarity-matched holdout | random-split CV is biased against the features that matter most |
+| ✅ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
+| ✅ | Build and freeze a similarity-matched holdout | closes 87% of the gap a random split leaves |
 
 ### 🔧 The shared spine
 
 | | task | notes |
 |---|---|---|
-| ⬜ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
-| ⬜ | Define the route interface | predictive distribution in, nothing else |
-| ⬜ | Route A baseline: D-MPNN multi-task + fingerprint control | establishes the floor and the submission plumbing |
+| ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
+| ✅ | Define the route interface | predictive distribution in, nothing else |
+| ✅ | Route A baseline: fingerprint and descriptor ensemble | **MA-ST-RAE 0.768**, see below |
+| ⬜ | Route A: swap in a Chemprop D-MPNN | the multi-task and pretraining path |
 | ⬜ | Auxiliary heads, measured one at a time | screen as censored bounds → Veith → ChEMBL, deduplicated |
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
 | ⬜ | **Build the decision layer** | the piece worth being right about |
