@@ -12,9 +12,11 @@ from cypshift.models.curve import (
     EMAX,
     EMAX_OFFSET,
     HILL,
+    N_PARAMETERS,
     PIC50,
     SCREEN_PC,
     CurveModel,
+    CurveNetwork,
     inhibition_at,
 )
 
@@ -241,3 +243,52 @@ def test_descriptor_conditioning_needs_descriptors():
 
     with pytest.raises(ValueError, match="needs one descriptor row"):
         CurveNetwork(n_features=8, n_targets=4, conditioning="descriptor")
+
+
+class TestFilmConditioning:
+    """FiLM exists because concatenating a descriptor into a linear head cannot express
+    an interaction between the enzyme and the molecule."""
+
+    @staticmethod
+    def _network(mode: str, seed: int = 0) -> CurveNetwork:
+        torch.manual_seed(seed)
+        descriptors = torch.randn(4, 6)
+        return CurveNetwork(32, 4, conditioning=mode, descriptors=descriptors)
+
+    def test_film_produces_the_expected_shape(self):
+        output = self._network("film")(torch.randn(8, 32))
+        assert output.shape == (8, 4, 2, N_PARAMETERS)
+
+    def test_film_needs_descriptors(self):
+        with pytest.raises(ValueError, match="needs one descriptor row"):
+            CurveNetwork(32, 4, conditioning="film")
+
+    def test_unknown_conditioning_is_refused(self):
+        with pytest.raises(ValueError, match="unknown conditioning"):
+            CurveNetwork(32, 4, conditioning="attention", descriptors=torch.randn(4, 6))
+
+    def test_film_starts_as_the_identity(self):
+        """Initialised to emit no scale and no shift, so training begins from the
+        unconditioned model rather than from noise in every feature."""
+        network = self._network("film")
+        with torch.no_grad():
+            output = network(torch.randn(8, 32))
+        # every enzyme and arm sees the same unmodulated representation at init
+        assert torch.allclose(output[:, 0, 0], output[:, 1, 1], atol=1e-6)
+
+    def test_concatenating_a_descriptor_only_shifts_every_molecule_alike(self):
+        """The limitation FiLM exists to fix: with a linear head the enzyme term does
+        not involve the molecule, so the difference between two enzymes is constant."""
+        network = self._network("descriptor")
+        with torch.no_grad():
+            output = network(torch.randn(64, 32))
+        difference = output[:, 0, 0, PIC50] - output[:, 1, 0, PIC50]
+        assert difference.std() == pytest.approx(0.0, abs=1e-6)
+
+    def test_film_lets_the_enzyme_difference_depend_on_the_molecule(self):
+        network = self._network("film")
+        torch.nn.init.normal_(network.modulation.weight, std=0.3)
+        with torch.no_grad():
+            output = network(torch.randn(64, 32))
+        difference = output[:, 0, 0, PIC50] - output[:, 1, 0, PIC50]
+        assert difference.std() > 1e-3

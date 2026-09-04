@@ -44,7 +44,7 @@ CONDITIONING_STRATEGIES = ("factorised", "metadata")
 #: discarded and nothing pretrains. ``descriptor`` uses one shared head given a vector
 #: describing the enzyme's pocket, which is less free per enzyme but lets an auxiliary
 #: enzyme's data improve the scored ones. Which wins is measured, not assumed.
-CURVE_CONDITIONING = ("heads", "descriptor")
+CURVE_CONDITIONING = ("heads", "descriptor", "film")
 
 #: Re-exported so a config can be validated without importing the data package.
 DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES

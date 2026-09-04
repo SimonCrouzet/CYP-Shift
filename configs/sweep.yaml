@@ -21,8 +21,13 @@ parameters:
   # For the curve model the condition is structural, so the choice is between one
   # head per enzyme and one shared head given a description of the pocket. Only the
   # second can pretrain on enzymes outside the scored set.
+  # "descriptor" concatenates the pocket vector, which a linear head reduces to a
+  # per-enzyme offset -- measured at standard deviation 0.0000 across molecules, so the
+  # enzyme shifts every compound by the same amount. "film" makes the descriptor scale
+  # the molecular representation instead, which is the cross-term the PCM literature
+  # points to. Whether the extra freedom pays is what the sweep is for.
   model.curve.conditioning:
-    values: [heads, descriptor]
+    values: [heads, descriptor, film]
 
   # Which sources build that pocket description. Eight enzymes means eight distinct
   # vectors, so width is the risk: a descriptor wide enough to identify each enzyme is

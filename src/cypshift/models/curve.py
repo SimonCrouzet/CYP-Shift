@@ -49,6 +49,12 @@ SCREEN_PC = 4.305
 #: Arms. Each is its own curve, not a displacement of the other.
 ARMS = ("direct", "preincubated")
 
+#: How the network is made to depend on which enzyme and arm a row came from.
+CONDITIONING = ("heads", "descriptor", "film")
+
+#: The strategies needing a descriptor row per enzyme.
+DESCRIBED_CONDITIONING = frozenset({"descriptor", "film"})
+
 #: Offsets chosen so a raw output of zero gives the pharmacological default: a Hill
 #: slope of 1, which is simple mass-action binding, and near-complete maximal effect.
 #:
@@ -98,6 +104,25 @@ class CurveNetwork(nn.Module):
         enzyme, but it can learn transferable rules -- an acidic anchor prefers a basic
         ligand -- so an auxiliary enzyme's data improves the scored ones. This is what
         makes pretraining across enzymes possible.
+
+    ``film``
+        The same descriptor, but multiplying the molecular representation instead of
+        being concatenated to it.
+
+    The difference between the last two decides whether conditioning can express
+    anything interesting, and it is easy to miss. Concatenating into a linear head
+    computes ``W1 @ shared + W2 @ described``: the enzyme term does not involve the
+    molecule at all, so the whole effect of knowing which enzyme it is amounts to a
+    constant offset on the curve parameters. It cannot say that an acid helps at CYP2C9
+    and hurts at CYP2D6, because that is a statement about an interaction.
+
+    Feature-wise linear modulation (Perez et al., AAAI 2018) makes the descriptor
+    produce a scale and a shift applied to the shared representation, so the enzyme
+    multiplies the molecular features. That product is the cross-term the
+    proteochemometrics literature identifies as where transfer signal actually lives
+    (Qiu et al., Brief Bioinform 2017;18:125). The modulation is initialised to the
+    identity, so training starts from exactly the unconditioned model and has to earn
+    any departure from it.
     """
 
     def __init__(
@@ -111,10 +136,12 @@ class CurveNetwork(nn.Module):
         descriptors: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
-        if conditioning not in ("heads", "descriptor"):
-            raise ValueError(f"unknown conditioning {conditioning!r}; expected heads or descriptor")
-        if conditioning == "descriptor" and descriptors is None:
-            raise ValueError("descriptor conditioning needs one descriptor row per enzyme")
+        if conditioning not in CONDITIONING:
+            raise ValueError(
+                f"unknown conditioning {conditioning!r}; expected one of {CONDITIONING}"
+            )
+        if conditioning in DESCRIBED_CONDITIONING and descriptors is None:
+            raise ValueError(f"{conditioning} conditioning needs one descriptor row per enzyme")
 
         self.n_targets, self.n_arms, self.conditioning = n_targets, n_arms, conditioning
         self.trunk = nn.Sequential(
@@ -125,13 +152,24 @@ class CurveNetwork(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
+        width = hidden // 2
         if conditioning == "heads":
             self.heads = nn.ModuleList(
-                [nn.Linear(hidden // 2, N_PARAMETERS) for _ in range(n_targets * n_arms)]
+                [nn.Linear(width, N_PARAMETERS) for _ in range(n_targets * n_arms)]
             )
+        elif conditioning == "descriptor":
+            self.register_buffer("descriptors", descriptors)
+            self.head = nn.Linear(width + descriptors.shape[1] + n_arms, N_PARAMETERS)
         else:
             self.register_buffer("descriptors", descriptors)
-            self.head = nn.Linear(hidden // 2 + descriptors.shape[1] + n_arms, N_PARAMETERS)
+            self.modulation = nn.Linear(descriptors.shape[1] + n_arms, 2 * width)
+            # Zeroed so the layer emits no scale and no shift at the start. With the
+            # +1 in forward() that makes the modulation the identity, so training
+            # begins from the unconditioned model rather than from noise injected into
+            # every feature.
+            nn.init.zeros_(self.modulation.weight)
+            nn.init.zeros_(self.modulation.bias)
+            self.head = nn.Linear(width, N_PARAMETERS)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Returns ``(batch, n_targets, n_arms, 3)``."""
@@ -140,15 +178,19 @@ class CurveNetwork(nn.Module):
             stacked = torch.stack([head(shared) for head in self.heads], dim=1)
             return stacked.view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
 
-        # One shared head, evaluated once per (enzyme, arm) with that combination's
-        # descriptor appended.
+        # One shared head, evaluated once per (enzyme, arm).
         outputs = []
         for target in range(self.n_targets):
             for arm in range(self.n_arms):
                 arm_code = torch.zeros(len(shared), self.n_arms, device=shared.device)
                 arm_code[:, arm] = 1.0
                 described = self.descriptors[target].expand(len(shared), -1)
-                outputs.append(self.head(torch.cat([shared, described, arm_code], dim=1)))
+                condition = torch.cat([described, arm_code], dim=1)
+                if self.conditioning == "descriptor":
+                    outputs.append(self.head(torch.cat([shared, condition], dim=1)))
+                else:
+                    scale, shift = self.modulation(condition).chunk(2, dim=1)
+                    outputs.append(self.head((1.0 + scale) * shared + shift))
         return torch.stack(outputs, dim=1).view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
 
 
