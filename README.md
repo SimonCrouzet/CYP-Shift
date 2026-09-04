@@ -83,9 +83,9 @@ Lower is better. **1.0 means no better than predicting the mean.**
 
 ## 🏗️ Architecture
 
-Three routes behind one interface. Every route emits the same object — a
+Three models behind one interface. Every model emits the same object — a
 **predictive distribution over pIC50 per compound per isoform** — so the decision
-layer, the scoring harness and the submission writer are shared, and the routes stay
+layer, the scoring harness and the submission writer are shared, and the models stay
 swappable and combinable.
 
 ```mermaid
@@ -96,25 +96,25 @@ flowchart TD
     X[("External<br/>Veith · ChEMBL · CYP2C19")] -.pretraining only.-> A
     X -.-> B
 
-    A["<b>A · Ligand-only</b><br/>Chemprop D-MPNN<br/>multi-task, conditioned heads"]
-    B["<b>B · Co-folded affinity head</b><br/>Boltz-2 or AQAffinity<br/>structure-conditioned"]
-    C["<b>C · ML interaction potential</b><br/>ΔE on the cofolded pose<br/><i>sees the heme iron</i>"]
+    A["<b>Structure-free</b><br/>trees or a network over<br/>molecular features + context columns"]
+    B["<b>Co-folded affinity head</b><br/>AQAffinity<br/>consumes a predicted complex"]
+    C["<b>ML interaction potential</b><br/>ΔE on the co-folded pose<br/><i>sees the heme iron</i>"]
 
     A --> P
     B --> P
     C --> P
-    P["<b>Predictive distribution</b><br/>mean · aleatoric · epistemic<br/>cross-route disagreement"]
+    P["<b>Predictive distribution</b><br/>mean · aleatoric · epistemic<br/>cross-model disagreement"]
     P --> Q["<b>Decision layer</b><br/>minimise expected dead-zone L1<br/>over a predicted band"]
     Q --> S["Submission<br/>750 × 4 pIC50"]
 ```
 
-| route | sees structure? | sees the heme? | role |
+| model | sees structure? | sees the heme? | role |
 |---|---|---|---|
-| **A** · Ligand-only | ❌ | ❌ | the floor and the control |
-| **B** · Co-folded affinity head | ✅ | ❌ *masked out* | structure-conditioned signal |
-| **C** · ML interaction potential | ✅ | ✅ | closes B's blind spot |
+| structure-free | ❌ | ❌ | the floor and the control |
+| co-folded affinity head | ✅ | ❌ *masked out* | structure-based signal |
+| ML interaction potential | ✅ | ✅ | sees what the affinity head cannot |
 
-**Why route C exists.** The Boltz-2 affinity head builds its pair representation
+**Why the interaction potential is worth having.** The Boltz-2 affinity head builds its pair representation
 from protein tokens only, so non-polymer cofactors are masked out before the head
 sees them — confirmed in source and stated in the paper's own limitations. The heme
 is therefore invisible to it, and type-II inhibitors that coordinate the iron
@@ -197,7 +197,7 @@ the resampling seed is fixed, so both submissions are scored on identical bootst
 draws and the difference is taken within each sample. The win rate is the share of
 samples where the submission actually beats the posterior mean.
 
-| route | submission | MA-ST-RAE | paired Δ | win rate |
+| model | submission | MA-ST-RAE | paired Δ | win rate |
 |---|---|---|---|---|
 | seeded | posterior mean | 0.7713 | — | — |
 | seeded | placement, all endpoints | 0.7683 | −0.0030 | 76% |
@@ -290,7 +290,7 @@ profile.
 src/cypshift/
 ├── data/          loaders · manifests · curation · splits
 ├── features/      fingerprints · descriptors · mechanistic features
-├── models/        the three routes behind a common interface
+├── models/        the three models behind a common interface
 ├── decision/      band model · expected-loss minimisation
 └── eval/          ST-RAE harness · uncertainty · error analysis
 scripts/           CLI entry points
@@ -322,7 +322,7 @@ hf auth whoami         # verify
 
 | | task | why it blocks |
 |---|---|---|
-| ⬜ | Verify whether AQAffinity replicates the Boltz-2 heme mask | decides whether routes B and C are redundant |
+| ⬜ | Verify whether AQAffinity replicates the Boltz-2 heme mask | decides whether the two structure-based models are redundant |
 | ✅ | Reproduce the official ST-RAE end to end on a local holdout | every number downstream is measured through it |
 | ✅ | Build and freeze a similarity-matched holdout | closes 87% of the gap a random split leaves |
 
@@ -331,9 +331,9 @@ hf auth whoami         # verify
 | | task | notes |
 |---|---|---|
 | ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
-| ✅ | Define the route interface | predictive distribution in, nothing else |
-| ✅ | Route A baseline: fingerprint and descriptor ensemble | **MA-ST-RAE 0.768**, see below |
-| ⬜ | Route A: swap in a Chemprop D-MPNN | the multi-task and pretraining path |
+| ✅ | Define the shared model interface | predictive distribution in, nothing else |
+| ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **MA-ST-RAE 0.768**, see below |
+| ⬜ | Swap in a Chemprop D-MPNN | the multi-task and pretraining path |
 | ⬜ | Auxiliary heads, measured one at a time | screen as censored bounds → Veith → ChEMBL, deduplicated |
 | ⬜ | Swap squared error for the dead-zone loss | needs a custom loss and a channel for the interval bounds |
 | ✅ | **Build the decision layer** | −0.0085 macro, 99% of paired samples |
@@ -343,9 +343,9 @@ hf auth whoami         # verify
 
 | | task | notes |
 |---|---|---|
-| ⬜ | Route B on the four isoforms | include the heme, constrain the axial bond, template on crystal structures |
-| ⬜ | Route C: interaction-energy potential on cofolded poses | closes the type-II blindness |
-| ⬜ | Cross-route disagreement as epistemic uncertainty | a lower bar than beating a fingerprint on accuracy |
+| ⬜ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures |
+| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness |
+| ⬜ | Disagreement between models as epistemic uncertainty | a lower bar than beating a fingerprint on accuracy |
 | ⬜ | CYP2D6 as a dedicated project | it decides the macro average |
 
 ### 🔭 Open directions, not yet committed
@@ -387,6 +387,26 @@ reported their error rising from 0.4777 on the half unblinded mid-challenge to
 0.5676 on the half held back — a 19% degradation, with median Tanimoto similarity
 between halves around 0.26. That is the argument for deriving the decision rule from
 the loss function rather than fitting it to interim feedback.
+
+---
+
+## 📖 Terms
+
+Field terms, used as the challenge and the literature use them. Where an obvious
+plain word exists, it is used instead of a coinage.
+
+| term | meaning |
+|---|---|
+| **pIC50** | −log₁₀ of the concentration giving half-maximal inhibition. 7 is potent, 4 is roughly the assay's floor |
+| **isoform** | one of the four CYP enzymes being predicted |
+| **credible interval** | the 95% interval on a fitted dose-response value, shipped as `_conf_low` / `_conf_high` |
+| **ST-RAE** | the challenge's ranked metric. Charges the distance to the nearest credible-interval bound, zero inside. Lower is better; 1.0 equals a constant predictor |
+| **soft-threshold loss** | the numerator of that metric used as a training objective |
+| **point estimate** | the single number submitted. Chosen to minimise expected loss, which is not the posterior mean when the loss has a flat region |
+| **context columns** | one-hot inputs naming the isoform and assay a row was measured under. Ordinary input columns, not a separate mechanism |
+| **arm** | the organisers' term for an assay condition: the direct-inhibition arm and the TDI arm |
+| **paired win rate** | fraction of 1,000 bootstrap resamples where one submission beats another. Both are scored on identical draws, so the comparison is paired |
+| **structure-free** | uses no 3D structure. The protein still enters as isoform identity, so this is not the same as ligand-only |
 
 ---
 
