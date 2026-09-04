@@ -151,7 +151,9 @@ Descriptors come from three places, and all are recorded.
 |---|---|---|
 | `cypshift.data.enzymes` | 5 | curated table, crystallographic paper cited per entry |
 | `cypshift.data.pocket` | 8 | residue counts and fractions, computed from a PDB entry |
-| `cypshift.data.zscales` | 6 | Z-scales of the same residues — chemistry, not class counts |
+| `cypshift.data.zscales` | 6 | Z-scales of those residues — chemistry, not class counts |
+| `cypshift.data.srs` | 21 | the same Z-scales, **per recognition site** |
+| `cypshift.data.ctd` | 42 | the published CYP PCM descriptors, from sequence alone |
 
 The pocket is defined by **what a bound ligand touches**, not by distance from the
 heme. That distinction was measured: a 10 Å shell around the iron averages the one
@@ -170,11 +172,61 @@ superfamily — which is what makes them good for recognising a P450 and useless
 telling two apart. The variable regions are the substrate recognition sites (Gotoh
 1992), and the ligand-contact residues are largely drawn from them.
 
-Measured on the four scored enzymes, mean-pooled Z-scales put CYP3A4 furthest from
-every other (~1.0 against 0.5–0.9 among the rest), matching its promiscuous cavity.
-The known limit: pooling over 16–26 contacts dilutes a one- or two-residue anchor, so
-CYP2D6's Asp/Glu pair barely moves the mean. Net charge stays in the compositional
-block precisely because it does not average that away.
+Pooling every contact into one mean has a measured failure, though. The residue that
+decides recognition is one or two out of sixteen to twenty-six, so averaging buries it —
+CYP2D6's Asp/Glu pair barely moves the mean.
+
+**Encoding each recognition site separately is the fix.** Gotoh showed in 1992 that
+specificity concentrates in six hypervariable segments rather than spreading along the
+chain. His boundaries are given in a CYP2-family frame anchored on bacterial P450cam,
+so they do not transfer by residue number; `cypshift.data.srs` finds the segments from
+the structures instead. Contact residues cluster into contiguous runs, and those runs
+land at reproducible distances from the heme loop, which `cypshift.data.motifs` locates
+in any P450 sequence.
+
+| offset upstream | CYP1A2 | CYP2C9 | CYP2D6 | CYP3A4 | region |
+|---|---|---|---|---|---|
+| 316–334 | IT · STF | **R108** · VF | LF · FL | **RR**F · SI | SRS1, B′–C loop |
+| 211–228 | TFV | LNIL | AGL**E216** | LLFF · T | SRS2, helix F |
+| 191–195 | F · F | VM | QFL | F | SRS3, helix G |
+| 126–139 | NDGADT | VDGA · T | IA**D301** | IIFA · T | SRS4, helix I |
+| 62–69 | L · I | L · L | V · V | IARLE | SRS5, β1-4 |
+| ≈ −46 | LT | — | F | G | SRS6, β4 |
+
+Each of the three residues that define recognition falls in a different band, which is
+the whole argument for separating them. All contacts are assigned in all four enzymes,
+and separation rises **5.1× per dimension** over the pooled version (1.803 against
+0.351 RMS), a comparison that already controls for the added width.
+
+CYP3A4 also contacts residues 53–76, upstream of every band the others use. Not an
+artefact — Zawaira's expanded map adds SRS1a and SRS1b ahead of Gotoh's SRS1 for
+exactly this reason, and it fits CYP3A4's much larger cavity.
+
+### Reusing the published model's descriptors
+
+`cypshift.data.ctd` reimplements what Lapins and Spjuth conditioned on: Dubchak
+composition and transition features over seven amino-acid properties, 42 values from
+the primary sequence. Reimplemented rather than called out to, since they used the
+PROFEAT web server and a descriptor that cannot be recomputed offline cannot be swept.
+
+It recovers the family structure from sequence alone — every scored enzyme's nearest
+neighbour is a relative, CYP2C9 to CYP2C19 at 0.060, the closest pair in the set and
+the two that are ~91% identical. But 42 dimensions across 8 enzymes is five times more
+numbers than things to tell apart, so it is a comparison, not a default.
+
+### Finding more enzymes to pretrain on
+
+The conserved motifs — FxxGxxxCxG, ExxR, the I-helix pair — are useless for
+conditioning, being identical across all eight. That invariance makes them right for
+the opposite question: whether an unfamiliar sequence is a P450 close enough to
+pretrain on. `scripts/find_related_enzymes.py` scans a FASTA and ranks candidates.
+
+It anchors on the heme loop and scores everything else by distance from it, because
+fold order does not work — `ExxR` matches up to six times per sequence and the earliest
+is near the N-terminus by chance. Measured: **accepts 9/9** reviewed CYPs, **rejects
+8/8** non-P450 controls including catalase, myoglobin, haemoglobin and
+myeloperoxidase (the hard cases, since they also bind heme), and accepts **1 of 1800**
+sequences shuffled from real CYP composition.
 
 ### Proving a descriptor does anything
 

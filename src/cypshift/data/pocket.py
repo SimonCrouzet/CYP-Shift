@@ -24,6 +24,7 @@ is computable from coordinates alone and is what recognition actually rests on.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +95,10 @@ class PocketComposition:
     pdb_id: str
     residues: tuple[str, ...]
     distances: tuple[float, ...]
+    #: Residue sequence numbers, parallel to ``residues``. Needed to place a residue
+    #: in a substrate recognition site, which is a position in the chain rather than
+    #: a property of the residue. Empty when positions were not recorded.
+    numbers: tuple[int, ...] = ()
 
     def _fraction(self, group: frozenset[str]) -> float:
         return sum(r in group for r in self.residues) / max(len(self.residues), 1)
@@ -222,7 +227,7 @@ def contact_residues(path: Path, radius: float = DEFAULT_CONTACT_RADIUS) -> Pock
     rather than everything within some distance of the cofactor.
     """
     ligand = bound_ligand_atoms(path)
-    nearest: dict[tuple[str, str], tuple[str, float]] = {}
+    nearest: dict[tuple[str, str], tuple[str, float, int]] = {}
     for name, chain, sequence, position in _atoms(path, "ATOM"):
         if name not in HYDROPATHY:
             continue
@@ -231,11 +236,15 @@ def contact_residues(path: Path, radius: float = DEFAULT_CONTACT_RADIUS) -> Pock
             continue
         key = (chain, sequence)
         if key not in nearest or distance < nearest[key][1]:
-            nearest[key] = (name, distance)
-    residues = tuple(name for name, _ in nearest.values())
-    distances = tuple(distance for _, distance in nearest.values())
-    logger.info("%s: %d residues contacting the ligand", path.stem, len(residues))
-    return PocketComposition(path.stem, residues, distances)
+            nearest[key] = (name, distance, int(re.sub(r"[^0-9-]", "", sequence) or 0))
+    ordered = sorted(nearest.values(), key=lambda entry: entry[2])
+    logger.info("%s: %d residues contacting the ligand", path.stem, len(ordered))
+    return PocketComposition(
+        path.stem,
+        tuple(name for name, _, _ in ordered),
+        tuple(distance for _, distance, _ in ordered),
+        tuple(number for _, _, number in ordered),
+    )
 
 
 def lining_residues(path: Path, radius: float = DEFAULT_POCKET_RADIUS) -> PocketComposition:
