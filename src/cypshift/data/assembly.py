@@ -148,13 +148,24 @@ def build_observations(
 #: than merely index it. A model given these can learn "preincubation" as one direction
 #: shared across every enzyme, instead of treating each (enzyme, condition) pair as an
 #: unrelated column.
+#:
+#: Both values are definitional: whether the assay preincubates with NADPH before the
+#: substrate, and whether it reads a dose-response curve or a single concentration.
+#:
+#: A third column held log10 of the top concentration and has been removed. Its screen
+#: value was measured -- ``concentration_M`` is 4.95049505e-05 throughout that table --
+#: but the dose-response arms carry no concentration column at all, and the -4.0 used
+#: for them was invented rather than sourced. It was also redundant: with -4.0 for every
+#: dose-response row and -4.305 for every screen row, the column was a deterministic
+#: function of ``dose_response`` and could not tell a model anything that column did not
+#: already say.
 ASSAY_METADATA = {
-    #                          preincubated  dose_response  log10(top molar conc.)
-    "direct_inhibition_drc": (0.0, 1.0, -4.0),
-    "tdi_drc": (1.0, 1.0, -4.0),
-    "direct_inhibition_screen": (0.0, 0.0, float(np.log10(4.95e-5))),
+    #                          preincubated  dose_response
+    "direct_inhibition_drc": (0.0, 1.0),
+    "tdi_drc": (1.0, 1.0),
+    "direct_inhibition_screen": (0.0, 0.0),
 }
-N_METADATA_COLUMNS = 3
+N_METADATA_COLUMNS = 2
 
 
 def encode_conditions(

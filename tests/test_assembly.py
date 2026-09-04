@@ -6,7 +6,9 @@ import pytest
 
 from cypshift.config import ISOFORMS
 from cypshift.data.assembly import (
+    ASSAY_METADATA,
     ASSAYS,
+    N_METADATA_COLUMNS,
     OBSERVATION_COLUMNS,
     SourceWeights,
     build_observations,
@@ -96,3 +98,47 @@ def test_the_same_compound_on_two_targets_differs_only_in_conditioning():
     rows = one_hot[same_compound.to_numpy()]
     assert len(rows) == len(ISOFORMS)
     assert len({tuple(row) for row in rows}) == len(ISOFORMS)
+
+
+class TestAssayMetadata:
+    """The metadata columns must describe the experiment, not restate each other."""
+
+    def test_width_matches_the_declared_count(self):
+        assert all(len(v) == N_METADATA_COLUMNS for v in ASSAY_METADATA.values())
+
+    def test_every_assay_has_metadata(self):
+        assert set(ASSAY_METADATA) == set(ASSAYS)
+
+    def test_no_column_is_a_deterministic_function_of_another(self):
+        """A third column once held log10 of the top concentration: -4.0 for every
+        dose-response row and -4.305 for every screen row. That made it a relabelling
+        of dose_response, carrying nothing, and its dose-response value was invented
+        rather than measured."""
+        table = np.array(list(ASSAY_METADATA.values()), dtype=float)
+        for source in range(table.shape[1]):
+            for target in range(table.shape[1]):
+                if source == target:
+                    continue
+                mapping = {}
+                determined = True
+                for row in table:
+                    key = row[source]
+                    if mapping.setdefault(key, row[target]) != row[target]:
+                        determined = False
+                        break
+                assert not determined, (
+                    f"column {target} is fully determined by column {source}; "
+                    "it cannot tell a model anything that column does not already say"
+                )
+
+    def test_the_assays_are_distinguishable(self):
+        """Two assays sharing a row would be indistinguishable under this encoding."""
+        assert len(set(ASSAY_METADATA.values())) == len(ASSAY_METADATA)
+
+    def test_only_the_tdi_arm_preincubates(self):
+        preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
+        assert preincubated == {"tdi_drc"}
+
+    def test_only_the_screen_is_single_concentration(self):
+        single = {a for a, v in ASSAY_METADATA.items() if v[1] == 0.0}
+        assert single == {"direct_inhibition_screen"}
