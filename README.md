@@ -408,7 +408,8 @@ replaced if the field turns out to have a name for it.
 | **p-value** | one-sided bootstrap p-value on a paired comparison | challenge: `p_value` column in its head-to-head |
 | **point estimate** | the single number submitted | statistics |
 | **conformal prediction** | rescaling an interval on held-out data so its coverage is honest | statistics |
-| **one-hot encoding** | binary columns naming which isoform and assay a row came from | machine learning standard |
+| **conditioning** | making a model's output depend on which isoform and assay a row came from | machine learning standard |
+| **one-hot encoding** | the current implementation of that conditioning; swappable for an embedding | machine learning standard |
 | **structure-free** | uses no 3D structure; the protein still enters as isoform identity | *plain description* |
 | **similarity-matched holdout** | a holdout whose nearest-neighbour similarity profile matches the test set's | *plain description* |
 

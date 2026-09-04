@@ -149,13 +149,18 @@ def one_hot_encode(
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
 ) -> np.ndarray:
-    """One-hot input columns naming the target and the assay behind each observation.
+    """Encode the target and assay a row was measured under, for conditioning on them.
 
-    One-hot rather than a learned protein embedding, deliberately. With four targets
-    an embedding can produce only four distinct vectors, so it acts as a lookup table
-    carrying a homology prior with nothing to generalise across -- every target seen
-    at prediction time was also seen in training. It also costs width: dense columns
-    against a sparse molecular block dilute the latter.
+    Conditioning is the point; one-hot is only the current implementation of it. A
+    learned protein embedding, a FiLM-style modulation of the trunk, or cross-attention
+    over a sequence representation would condition on the same information differently,
+    and swapping this function is how that would be tried.
+
+    One-hot is chosen here for two measured reasons rather than by default. With four
+    targets an embedding can produce only four distinct vectors, so it degenerates into
+    a lookup table carrying a homology prior with nothing to generalise across --
+    every target seen at prediction time was also seen in training. And it costs
+    width: dense columns against a sparse molecular block dilute the latter.
     """
     unknown_targets = set(observations["target"]) - set(targets)
     unknown_assays = set(observations["assay"]) - set(assays)
