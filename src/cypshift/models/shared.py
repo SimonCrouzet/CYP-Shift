@@ -24,7 +24,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, one_hot_encode
+from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.ensemble import DEFAULT_MEMBERS, MemberSpec
@@ -45,6 +45,7 @@ class SharedEnsemble:
         members: tuple[MemberSpec, ...] = DEFAULT_MEMBERS,
         targets: tuple[str, ...] = ISOFORMS,
         assays: tuple[str, ...] = ASSAYS,
+        conditioning: str = "factorised",
         n_bits: int = 2048,
         seed: int = 0,
     ) -> None:
@@ -52,6 +53,7 @@ class SharedEnsemble:
         self.members = members
         self.targets = targets
         self.assays = assays
+        self.conditioning = conditioning
         self.n_bits = n_bits
         self.seed = seed
         self._fitted: list = []
@@ -79,7 +81,7 @@ class SharedEnsemble:
         usable = observations[np.isfinite(observations["value"])]
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
-        one_hot = one_hot_encode(usable, self.targets, self.assays)
+        one_hot = encode_conditions(usable, self.conditioning, self.targets, self.assays)
         smiles = usable["SMILES"].tolist()
         weights = usable["weight"].to_numpy(float)
         values = usable["value"].to_numpy(float)
@@ -113,7 +115,7 @@ class SharedEnsemble:
         for column, endpoint in enumerate(self.endpoints):
             target = endpoint.split("_")[0]
             query = pd.DataFrame({"target": [target] * n, "assay": [SCORED_ASSAY] * n})
-            one_hot = one_hot_encode(query, self.targets, self.assays)
+            one_hot = encode_conditions(query, self.conditioning, self.targets, self.assays)
             for index, spec in enumerate(self.members):
                 features = np.hstack([self._molecular(smiles, spec), one_hot])
                 samples[index, :, column] = self._fitted[index].predict(features)

@@ -71,3 +71,30 @@ def test_summary_skips_compounds_without_a_measured_truth():
     summary = summarise(y_true, mean, std)
     assert np.isfinite(list(summary.values())).all()
     assert "coverage_90" in summary and "ence" in summary
+
+
+def test_a_pure_intercept_is_detected_as_degenerate():
+    """The failure mode: the assay label buys an offset and nothing else."""
+    from cypshift.eval.uncertainty import conditioning_is_additive
+
+    base = RNG.normal(5.0, 1.0, 200)
+    summary = conditioning_is_additive({"curve": base, "screen": base - 2.0})
+    assert summary["curve_vs_screen_is_constant"] == 1.0
+    assert summary["curve_vs_screen_offset"] == pytest.approx(2.0)
+
+
+def test_conditioning_that_varies_by_compound_is_not_flagged():
+    from cypshift.eval.uncertainty import conditioning_is_additive
+
+    base = RNG.normal(5.0, 1.0, 200)
+    varying = base - 2.0 + RNG.normal(0, 0.5, 200)
+    summary = conditioning_is_additive({"curve": base, "screen": varying})
+    assert summary["curve_vs_screen_is_constant"] == 0.0
+    assert summary["curve_vs_screen_spread"] > 0.05
+
+
+def test_comparing_a_single_assay_is_rejected():
+    from cypshift.eval.uncertainty import conditioning_is_additive
+
+    with pytest.raises(ValueError, match="at least two assays"):
+        conditioning_is_additive({"curve": RNG.normal(5, 1, 10)})

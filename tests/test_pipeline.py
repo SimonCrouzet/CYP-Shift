@@ -1,0 +1,79 @@
+"""Turning a configuration into an experiment."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from cypshift.config import ISOFORMS
+from cypshift.experiment import ExperimentConfig
+from cypshift.pipeline import assemble_training_data, build_model, metrics_for_tracking
+
+
+def _retained(n=30):
+    rng = np.random.default_rng(0)
+    frame = {"Molecule_Name": [f"OCNT-{i:04d}" for i in range(n)], "SMILES": ["CCO"] * n}
+    for isoform in ISOFORMS:
+        frame[f"{isoform}_pIC50_direct_inhibition"] = rng.uniform(3, 7, n)
+    return pd.DataFrame(frame)
+
+
+def test_every_declared_model_kind_can_be_built():
+    for kind in ("boosted", "neural", "graph"):
+        config = ExperimentConfig()
+        config.override("model.kind", kind)
+        model = build_model(config)
+        assert hasattr(model, "fit") and hasattr(model, "predict")
+
+
+def test_the_conditioning_strategy_reaches_the_model():
+    config = ExperimentConfig()
+    config.override("conditioning.strategy", "metadata")
+    assert build_model(config).conditioning == "metadata"
+
+
+def test_model_hyperparameters_reach_the_model():
+    config = ExperimentConfig()
+    config.override("model.boosted.num_leaves", 15)
+    assert build_model(config).num_leaves == 15
+
+
+def test_an_unbuildable_model_kind_is_rejected():
+    config = ExperimentConfig()
+    config.model.kind = "per_target_ensemble"  # declared but has no builder
+    with pytest.raises(ValueError, match="has no builder"):
+        build_model(config)
+
+
+def test_the_no_screen_strategy_uses_only_the_curves():
+    config = ExperimentConfig()
+    config.override("multifidelity.strategy", "none")
+    observations, surrogate = assemble_training_data(config, _retained())
+    assert set(observations["assay"]) == {"direct_inhibition_drc"}
+    assert surrogate is None
+
+
+def test_the_unbuilt_strategies_say_so_rather_than_falling_back():
+    """Declaring an option in the config must not silently do something else."""
+    for strategy in ("predicted_label", "embedding"):
+        config = ExperimentConfig()
+        config.override("multifidelity.strategy", strategy)
+        with pytest.raises(NotImplementedError, match="not yet built"):
+            assemble_training_data(config, _retained())
+
+
+def test_source_weights_reach_the_observation_table():
+    config = ExperimentConfig()
+    config.override("multifidelity.strategy", "none")
+    observations, _ = assemble_training_data(config, _retained())
+    assert (observations["weight"] == 1.0).all()
+
+
+def test_metrics_flatten_to_scalars_a_tracker_can_log():
+    scores = pd.DataFrame(
+        {"ST-RAE_mean": [0.68, 0.70], "ST-RAE_std": [0.01, 0.01], "MAE_mean": [0.5, 0.6]},
+        index=["CYP3A4_pIC50_direct_inhibition", "MA"],
+    )
+    flat = metrics_for_tracking(scores)
+    assert flat["CYP3A4_ST-RAE"] == 0.68
+    assert flat["MA_ST-RAE"] == 0.70
+    assert all(isinstance(v, float) for v in flat.values())

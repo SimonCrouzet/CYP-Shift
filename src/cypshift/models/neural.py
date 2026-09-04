@@ -37,7 +37,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, one_hot_encode
+from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
@@ -128,6 +128,7 @@ class NeuralNetwork:
         endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS,
         targets: tuple[str, ...] = ISOFORMS,
         assays: tuple[str, ...] = ASSAYS,
+        conditioning: str = "factorised",
         n_bits: int = 2048,
         hidden: int = 256,
         dropout: float = 0.2,
@@ -141,6 +142,7 @@ class NeuralNetwork:
         self.endpoints = endpoints
         self.targets = targets
         self.assays = assays
+        self.conditioning = conditioning
         self.n_bits = n_bits
         self.hidden = hidden
         self.dropout = dropout
@@ -177,7 +179,7 @@ class NeuralNetwork:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        one_hot = one_hot_encode(usable, self.targets, self.assays)
+        one_hot = encode_conditions(usable, self.conditioning, self.targets, self.assays)
         features = self._scale_blocks(self._features(usable["SMILES"].tolist(), one_hot), fit=True)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
@@ -228,7 +230,7 @@ class NeuralNetwork:
                 query = pd.DataFrame(
                     {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
                 )
-                one_hot = one_hot_encode(query, self.targets, self.assays)
+                one_hot = encode_conditions(query, self.conditioning, self.targets, self.assays)
                 features = self._scale_blocks(self._features(smiles, one_hot), fit=False)
                 for pass_index in range(self.n_forward_passes):
                     samples[pass_index, :, column] = self._model(features).numpy()

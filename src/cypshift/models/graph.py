@@ -43,7 +43,7 @@ from chemprop.nn.metrics import ChempropMetric
 from lightning import pytorch as pl
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, one_hot_encode
+from cypshift.data.assembly import ASSAYS, encode_conditions, n_condition_columns
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
 
@@ -83,6 +83,7 @@ class GraphNetwork:
         endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS,
         targets: tuple[str, ...] = ISOFORMS,
         assays: tuple[str, ...] = ASSAYS,
+        conditioning: str = "factorised",
         hidden: int = 300,
         depth: int = 3,
         dropout: float = 0.1,
@@ -95,6 +96,7 @@ class GraphNetwork:
         self.endpoints = endpoints
         self.targets = targets
         self.assays = assays
+        self.conditioning = conditioning
         self.hidden = hidden
         self.depth = depth
         self.dropout = dropout
@@ -104,12 +106,12 @@ class GraphNetwork:
         self.loss = loss
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
-        self._n_conditioning = len(targets) + len(assays)
+        self._n_conditioning = n_condition_columns(conditioning, targets, assays)
         self._centre = 0.0
         self._spread = 1.0
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
-        conditioning = one_hot_encode(frame, self.targets, self.assays)
+        conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:

@@ -24,7 +24,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, one_hot_encode
+from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
@@ -71,6 +71,7 @@ class BoostedTrees:
         endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS,
         targets: tuple[str, ...] = ISOFORMS,
         assays: tuple[str, ...] = ASSAYS,
+        conditioning: str = "factorised",
         n_bits: int = 2048,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
@@ -83,6 +84,7 @@ class BoostedTrees:
         self.endpoints = endpoints
         self.targets = targets
         self.assays = assays
+        self.conditioning = conditioning
         self.n_bits = n_bits
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -107,7 +109,7 @@ class BoostedTrees:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        encoding = one_hot_encode(usable, self.targets, self.assays)
+        encoding = encode_conditions(usable, self.conditioning, self.targets, self.assays)
         features = self._features(usable["SMILES"].tolist(), encoding)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
@@ -163,7 +165,9 @@ class BoostedTrees:
             query = pd.DataFrame(
                 {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
             )
-            features = self._features(smiles, one_hot_encode(query, self.targets, self.assays))
+            features = self._features(
+                smiles, encode_conditions(query, self.conditioning, self.targets, self.assays)
+            )
             for index, member in enumerate(self._members):
                 samples[index, :, column] = member.predict(features) + self._offset
         return PredictiveDistribution(samples, self.endpoints)

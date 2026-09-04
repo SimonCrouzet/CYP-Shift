@@ -109,3 +109,52 @@ def summarise(
     }
     summary.update({f"coverage_{int(k * 100)}": v for k, v in coverage(y_true, mean, std).items()})
     return summary
+
+
+def conditioning_is_additive(
+    predictions_by_assay: dict[str, NDArray[np.float64]], tolerance: float = 0.05
+) -> dict[str, float]:
+    """Test whether an assay changes more than the intercept.
+
+    Concatenating a one-hot at a network's input can only shift the output, so a model
+    can satisfy assay conditioning entirely by learning a per-assay constant. That is a
+    degenerate solution: the assay label buys an intercept and the assay's data
+    contributes nothing to the chemistry.
+
+    If the conditioning is doing real work, the difference between two assays'
+    predictions varies across compounds. If it is only an intercept, that difference is
+    the same number everywhere.
+
+    Args:
+        predictions_by_assay: Predictions for the *same compounds* under each assay,
+            each of shape ``(n_compounds,)``.
+        tolerance: Spread below which the difference counts as constant, in log units.
+
+    Returns:
+        For each assay pair, the standard deviation of the per-compound difference, and
+        a flag saying whether it is indistinguishable from a constant offset.
+
+    Raises:
+        ValueError: If fewer than two assays are supplied.
+    """
+    names = sorted(predictions_by_assay)
+    if len(names) < 2:
+        raise ValueError("need at least two assays to compare")
+    summary: dict[str, float] = {}
+    for index, first in enumerate(names):
+        for second in names[index + 1 :]:
+            difference = predictions_by_assay[first] - predictions_by_assay[second]
+            spread = float(np.std(difference))
+            summary[f"{first}_vs_{second}_offset"] = float(np.mean(difference))
+            summary[f"{first}_vs_{second}_spread"] = spread
+            summary[f"{first}_vs_{second}_is_constant"] = float(spread < tolerance)
+            if spread < tolerance:
+                logger.warning(
+                    "%s vs %s differ by a near-constant %.2f (spread %.3f): the "
+                    "conditioning is acting as an intercept only",
+                    first,
+                    second,
+                    np.mean(difference),
+                    spread,
+                )
+    return summary
