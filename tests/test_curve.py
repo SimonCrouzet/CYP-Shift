@@ -168,3 +168,54 @@ def test_the_two_arms_are_separate_curves():
 
 def test_parameter_order_is_what_the_loss_assumes():
     assert (PIC50, HILL, EMAX) == (0, 1, 2)
+
+
+def test_an_observation_only_reaches_the_head_it_observed():
+    """The property the whole decomposition rests on.
+
+    A measurement on one enzyme, in one arm, must produce gradient in that head alone.
+    If it leaked into the others, a CYP2C9 reading would drag CYP2D6 -- which is
+    exactly wrong, since the two recognise opposite charges: an acid helps at CYP2C9
+    and hurts at CYP2D6, and a basic amine does the reverse.
+    """
+    from cypshift.models.curve import CurveNetwork, curve_loss
+
+    torch.manual_seed(0)
+    network = CurveNetwork(n_features=8, n_targets=4, n_arms=2, hidden=16, dropout=0.0)
+    predicted = network(torch.randn(1, 8))
+
+    observed_target, observed_arm = 1, 0
+    parameters = predicted[:, observed_target, observed_arm]
+    loss = curve_loss(
+        parameters,
+        observation_kind=torch.tensor([0]),
+        lower=torch.tensor([9.0]),
+        upper=torch.tensor([9.5]),
+        weight=torch.tensor([1.0]),
+    )
+    loss.backward()
+
+    touched = [
+        index
+        for index, head in enumerate(network.heads)
+        if head.weight.grad is not None and head.weight.grad.abs().sum() > 0
+    ]
+    assert touched == [observed_target * 2 + observed_arm]
+
+
+def test_a_screen_row_and_a_curve_row_constrain_different_things():
+    """The measurement channel routes the comparison, not just the head."""
+    from cypshift.models.curve import curve_loss
+
+    parameters = torch.tensor([[6.0, 0.0, 0.0]], dtype=torch.float32)
+    # As a midpoint observation, a pIC50 of 6.0 sits inside [5.8, 6.2].
+    as_midpoint = curve_loss(
+        parameters, torch.tensor([0]), torch.tensor([5.8]), torch.tensor([6.2]), torch.tensor([1.0])
+    )
+    # As a screen reading, the same curve predicts a response near 0.9, which is
+    # nowhere near that interval.
+    as_response = curve_loss(
+        parameters, torch.tensor([1]), torch.tensor([5.8]), torch.tensor([6.2]), torch.tensor([1.0])
+    )
+    assert float(as_midpoint) == 0.0
+    assert float(as_response) > 4.0
