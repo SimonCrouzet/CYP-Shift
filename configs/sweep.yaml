@@ -18,6 +18,12 @@ parameters:
   conditioning.strategy:
     values: [flat, factorised, metadata]
 
+  # For the curve model the condition is structural, so the choice is between one
+  # head per enzyme and one shared head given a description of the pocket. Only the
+  # second can pretrain on enzymes outside the scored set.
+  model.curve.conditioning:
+    values: [heads, descriptor]
+
   # How the cheap single-concentration screen is combined with the dose-response
   # curves. A large multi-fidelity benchmark found "extra_rows" loses high-fidelity
   # signal when the cheap data dominates, and that feeding a screen-trained model's

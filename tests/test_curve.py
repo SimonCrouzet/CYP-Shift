@@ -219,3 +219,25 @@ def test_a_screen_row_and_a_curve_row_constrain_different_things():
     )
     assert float(as_midpoint) == 0.0
     assert float(as_response) > 4.0
+
+
+def test_both_conditioning_modes_train_and_predict():
+    """Heads and descriptors are alternatives to be swept, not a settled choice."""
+    observations = _observations()
+    for mode in ("heads", "descriptor"):
+        model = _model(conditioning=mode).fit(observations)
+        assert model.predict_pic50(SMILES[:4]).shape == (4, len(ISOFORMS))
+
+
+def test_an_unknown_conditioning_mode_is_rejected():
+    from cypshift.models.curve import CurveNetwork
+
+    with pytest.raises(ValueError, match="unknown conditioning"):
+        CurveNetwork(n_features=8, n_targets=4, conditioning="telepathy")
+
+
+def test_descriptor_conditioning_needs_descriptors():
+    from cypshift.models.curve import CurveNetwork
+
+    with pytest.raises(ValueError, match="needs one descriptor row"):
+        CurveNetwork(n_features=8, n_targets=4, conditioning="descriptor")

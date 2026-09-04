@@ -84,6 +84,7 @@ def build_model(config: ExperimentConfig) -> object:
             batch_size=config.model.curve.batch_size,
             learning_rate=config.model.curve.learning_rate,
             n_forward_passes=config.model.curve.forward_passes,
+            conditioning=config.model.curve.conditioning,
             seed=config.data.seed,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")

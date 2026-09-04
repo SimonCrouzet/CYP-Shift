@@ -32,6 +32,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
+from cypshift.data.enzymes import DESCRIPTOR_FAMILIES, describe_all
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 
@@ -81,7 +82,23 @@ def inhibition_at(parameters: torch.Tensor, pc: float | torch.Tensor) -> torch.T
 
 
 class CurveNetwork(nn.Module):
-    """Shared trunk, one head per (enzyme, arm), each emitting three curve parameters."""
+    """Shared trunk over molecular features, emitting curve parameters per enzyme and arm.
+
+    Two ways to make the output depend on which enzyme and arm a row belongs to, and
+    which is better is an empirical question rather than a settled one:
+
+    ``heads``
+        One output head per (enzyme, arm). Maximally flexible, and the variant with
+        industrial-scale validation in multi-task property prediction. But a head is an
+        index: an enzyme outside the scored set trains parameters that are thrown away,
+        so nothing pretrains.
+
+    ``descriptor``
+        One shared head, given a vector describing the enzyme's pocket. Less free per
+        enzyme, but it can learn transferable rules -- an acidic anchor prefers a basic
+        ligand -- so an auxiliary enzyme's data improves the scored ones. This is what
+        makes pretraining across enzymes possible.
+    """
 
     def __init__(
         self,
@@ -90,9 +107,16 @@ class CurveNetwork(nn.Module):
         n_arms: int = 2,
         hidden: int = 256,
         dropout: float = 0.2,
+        conditioning: str = "heads",
+        descriptors: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
-        self.n_targets, self.n_arms = n_targets, n_arms
+        if conditioning not in ("heads", "descriptor"):
+            raise ValueError(f"unknown conditioning {conditioning!r}; expected heads or descriptor")
+        if conditioning == "descriptor" and descriptors is None:
+            raise ValueError("descriptor conditioning needs one descriptor row per enzyme")
+
+        self.n_targets, self.n_arms, self.conditioning = n_targets, n_arms, conditioning
         self.trunk = nn.Sequential(
             nn.Linear(n_features, hidden),
             nn.ReLU(),
@@ -101,15 +125,31 @@ class CurveNetwork(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
-        self.heads = nn.ModuleList(
-            [nn.Linear(hidden // 2, N_PARAMETERS) for _ in range(n_targets * n_arms)]
-        )
+        if conditioning == "heads":
+            self.heads = nn.ModuleList(
+                [nn.Linear(hidden // 2, N_PARAMETERS) for _ in range(n_targets * n_arms)]
+            )
+        else:
+            self.register_buffer("descriptors", descriptors)
+            self.head = nn.Linear(hidden // 2 + descriptors.shape[1] + n_arms, N_PARAMETERS)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Returns ``(batch, n_targets, n_arms, 3)``."""
         shared = self.trunk(x)
-        stacked = torch.stack([head(shared) for head in self.heads], dim=1)
-        return stacked.view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
+        if self.conditioning == "heads":
+            stacked = torch.stack([head(shared) for head in self.heads], dim=1)
+            return stacked.view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
+
+        # One shared head, evaluated once per (enzyme, arm) with that combination's
+        # descriptor appended.
+        outputs = []
+        for target in range(self.n_targets):
+            for arm in range(self.n_arms):
+                arm_code = torch.zeros(len(shared), self.n_arms, device=shared.device)
+                arm_code[:, arm] = 1.0
+                described = self.descriptors[target].expand(len(shared), -1)
+                outputs.append(self.head(torch.cat([shared, described, arm_code], dim=1)))
+        return torch.stack(outputs, dim=1).view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
 
 
 def curve_loss(
@@ -156,8 +196,12 @@ class CurveModel:
         batch_size: int = 256,
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
+        conditioning: str = "heads",
+        descriptor_families: tuple[str, ...] = DESCRIPTOR_FAMILIES,
         seed: int = 0,
     ) -> None:
+        self.conditioning = conditioning
+        self.descriptor_families = descriptor_families
         self.targets = targets
         self.n_bits = n_bits
         self.hidden = hidden
@@ -210,8 +254,19 @@ class CurveModel:
         upper_t = torch.tensor(upper, dtype=torch.float32)
         weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
 
+        descriptors = None
+        if self.conditioning == "descriptor":
+            descriptors = torch.tensor(
+                describe_all(list(self.targets), self.descriptor_families), dtype=torch.float32
+            )
         self._model = CurveNetwork(
-            features.shape[1], len(self.targets), len(ARMS), self.hidden, self.dropout
+            features.shape[1],
+            len(self.targets),
+            len(ARMS),
+            self.hidden,
+            self.dropout,
+            conditioning=self.conditioning,
+            descriptors=descriptors,
         )
         optimiser = torch.optim.Adam(self._model.parameters(), lr=self.learning_rate)
         n = len(usable)

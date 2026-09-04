@@ -20,13 +20,20 @@ DEFAULT_CONFIG_PATH = Path("configs/default.json")
 
 #: How the assay condition and target enter the model.
 #:
-#: ``flat`` gives one column per (target, assay) pair, so nothing is shared between
-#: CYP3A4-preincubated and CYP2D6-preincubated. ``factorised`` splits it into a target
-#: block and a condition block, letting "preincubation" be one direction shared across
-#: every enzyme, which is more sample-efficient with a 4x3 grid. ``metadata`` adds
-#: scalar properties of the assay itself, so the encoding describes the experiment
-#: rather than merely indexing it.
-CONDITIONING_STRATEGIES = ("flat", "factorised", "metadata")
+#: The first three concatenate an encoding to the input, and apply to the models that
+#: predict a pIC50 directly. ``flat`` gives one column per (target, assay) pair, so
+#: nothing is shared between CYP3A4-preincubated and CYP2D6-preincubated;
+#: ``factorised`` splits it into a target block and a condition block, letting
+#: "preincubation" be one direction shared across every enzyme; ``metadata`` adds
+#: scalar properties of the assay itself.
+#:
+#: The last two apply to the curve model, where the assay condition is structural
+#: rather than a feature. ``heads`` gives one output head per (enzyme, arm) --
+#: maximally flexible, but a head is an index, so an unscored enzyme trains parameters
+#: that are then discarded. ``descriptor`` uses one shared head given a vector
+#: describing the enzyme's pocket, which is less free per enzyme but lets an auxiliary
+#: enzyme's data improve the scored ones. Which wins is measured, not assumed.
+CONDITIONING_STRATEGIES = ("flat", "factorised", "metadata", "heads", "descriptor")
 
 #: How the single-concentration screen is combined with the dose-response curves.
 #:
@@ -102,6 +109,8 @@ class CurveConfig:
     batch_size: int = 256
     learning_rate: float = 1e-3
     forward_passes: int = 30
+    #: ``heads`` or ``descriptor``; see :data:`CONDITIONING_STRATEGIES`.
+    conditioning: str = "heads"
     #: Half-width of the interval placed around a single-well screen reading, as an
     #: inhibited fraction. One measurement with no replicate does not support a tight
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
