@@ -20,28 +20,30 @@ DEFAULT_CONFIG_PATH = Path("configs/default.json")
 
 #: How the assay condition and target enter the model.
 #:
-#: The first three concatenate an encoding to the input, and apply to the models that
-#: predict a pIC50 directly. ``flat`` gives one column per (target, assay) pair, so
-#: nothing is shared between CYP3A4-preincubated and CYP2D6-preincubated;
-#: ``factorised`` splits it into a target block and a condition block, letting
-#: "preincubation" be one direction shared across every enzyme; ``metadata`` adds
-#: scalar properties of the assay itself.
+#: How the target and assay are encoded as input columns, **for the baseline models
+#: only**.
 #:
-#: The last two apply to the curve model, where the assay condition is structural
-#: rather than a feature. ``heads`` gives one output head per (enzyme, arm) --
-#: maximally flexible, but a head is an index, so an unscored enzyme trains parameters
-#: that are then discarded. ``descriptor`` uses one shared head given a vector
+#: These exist because a model that predicts a pIC50 directly has nowhere to put the
+#: measurement channel, so it has to be told which assay a row came from. The curve
+#: model does not need them: screen-versus-curve lives in its likelihood and
+#: direct-versus-preincubated is structural. See :data:`CURVE_CONDITIONING` for the
+#: axis that applies to it.
+#:
+#: A flat encoding over (target, assay) pairs was removed. It shared nothing between
+#: conditions, and once the assay dimension moved out of conditioning there was no
+#: argument left for it.
+CONDITIONING_STRATEGIES = ("factorised", "metadata")
+
+#: How the curve model makes its output depend on the enzyme. This is a *structural*
+#: choice rather than an encoding, which is why it is a separate axis.
+#:
+#: ``heads`` gives one output head per (enzyme, arm) -- maximally flexible, but a head
+#: is an index, so an enzyme outside the scored set trains parameters that are then
+#: discarded and nothing pretrains. ``descriptor`` uses one shared head given a vector
 #: describing the enzyme's pocket, which is less free per enzyme but lets an auxiliary
 #: enzyme's data improve the scored ones. Which wins is measured, not assumed.
-CONDITIONING_STRATEGIES = ("flat", "factorised", "metadata", "heads", "descriptor")
+CURVE_CONDITIONING = ("heads", "descriptor")
 
-#: How the single-concentration screen is combined with the dose-response curves.
-#:
-#: ``none`` ignores it. ``extra_rows`` adds calibrated pseudo-labels as further
-#: training rows -- the obvious approach, and the one a large multi-fidelity benchmark
-#: found loses high-fidelity signal when the cheap data dominates. ``predicted_label``
-#: and ``embedding`` instead train a model on the screen and feed its output or its
-#: learned representation in as a feature, which is what that benchmark found wins.
 MULTIFIDELITY_STRATEGIES = ("none", "extra_rows", "predicted_label", "embedding")
 
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
@@ -160,6 +162,7 @@ class ExperimentConfig:
         """Reject an unusable configuration before anything expensive runs."""
         checks = [
             (self.conditioning.strategy, CONDITIONING_STRATEGIES, "conditioning.strategy"),
+            (self.model.curve.conditioning, CURVE_CONDITIONING, "model.curve.conditioning"),
             (self.multifidelity.strategy, MULTIFIDELITY_STRATEGIES, "multifidelity.strategy"),
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),

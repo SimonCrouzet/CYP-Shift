@@ -167,10 +167,9 @@ def encode_conditions(
 
     Args:
         observations: Rows carrying ``target`` and ``assay`` columns.
-        strategy: ``flat`` gives one column per (target, assay) pair, sharing nothing
-            between conditions. ``factorised`` uses a target block and an assay block,
-            so a condition is one direction common to every enzyme. ``metadata``
-            extends that with scalar properties of the assay.
+        strategy: ``factorised`` uses a target block and an assay block, so a
+            condition is one direction common to every enzyme. ``metadata`` extends
+            that with scalar properties of the assay.
         targets: Target vocabulary.
         assays: Assay vocabulary.
 
@@ -180,17 +179,6 @@ def encode_conditions(
     Raises:
         ValueError: On an unknown strategy, target or assay.
     """
-    if strategy == "flat":
-        pairs = [(t, a) for t in targets for a in assays]
-        index = {pair: position for position, pair in enumerate(pairs)}
-        encoded = np.zeros((len(observations), len(pairs)), dtype=np.float32)
-        for row, (target, assay) in enumerate(
-            zip(observations["target"], observations["assay"], strict=True)
-        ):
-            if (target, assay) not in index:
-                raise ValueError(f"unrecognised pair {(target, assay)}")
-            encoded[row, index[(target, assay)]] = 1.0
-        return encoded
     if strategy in ("factorised", "metadata"):
         blocks = [one_hot_encode(observations, targets, assays)]
         if strategy == "metadata":
@@ -209,8 +197,6 @@ def n_condition_columns(
     assays: tuple[str, ...] = ASSAYS,
 ) -> int:
     """Width of the encoding a strategy produces, without building it."""
-    if strategy == "flat":
-        return len(targets) * len(assays)
     if strategy == "factorised":
         return len(targets) + len(assays)
     if strategy == "metadata":

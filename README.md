@@ -83,52 +83,74 @@ Lower is better. **1.0 means no better than predicting the mean.**
 
 ## 🏗️ Architecture
 
-Three models behind one interface. Every model emits the same object — a
-**predictive distribution over pIC50 per compound per isoform** — so the decision
-layer, the scoring harness and the submission writer are shared, and the models stay
-swappable and combinable.
+The model predicts a **dose-response curve**, and every answer is read off it the way
+a biologist reads one off a plot.
+
+```
+inhibition(c) = Emax / (1 + 10^(h·(pC − pIC50)))          pC = −log₁₀ c
+```
+
+Three parameters per compound, per enzyme, per arm. What makes this the right shape is
+that the three data sources stop being three tasks:
+
+| source | what it observes | how it enters |
+|---|---|---|
+| 12-point dose-response | the curve's midpoint | constrains `pIC50` |
+| Emax | the plateau | constrains `Emax` |
+| single-concentration screen | **one point on the same curve** | constrains `inhibition(49.5 µM)` |
+
+The screen is not a pseudo-label and needs no calibration — it is the curve evaluated
+where the experiment sampled it. A compound whose signal never dropped is simply one
+whose predicted response there should be near zero.
+
+Preincubation is a **second curve**, not an offset on the first, because it measures a
+different thing: enzyme destroyed by turnover rather than enzyme occupied. Time
+dependence is then whatever the two curves say, put through the organisers' own rule.
 
 ```mermaid
 flowchart TD
-    D[("Challenge data<br/>DRC · screen · TDI")] --> A
-    D --> B
-    D --> C
-    X[("External<br/>Veith · ChEMBL · CYP2C19")] -.pretraining only.-> A
-    X -.-> B
-
-    A["<b>Structure-free</b><br/>trees or a network over<br/>molecular features + context columns"]
-    B["<b>Co-folded affinity head</b><br/>AQAffinity<br/>consumes a predicted complex"]
-    C["<b>ML interaction potential</b><br/>ΔE on the co-folded pose<br/><i>sees the heme iron</i>"]
-
-    A --> P
-    B --> P
-    C --> P
-    P["<b>Predictive distribution</b><br/>mean · aleatoric · epistemic<br/>cross-model disagreement"]
-    P --> Q["<b>Decision layer</b><br/>minimise expected dead-zone L1<br/>over a predicted band"]
-    Q --> S["Submission<br/>750 × 4 pIC50"]
+    D[("molecular graph / features")] --> T["shared trunk<br/><i>chemistry common to every enzyme</i>"]
+    T --> C{"enzyme conditioning"}
+    C -->|heads| H["one head per enzyme × arm"]
+    C -->|descriptor| S["one shared head +<br/>pocket descriptor"]
+    H --> P["curve parameters<br/>pIC50 · Hill · Emax"]
+    S --> P
+    P --> O["the observation's own<br/>(enzyme, arm, channel)<br/>selects what is compared"]
+    O --> R["pIC50 · response at any dose ·<br/>time-dependence call"]
 ```
 
-| model | sees structure? | sees the heme? | role |
+**Conditioning is a swept choice, not a settled one.** `heads` gives one output head
+per (enzyme, arm) — maximally flexible, but a head is an index, so an enzyme outside
+the scored set trains parameters that are then discarded. `descriptor` gives one shared
+head a vector describing the enzyme's pocket, which is less free per enzyme but lets
+auxiliary enzymes pretrain the same model.
+
+**The condition routes the loss, not just the forward pass.** A measurement on one
+enzyme in one arm produces gradient in exactly one head and none anywhere else — there
+is a test asserting it. That matters biologically: CYP2C9 and CYP2D6 recognise opposite
+charges, so leakage between them would be actively harmful.
+
+### Describing an enzyme instead of indexing it
+
+| enzyme | pocket | recognises | volume Å³ |
 |---|---|---|---|
-| structure-free | ❌ | ❌ | the floor and the control |
-| co-folded affinity head | ✅ | ❌ *masked out* | structure-based signal |
-| ML interaction potential | ✅ | ✅ | sees what the affinity head cannot |
+| CYP1A2 | narrow planar slot | flat rigid aromatics | 375 |
+| CYP2C9 | **Arg108** | anions — acids | 470 |
+| CYP2D6 | **Asp301, Glu216** | cations — basic amines | 540 |
+| CYP3A4 | expands >80% on binding | size and greasiness, promiscuously | 1386 |
 
-**Why the interaction potential is worth having.** The Boltz-2 affinity head builds its pair representation
-from protein tokens only, so non-polymer cofactors are masked out before the head
-sees them — confirmed in source and stated in the paper's own limitations. The heme
-is therefore invisible to it, and type-II inhibitors that coordinate the iron
-directly (imidazoles, triazoles, pyridines) cannot be scored on the interaction that
-makes them bind. An interaction-energy potential computes over the real atoms,
-iron included. That is orthogonality with a mechanism behind it, which matters more
-than individual accuracy when combining models.
+A one-hot says these are four different symbols. A descriptor says two of them
+recognise *opposite* charges, which is why an acid helps at CYP2C9 and hurts at CYP2D6.
+That is what transfers: CYP2C9 and CYP2C19 are ~91% identical, so their descriptors
+nearly coincide and 14,492 auxiliary compounds pool into a scored endpoint. Adding an
+enzyme is a `register()` call, not an architecture change.
 
-**Why the decision layer is the differentiating piece.** Because the loss has a dead
-zone, the point minimising expected error is not the posterior mean. Under a bimodal
-active/inactive posterior, a conditional mean lands in the empty middle and takes
-error from both sides. Emitting a distribution and choosing the point that minimises
-expected dead-zone L1, given a band width predicted from the level, is a
-one-dimensional optimisation per compound and is the correct answer to this metric.
+Descriptors come from two places, and both are recorded: a curated table with the
+crystallographic paper cited per entry, and values computed from a structure by
+`cypshift.data.pocket`, which defines the pocket by **what a bound ligand touches**
+rather than by distance from the heme. That distinction was measured — a 10 Å shell
+around the iron averages the one anchoring residue away among ~38 others and gets the
+charges backwards.
 
 ---
 

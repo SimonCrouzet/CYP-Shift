@@ -8,6 +8,7 @@ import pytest
 from cypshift.data.assembly import encode_conditions, n_condition_columns
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
+    CURVE_CONDITIONING,
     MULTIFIDELITY_STRATEGIES,
     ExperimentConfig,
 )
@@ -28,6 +29,7 @@ def test_defaults_validate():
     "field,value",
     [
         ("conditioning.strategy", "telepathy"),
+        ("model.curve.conditioning", "telepathy"),
         ("multifidelity.strategy", "wishing"),
         ("model.kind", "oracle"),
         ("model.objective", "vibes"),
@@ -84,12 +86,6 @@ def test_every_declared_conditioning_strategy_encodes():
         assert encoded.shape == (len(OBSERVATIONS), n_condition_columns(strategy))
 
 
-def test_flat_conditioning_shares_nothing_between_conditions():
-    """One column per pair, so CYP3A4-preincubated and CYP2D6-preincubated are unrelated."""
-    encoded = encode_conditions(OBSERVATIONS, "flat")
-    assert (encoded.sum(axis=1) == 1).all()
-
-
 def test_factorised_conditioning_shares_a_condition_across_targets():
     """The point of factorising: 'preincubated' is one direction common to every enzyme."""
     rows = pd.DataFrame({"target": ["CYP1A2", "CYP3A4"], "assay": ["tdi_drc", "tdi_drc"]})
@@ -107,6 +103,12 @@ def test_metadata_conditioning_describes_the_experiment():
 def test_an_unknown_conditioning_strategy_is_rejected():
     with pytest.raises(ValueError, match="unknown conditioning strategy"):
         encode_conditions(OBSERVATIONS, "osmosis")
+
+
+def test_input_encodings_and_structural_conditioning_are_separate_axes():
+    """One is columns appended to the input, the other is how the model is wired."""
+    assert set(CONDITIONING_STRATEGIES).isdisjoint(CURVE_CONDITIONING)
+    assert set(CURVE_CONDITIONING) == {"heads", "descriptor"}
 
 
 def test_all_multifidelity_strategies_are_named():

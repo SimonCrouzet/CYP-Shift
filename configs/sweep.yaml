@@ -16,7 +16,7 @@ parameters:
   # How the assay condition enters the model. No head-to-head comparison exists in
   # molecular property prediction, so this is measured rather than assumed.
   conditioning.strategy:
-    values: [flat, factorised, metadata]
+    values: [factorised, metadata]
 
   # For the curve model the condition is structural, so the choice is between one
   # head per enzyme and one shared head given a description of the pocket. Only the
