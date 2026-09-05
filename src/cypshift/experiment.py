@@ -110,6 +110,10 @@ class ConditioningConfig:
 
 @dataclass
 class MultifidelityConfig:
+    #: Whether to train on the preincubated arm as well as the direct one. Leaving it
+    #: out was measured to reduce the classification track to a constant "no", since
+    #: the curve model's second arm then trains on nothing.
+    use_tdi_arm: bool = True
     strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5

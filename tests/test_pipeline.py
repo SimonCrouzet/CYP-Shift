@@ -115,3 +115,55 @@ def test_curve_hyperparameters_reach_the_model():
     config.override("model.kind", "curve")
     config.override("model.curve.hidden", 64)
     assert build_model(config).hidden == 64
+
+
+def _retained_with_tdi(n: int = 40) -> pd.DataFrame:
+    """Retained compounds that actually appear in the preincubated file."""
+    from cypshift.data.challenge import load
+
+    tdi = load("tdi")
+    names = tdi["Molecule_Name"].dropna().unique()[:n]
+    rng = np.random.default_rng(0)
+    frame = {"Molecule_Name": list(names), "SMILES": ["CCO"] * len(names)}
+    for isoform in ISOFORMS:
+        frame[f"{isoform}_pIC50_direct_inhibition"] = rng.uniform(3, 7, len(names))
+    return pd.DataFrame(frame)
+
+
+def test_an_empty_preincubated_intersection_is_treated_as_absent():
+    """Synthetic compounds share no name with the preincubated file. An empty frame
+    left nothing to concatenate; absent is what an empty intersection means."""
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    observations, _ = assemble_training_data(config, _retained())
+    assert "tdi_drc" not in set(observations["assay"])
+
+
+def test_the_preincubated_arm_reaches_the_training_table():
+    """Omitting it reduced the classification track to a constant "no": the curve
+    model's second arm trained on nothing, so predict_is_time_dependent compared an
+    untrained arm against a trained one and scored MCC 0.0 -- identical to answering
+    "no" to every compound. build_observations accepted a tdi argument that the
+    pipeline never passed."""
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    observations, _ = assemble_training_data(config, _retained_with_tdi())
+    assert "tdi_drc" in set(observations["assay"])
+
+
+def test_the_preincubated_arm_can_be_switched_off():
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    config.multifidelity.use_tdi_arm = False
+    observations, _ = assemble_training_data(config, _retained_with_tdi())
+    assert "tdi_drc" not in set(observations["assay"])
+
+
+def test_the_preincubated_arm_is_restricted_to_retained_compounds():
+    """A holdout compound's preincubated measurement must not enter training."""
+    retained = _retained_with_tdi()
+    config = ExperimentConfig()
+    config.override("model.kind", "curve")
+    observations, _ = assemble_training_data(config, retained)
+    arm = observations[observations["assay"] == "tdi_drc"]
+    assert set(arm["Molecule_Name"]) <= set(retained["Molecule_Name"])

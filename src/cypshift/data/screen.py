@@ -235,6 +235,21 @@ def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) 
                 }
             )
         )
+    columns = [
+        "Molecule_Name",
+        "SMILES",
+        "target",
+        "assay",
+        "value",
+        "conf_low",
+        "conf_high",
+        "is_censored",
+    ]
+    if not rows:
+        # No compound in this subset has a screen reading. An empty result is the
+        # correct answer; concatenating nothing raises instead.
+        logger.info("no screen readings for these compounds")
+        return pd.DataFrame(columns=columns)
     observations = pd.concat(rows, ignore_index=True)
     logger.info(
         "screen as curve constraints: %d rows, median inhibited fraction %.2f",

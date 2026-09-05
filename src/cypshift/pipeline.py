@@ -144,8 +144,23 @@ def assemble_training_data(
         screen_pseudo_label=config.multifidelity.screen_weight,
         tdi_arm=config.multifidelity.tdi_weight,
     )
+    # The preincubated arm. Omitting it was measured to kill the classification track
+    # outright: the curve model's second arm trained on nothing, so
+    # predict_is_time_dependent compared an untrained arm against a trained one and
+    # returned False for every compound -- MCC 0.0, identical to answering "no" to
+    # everything. It is a real measurement of the same compounds under preincubation,
+    # so it belongs in the table whatever the model does with it.
+    tdi = load("tdi", Path(config.data.directory)) if config.multifidelity.use_tdi_arm else None
+    if tdi is not None:
+        tdi = tdi[tdi["Molecule_Name"].isin(retained["Molecule_Name"])]
+        if tdi.empty:
+            # No overlap with the retained compounds. Passing an empty frame through
+            # leaves nothing to concatenate; None says "this source is absent", which
+            # is what an empty intersection means.
+            logger.info("no retained compound has a preincubated measurement")
+            tdi = None
     if strategy == "none":
-        return build_observations(retained, weights=weights), None
+        return build_observations(retained, tdi=tdi, weights=weights), None
 
     if strategy in SURROGATE_STRATEGIES:
         # Fitted only on retained compounds. Letting it see the holdout would carry
@@ -159,11 +174,11 @@ def assemble_training_data(
             n_bits=config.features.fingerprint_bits,
             seed=config.data.seed,
         )
-        return build_observations(retained, weights=weights), surrogate
+        return build_observations(retained, tdi=tdi, weights=weights), surrogate
 
     screen = load("screen", Path(config.data.directory))
     kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
-    curves = build_observations(retained, weights=weights)
+    curves = build_observations(retained, tdi=tdi, weights=weights)
 
     if config.model.kind == "curve":
         # The curve model predicts a response, so the screen enters as the quantity it
@@ -176,7 +191,7 @@ def assemble_training_data(
     # Every other model predicts a pIC50, so the screen has to be mapped onto that
     # scale first, which is what the isotonic calibration does.
     labels, _ = pseudo_labels(kept, retained)
-    return build_observations(retained, screen_labels=labels, weights=weights), None
+    return build_observations(retained, screen_labels=labels, tdi=tdi, weights=weights), None
 
 
 def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]:
