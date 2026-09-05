@@ -244,10 +244,10 @@ def submit(
         Path | None,
         typer.Option("--config", help="Experiment config; defaults to configs/default.json."),
     ] = None,
-    with_tdi: Annotated[
-        bool,
-        typer.Option(help="Include the TDI classification columns, if the model predicts them."),
-    ] = True,
+    track: Annotated[
+        str,
+        typer.Option(help='"regression" or "classification"; they want different models.'),
+    ] = "regression",
     verbose: bool = True,
 ) -> None:
     """Fit on all training data and write predictions for the blinded test set.
@@ -256,13 +256,25 @@ def submit(
     to score against. Nothing here is scored: the blinded file carries only
     ``Molecule_Name`` and ``SMILES``, and the labels stay with the organisers.
 
-    The TDI columns are written only when the model can produce them, which in practice
-    means a model of the dose-response curve -- the label compares the preincubated
-    arm's midpoint against the direct arm's, so a model emitting one pIC50 has nothing
-    to compare.
+    ``--track`` picks which leaderboard the run is for, and the two want different
+    models. The classification track needs the preincubated arm in training, without
+    which a curve model answers "no" for every compound and scores MCC 0.0; that arm
+    costs about 0.04 macro ST-RAE on the regression track at every weight tried. Since
+    the tracks are scored separately there is no reason to compromise -- run this twice.
+
+    TDI columns are written only for the classification track, and only when the model
+    can produce them: the label compares the preincubated arm's midpoint against the
+    direct arm's, so a model emitting one pIC50 has nothing to compare.
     """
     _configure_logging(verbose)
+    if track not in ("regression", "classification"):
+        raise typer.BadParameter('track must be "regression" or "classification"')
     config = ExperimentConfig.load(config_path) if config_path else ExperimentConfig.load()
+    # The preincubated arm is what makes the classification track work -- without it a
+    # curve model answers "no" for every compound -- and it costs about 0.04 macro
+    # ST-RAE on the regression track at every weight tried. The tracks are scored on
+    # separate leaderboards, so each gets the model that suits it.
+    config.multifidelity.use_tdi_arm = track == "classification"
     config.validate()
 
     train = load("inhibition", directory)
@@ -278,12 +290,12 @@ def submit(
     for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
         submission[endpoint] = prediction.mean[:, column]
 
-    if with_tdi and hasattr(model, "predict_is_time_dependent"):
+    if track == "classification" and hasattr(model, "predict_is_time_dependent"):
         flags = model.predict_is_time_dependent(test["SMILES"].tolist())
         for endpoint in CLASSIFICATION_ENDPOINTS:
             submission[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
         logger.info("included the TDI columns")
-    elif with_tdi:
+    elif track == "classification":
         logger.info("%s cannot predict TDI; writing the regression columns only", model.name)
 
     missing = submission[list(REGRESSION_ENDPOINTS)].isna().any(axis=1).sum()

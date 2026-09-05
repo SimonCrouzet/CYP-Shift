@@ -112,6 +112,14 @@ class TestSubmit:
         assert set(REGRESSION_ENDPOINTS) <= set(written.columns)
         assert written[list(REGRESSION_ENDPOINTS)].notna().all().all()
 
+    def test_the_track_must_be_one_of_the_two(self):
+        result = CliRunner().invoke(app, ["submit", "/tmp/unused.csv", "--track", "both"])
+        assert result.exit_code != 0
+
+    def test_the_track_option_is_documented(self):
+        result = CliRunner().invoke(app, ["submit", "--help"])
+        assert "--track" in result.output
+
     def test_tdi_columns_are_omitted_when_the_model_cannot_predict_them(self):
         """A model emitting one pIC50 has nothing to compare the arms with."""
         from cypshift.models.boosted import BoostedTrees

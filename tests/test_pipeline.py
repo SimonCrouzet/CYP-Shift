@@ -135,6 +135,7 @@ def test_an_empty_preincubated_intersection_is_treated_as_absent():
     left nothing to concatenate; absent is what an empty intersection means."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
+    config.multifidelity.use_tdi_arm = True
     observations, _ = assemble_training_data(config, _retained())
     assert "tdi_drc" not in set(observations["assay"])
 
@@ -147,8 +148,15 @@ def test_the_preincubated_arm_reaches_the_training_table():
     pipeline never passed."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
+    config.multifidelity.use_tdi_arm = True
     observations, _ = assemble_training_data(config, _retained_with_tdi())
     assert "tdi_drc" in set(observations["assay"])
+
+
+def test_the_arm_is_off_by_default_to_protect_the_regression_track():
+    """It costs about 0.04 macro ST-RAE at every weight tried, more than every gain
+    measured so far combined. The classification track turns it on instead."""
+    assert ExperimentConfig().multifidelity.use_tdi_arm is False
 
 
 def test_the_preincubated_arm_can_be_switched_off():
@@ -164,6 +172,7 @@ def test_the_preincubated_arm_is_restricted_to_retained_compounds():
     retained = _retained_with_tdi()
     config = ExperimentConfig()
     config.override("model.kind", "curve")
+    config.multifidelity.use_tdi_arm = True
     observations, _ = assemble_training_data(config, retained)
     arm = observations[observations["assay"] == "tdi_drc"]
     assert set(arm["Molecule_Name"]) <= set(retained["Molecule_Name"])

@@ -110,10 +110,21 @@ class ConditioningConfig:
 
 @dataclass
 class MultifidelityConfig:
-    #: Whether to train on the preincubated arm as well as the direct one. Leaving it
-    #: out was measured to reduce the classification track to a constant "no", since
-    #: the curve model's second arm then trains on nothing.
-    use_tdi_arm: bool = True
+    #: Whether to train on the preincubated arm as well as the direct one.
+    #:
+    #: Off by default, which is a choice about which leaderboard a run is aimed at
+    #: rather than a judgement that the arm is useless. Including it is what makes the
+    #: classification track work at all -- without it the curve model's second arm
+    #: trains on nothing and predicts "no" for every compound, MCC 0.0 -- but it costs
+    #: 0.033 to 0.061 macro ST-RAE on the regression track at every weight tried, more
+    #: than every improvement measured so far put together.
+    #:
+    #: There is no weight that avoids this: 0.1 / 0.3 / 0.6 / 1.0 gave regression
+    #: 0.780 / 0.801 / 0.781 / 0.773 against 0.740 without the arm, while macro MCC
+    #: moved only between 0.14 and 0.19. So the two tracks want different models, and
+    #: since they are scored on separate leaderboards there is no reason to compromise:
+    #: submit one run with this off and another with it on.
+    use_tdi_arm: bool = False
     strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5
