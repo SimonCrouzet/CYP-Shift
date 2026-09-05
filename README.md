@@ -322,17 +322,70 @@ itself, ~91% identical, same pocket.
 
 ## 📈 Measured so far
 
-Ligand-only ensemble, untuned, scored with the official metric on the
-similarity-matched holdout (491 compounds). Lower ST-RAE is better; 1.0 is the
-constant mean predictor.
+Every number is the official metric on similarity-matched holdouts. Lower ST-RAE is
+better; 1.0 is the constant mean predictor. Where a result is averaged over splits the
+count is stated, because several differences here are smaller than the spread between
+splits.
 
-| endpoint | ST-RAE | MAE | R² | Spearman ρ |
-|---|---|---|---|---|
-| CYP3A4 | **0.607** | 0.543 | 0.558 | 0.721 |
-| CYP2D6 | 0.806 | 0.614 | 0.224 | 0.556 |
-| CYP1A2 | 0.827 | 0.728 | 0.212 | 0.456 |
-| CYP2C9 | 0.831 | 0.538 | 0.194 | 0.479 |
-| **macro** | **0.768** | 0.606 | 0.297 | 0.553 |
+### Model families, head to head
+
+One split, all trained on the same observations:
+
+| model | macro ST-RAE |
+|---|---|
+| **boosted trees** | **0.6891** |
+| curve model | 0.7629 |
+| neural network | 0.8682 |
+| simple average of the three | 0.7049 |
+
+Averaging loses to the best single family — it drags a good model toward two worse ones.
+
+### What each change is worth
+
+Boosted trees, three splits, each change measured against the one above it:
+
+| configuration | macro ST-RAE | Δ |
+|---|---|---|
+| plain, no screen, 2048-bit | 0.7034 | — |
+| + pooled screen | 0.6771 | −0.0264 |
+| + 4096-bit fingerprints | 0.6661 | −0.0374 |
+| + CYP2C19 auxiliary data | 0.6748 | −0.0287 |
+| **all three, current default** | **0.6625** | **−0.0410** |
+
+Better on all three splits, and close to additive. Two things behind these numbers are
+worth stating separately.
+
+**Training on the metric is worth 0.045** — 0.6711 against 0.7164 for squared error and
+0.6908 for absolute. That gain appears only once the screen is pooled; measured without
+it the same comparison gave −0.0026 at p = 0.42. The objective's value depends on the
+training set, which was not obvious.
+
+**Hyperparameter tuning is close to exhausted.** Of leaves, tree count, learning rate
+and fingerprint width, only width helped, by 0.0032 at double the cost. Effort belongs
+elsewhere.
+
+### Per endpoint, at the current default
+
+| endpoint | ST-RAE |
+|---|---|
+| CYP3A4 | **0.409** |
+| CYP2C9 | 0.693 |
+| CYP1A2 | 0.767 |
+| CYP2D6 | 0.805 |
+| **macro** | **0.669** |
+
+CYP3A4 remains far easier than the rest; CYP2D6 remains the hardest, and has no
+auxiliary enzyme within reach to help it.
+
+### Things measured and rejected
+
+| idea | result |
+|---|---|
+| Routing between model families per compound | worse than the best single family; the "39% oracle headroom" is a statistical artefact — three *identical* models show 56–58% |
+| Cross-model disagreement as uncertainty | Spearman +0.088 against the best model's error |
+| Basic-amine geometry features for CYP2D6 | +0.005 R² on the target endpoint, within noise |
+| Screen as a surrogate feature | 0.7176 and 0.6951 against 0.6891 for ignoring it — the published multi-fidelity result does not transfer here |
+| The loss-minimising point estimate | see below |
 
 ### What the decision layer is worth
 
@@ -351,7 +404,26 @@ samples where the submission actually beats the posterior mean.
 | diverse | placement, selected at 0.60 | 0.7710 | −0.0032 | 68% |
 | **diverse** | **placement, selected at 0.95** | **0.7657** | **−0.0085** | **99%** |
 
-Three findings, in order of how much they cost to learn.
+**That gain did not survive the model improving.** Re-measured on the current boosted
+tree over three splits, placement now *costs* 0.042:
+
+| | CYP1A2 | CYP2C9 | CYP2D6 | CYP3A4 | macro |
+|---|---|---|---|---|---|
+| posterior mean | 0.767 | 0.693 | 0.805 | 0.409 | **0.669** |
+| loss-minimising point | 0.794 | 0.774 | 0.794 | 0.480 | 0.710 |
+| Δ | +0.027 | +0.081 | **−0.012** | +0.070 | **+0.042** |
+
+Only CYP2D6 still benefits, and CYP3A4 — the endpoint placement was built for — is
+0.070 worse. The selector catches this without being told: fitted on a calibration half
+it refuses placement on all four endpoints (p = 0.587, 0.185, 0.368, 1.000 against a
+0.05 threshold) and falls back to the mean, scoring 0.6814 where applying placement
+everywhere would score 0.7399. The layer is inert rather than harmful, which is what it
+was built for.
+
+The lesson is the general one: **this layer's value is a property of the model's
+posterior, not of the metric**, so it has to be re-measured whenever the model changes.
+
+Three findings from the original measurement, in order of how much they cost to learn.
 
 **Placement trades the accuracy metrics for the scored one**, as designed. Mean
 absolute error and R² both worsen while ST-RAE improves. That is the same signature
