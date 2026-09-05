@@ -117,7 +117,66 @@ def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
     )
     frame["has_basic_amine"] = (frame["n_basic_amines"] > 0).astype(np.float32)
     frame["is_type_ii_candidate"] = (frame["n_heme_coordinating_n"] > 0).astype(np.float32)
+    frame = pd.concat([frame, basic_amine_geometry(molecules)], axis=1)
     return frame
+
+
+#: Bond counts separating a basic nitrogen from an aromatic ring in the CYP2D6
+#: pharmacophore. The published range is a 5-7 A through-space separation; on a
+#: saturated chain that is roughly four to six bonds, so the window is set generously
+#: either side rather than pretending the mapping is exact.
+PHARMACOPHORE_BONDS = (3, 8)
+
+
+def basic_amine_geometry(molecules: list[Chem.Mol]) -> pd.DataFrame:
+    """How far a basic nitrogen sits from the nearest aromatic ring, in bonds.
+
+    Counting basic amines says CYP2D6 will like a molecule; it does not say the amine
+    is arranged the way CYP2D6 needs. The isoform's recognition is an ion pair to
+    Asp301 or Glu216 with an aromatic ring stacked in the pocket, so the separation
+    between the two matters and a count cannot see it.
+
+    Distances are topological -- shortest path in bonds -- not through-space. That is
+    deliberate: conformer-derived 3D shape descriptors were measured on this dataset
+    and came out worse than the mean alone, and a bond count needs no conformer, no
+    alignment and no random seed.
+
+    Returns:
+        Three columns. ``min_basic_n_to_aromatic_bonds`` is the shortest such path,
+        with -1 where the molecule lacks a basic amine or an aromatic ring;
+        ``basic_n_in_pharmacophore_window`` flags a path inside
+        :data:`PHARMACOPHORE_BONDS`; ``n_aromatic_rings_near_basic_n`` counts the rings
+        reachable within the window.
+    """
+    pattern = Chem.MolFromSmarts(BASIC_AMINE_SMARTS)
+    rows = []
+    for molecule in molecules:
+        nitrogens = [match[0] for match in molecule.GetSubstructMatches(pattern)]
+        aromatics = [a.GetIdx() for a in molecule.GetAtoms() if a.GetIsAromatic()]
+        if not nitrogens or not aromatics:
+            rows.append((-1.0, 0.0, 0.0))
+            continue
+        distances = Chem.GetDistanceMatrix(molecule)
+        paths = distances[np.ix_(nitrogens, aromatics)]
+        shortest = float(paths.min())
+        low, high = PHARMACOPHORE_BONDS
+        rings = molecule.GetRingInfo().AtomRings()
+        near = sum(
+            1
+            for ring in rings
+            if any(molecule.GetAtomWithIdx(a).GetIsAromatic() for a in ring)
+            and distances[np.ix_(nitrogens, list(ring))].min() <= high
+        )
+        rows.append((shortest, float(low <= shortest <= high), float(near)))
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "min_basic_n_to_aromatic_bonds",
+            "basic_n_in_pharmacophore_window",
+            "n_aromatic_rings_near_basic_n",
+        ],
+        dtype=np.float32,
+    )
 
 
 def featurise(

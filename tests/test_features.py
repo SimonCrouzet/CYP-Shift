@@ -1,9 +1,17 @@
 """Featurisation blocks, including the mechanistic substructure flags."""
 
 import numpy as np
+import pandas as pd
 import pytest
+from rdkit import Chem
 
-from cypshift.features.molecular import featurise, mechanistic, morgan_counts, physicochemical
+from cypshift.features.molecular import (
+    basic_amine_geometry,
+    featurise,
+    mechanistic,
+    morgan_counts,
+    physicochemical,
+)
 
 
 def test_unparseable_smiles_raises_with_its_position():
@@ -63,3 +71,53 @@ def test_requesting_no_blocks_is_an_error():
 
 def test_features_are_finite():
     assert np.isfinite(featurise(["CCO", "c1ccncc1", "CCN(CC)CC"], n_bits=256)).all()
+
+
+class TestBasicAmineGeometry:
+    """CYP2D6 recognises a basic nitrogen ion-paired to Asp301 or Glu216 with an
+    aromatic ring stacked nearby. Counting amines cannot see the arrangement."""
+
+    @staticmethod
+    def _frame(*smiles: str) -> pd.DataFrame:
+        return basic_amine_geometry([Chem.MolFromSmiles(s) for s in smiles])
+
+    def test_a_molecule_without_a_basic_amine_is_marked_absent(self):
+        """-1 rather than 0: zero bonds would mean the nitrogen is on the ring."""
+        row = self._frame("CC(=O)Oc1ccccc1C(=O)O").iloc[0]
+        assert row["min_basic_n_to_aromatic_bonds"] == -1.0
+        assert row["basic_n_in_pharmacophore_window"] == 0.0
+
+    def test_a_molecule_without_an_aromatic_ring_is_marked_absent(self):
+        assert self._frame("CCN(CC)CC").iloc[0]["min_basic_n_to_aromatic_bonds"] == -1.0
+
+    def test_a_known_substrate_falls_inside_the_window(self):
+        """Diphenhydramine and codeine are both CYP2D6 substrates."""
+        frame = self._frame("CN(C)CCOC(c1ccccc1)c1ccccc1", "CN1CCC23C4Oc5c(O)ccc(CC1C2C=CC4O)c35")
+        assert (frame["basic_n_in_pharmacophore_window"] == 1.0).all()
+
+    def test_distance_is_the_shortest_path_to_any_aromatic_atom(self):
+        """Benzylamine: N-C-c, so two bonds."""
+        assert self._frame("NCc1ccccc1").iloc[0]["min_basic_n_to_aromatic_bonds"] == 2.0
+
+    def test_a_longer_linker_gives_a_longer_distance(self):
+        short = self._frame("NCc1ccccc1").iloc[0]["min_basic_n_to_aromatic_bonds"]
+        long = self._frame("NCCCCc1ccccc1").iloc[0]["min_basic_n_to_aromatic_bonds"]
+        assert long > short
+
+    def test_a_distance_outside_the_window_is_not_flagged(self):
+        assert self._frame("NCc1ccccc1").iloc[0]["basic_n_in_pharmacophore_window"] == 0.0
+
+    def test_rings_are_counted_not_atoms(self):
+        """Diphenhydramine has two aromatic rings reachable from its amine."""
+        assert (
+            self._frame("CN(C)CCOC(c1ccccc1)c1ccccc1").iloc[0]["n_aromatic_rings_near_basic_n"]
+            == 2.0
+        )
+
+    def test_the_geometry_columns_reach_the_mechanistic_block(self):
+        frame = mechanistic(["CN(C)CCOC(c1ccccc1)c1ccccc1"])
+        assert "basic_n_in_pharmacophore_window" in frame.columns
+
+    def test_every_value_is_finite(self):
+        frame = self._frame("CN(C)CCOC(c1ccccc1)c1ccccc1", "CC(=O)O", "c1ccccc1")
+        assert np.isfinite(frame.to_numpy()).all()
