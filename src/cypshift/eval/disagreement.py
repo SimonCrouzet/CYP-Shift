@@ -1,26 +1,26 @@
 """Disagreement between models as an estimate of epistemic uncertainty.
 
-**What this cannot do, contrary to an obvious first guess: improve ST-RAE by widening
-an interval.** The credible interval in the metric is ``y_true_lower`` /
-``y_true_upper`` -- the *organisers'* interval on the measured label, carried in the
-truth table. A submission supplies point estimates and nothing else, so interval width
-is not ours to choose and no amount of well-calibrated uncertainty buys score directly.
+Where independently-built models disagree about a compound, at least one is wrong, and
+the size of that disagreement is a per-compound signal of how much to trust the
+prediction. This is the standard reading of ensemble disagreement as *epistemic*
+uncertainty -- uncertainty from the model rather than from measurement noise.
 
-What it is for is choosing. Where two model families disagree, at least one is wrong,
-and a per-compound estimate of that lets the decision layer route between them, flags
-compounds whose prediction should not be trusted, and says where more data would pay.
-Those change the point estimate, which is the only thing scored.
+An ensemble's *internal* spread underestimates it. Members that share an architecture,
+a featurisation and a training set disagree about sampling noise and agree about
+everything their shared assumptions get wrong. Two different model families disagree
+about the assumptions too, and that extra disagreement is the part that tracks being
+wrong for structural reasons -- a compound unlike anything in training, or one whose
+activity runs through a mechanism the features do not encode.
 
-An ensemble's *internal* spread underestimates this. Members share an architecture,
-a featurisation and a training set, so they disagree about sampling noise and agree
-about everything their shared assumptions get wrong. Two different model families
-disagree about the assumptions too. That extra disagreement is the part which tracks
-being wrong for structural reasons -- a compound unlike anything in training, or one
-whose activity runs through a mechanism the features do not encode.
+What this does *not* do is change the submitted number by itself: the metric scores a
+point estimate against the organisers' own credible interval, so a wide or narrow
+uncertainty is not something a submission carries. Its uses are the ones that act on an
+uncertainty estimate -- flagging low-confidence predictions, prioritising where more
+data would pay, and feeding a per-compound weight to whatever consumes it downstream.
 
-Disagreement is an unscaled signal. :func:`calibrate_width` fits the one scalar that
-turns it into an interval of a requested coverage, which is useful for reporting and
-for the decision layer's thresholds even though it is not submitted.
+Disagreement is an unscaled signal; :func:`calibrate_width` fits the one scalar that
+turns it into an interval of a requested coverage, for reporting. Whether it earns its
+place is a tuning question, not one to settle from a single reduced experiment.
 """
 
 import logging
@@ -41,9 +41,20 @@ class Disagreement:
     scale: float
     floor: float
 
-    def interval(self, centre: NDArray[np.float64]) -> tuple[NDArray[np.float64], ...]:
-        """Lower and upper bounds around a point estimate."""
-        half = np.maximum(self.spread * self.scale, self.floor)
+    def interval(
+        self, centre: NDArray[np.float64], spread: NDArray[np.float64] | None = None
+    ) -> tuple[NDArray[np.float64], ...]:
+        """Lower and upper bounds around a point estimate.
+
+        Args:
+            centre: The point estimates to bound.
+            spread: Cross-model disagreement for these compounds. Defaults to the
+                calibration-set spread, which is correct only when ``centre`` is that
+                same set; pass the new compounds' spread to apply the fitted scale to
+                them.
+        """
+        source = self.spread if spread is None else np.asarray(spread, dtype=float)
+        half = np.maximum(source * self.scale, self.floor)
         return centre - half, centre + half
 
 

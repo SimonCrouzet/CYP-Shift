@@ -377,15 +377,21 @@ elsewhere.
 CYP3A4 remains far easier than the rest; CYP2D6 remains the hardest, and has no
 auxiliary enzyme within reach to help it.
 
-### Things measured and rejected
+### Measured so far, with one caveat
 
-| idea | result |
-|---|---|
-| Routing between model families per compound | worse than the best single family; the "39% oracle headroom" is a statistical artefact — three *identical* models show 56–58% |
-| Cross-model disagreement as uncertainty | Spearman +0.088 against the best model's error |
-| Basic-amine geometry features for CYP2D6 | +0.005 R² on the target endpoint, within noise |
-| Screen as a surrogate feature | 0.7176 and 0.6951 against 0.6891 for ignoring it — the published multi-fidelity result does not transfer here |
-| The loss-minimising point estimate | +0.042 on the current tree; removed |
+These are single-configuration measurements, not verdicts. Everything here is kept and
+in scope for tuning; the numbers say where a thing stands today, not that it is finished.
+
+| idea | where it stands | still in the code |
+|---|---|---|
+| Basic-amine geometry features for CYP2D6 | +0.005 R² on the target endpoint in one CV — marginal so far | yes, in the feature block |
+| Screen as a surrogate feature | 0.717 / 0.695 against 0.689 for pooling it as rows — pooling wins for now | yes, a swept option |
+| Cross-model disagreement as uncertainty | Spearman +0.088 with error in one reduced test; kept as an epistemic-uncertainty estimate to tune | yes |
+
+Two things were removed rather than kept, both mine and unrequested: a per-compound
+**router** between model families (its apparent headroom was a statistical artefact of
+taking the minimum error over several models), and the **loss-minimising point
+estimate** (it submitted a shifted number instead of the prediction and cost 0.042).
 
 
 ---
@@ -474,9 +480,9 @@ hf auth whoami         # verify
 |---|---|---|
 | ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
 | ✅ | Define the shared model interface | predictive distribution in, nothing else |
-| ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **MA-ST-RAE 0.768**, see below |
+| ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **best current MA-ST-RAE 0.6625** (boosted tree, pooled screen, 4096-bit) |
 | ✅ | **Use the single-concentration screen** | pooled as pseudo-labels: **+0.0304 macro on 3/3 splits**, now the default |
-| ✅ | Chemprop D-MPNN | built on chemprop 2.3.1 |
+| ◐ | Chemprop D-MPNN | built on chemprop 2.3.1; **not yet scored** against the tree (measurement in progress) |
 | ✅ | Auxiliary data from ChEMBL, deduplicated | CYP2C19: 1,618 compounds, **+0.006 macro on 2/3 splits**; beats shuffled-label control by 0.009 |
 | ✅ | Train on the soft-threshold metric | **worth 0.045 over squared error** once the screen is pooled |
 | ✅ | **Score the TDI track** | official metrics vendored: MCC, accuracy, precision, recall, F1; ranked by MCC |
@@ -485,10 +491,10 @@ hf auth whoami         # verify
 
 | | task | notes |
 |---|---|---|
-| ⬜ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures |
-| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness |
-| ⬜ | Disagreement between models as epistemic uncertainty | a lower bar than beating a fingerprint on accuracy |
-| ⬜ | CYP2D6 as a dedicated project | it decides the macro average |
+| ⬜ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures — **blocked: needs a co-folding backend (Boltz-2) + GPU, not in this environment** |
+| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness — **blocked on the same tooling; needs poses first** |
+| ◐ | Disagreement between models as epistemic uncertainty | built (`eval/disagreement.py`, cross-model spread + conformal width); an epistemic-uncertainty estimate to tune, not yet wired into a submission |
+| ⬜ | CYP2D6 as a dedicated project | it decides the macro average; the basic-amine geometry probe was marginal |
 
 ### 🔭 Open directions, not yet committed
 
@@ -500,15 +506,19 @@ hf auth whoami         # verify
 | 🧊 **The structure track** | co-folding rather than docking, scored on LDDT-PLI; decide after the interim leaderboard |
 
 
-### ⛔ Approaches evaluated and set aside
+### 🧪 Tried once or reasoned against — open, not closed
 
-| approach | why |
+None of these is settled. Each was either measured a single time or argued against from
+first principles; they remain candidates to revisit, especially under tuning or a
+different model.
+
+| approach | current reason for the pause |
 |---|---|
-| Physics docking scores as features | no published benchmark supports it; multi-ligand occupancy and induced fit make it incoherent |
-| Conformer-derived 3D shape descriptors | worse than the mean alone; add 0.01–0.05 R² at best |
-| Cross-target external data as a CYP2D6 fix | transfer runs through lipophilicity, the one axis 2D6 does not use |
-| Emax file | 5th–95th percentile spans 0.16 log units; no discriminative content |
-| Tox21 CYP assays | cell-based reporter and induction assays, different biology |
+| Conformer-derived 3D shape descriptors | one test added little (~0.01–0.05 R²), but never tuned or combined with the current model |
+| Physics docking scores as features | no published benchmark found to support it, and multi-ligand occupancy complicates it — not tested here |
+| Cross-target external data as a CYP2D6 fix | the plausible transfer axis is lipophilicity, which 2D6 barely uses; not measured directly |
+| Emax file | its 5th–95th percentile spans 0.16 log units, so little to predict — worth a second look if a use appears |
+| Tox21 CYP assays | cell-based reporter and induction assays, a different biology than the microsomal endpoint |
 
 ---
 
