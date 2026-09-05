@@ -70,7 +70,10 @@ class DataConfig:
 
 @dataclass
 class FeatureConfig:
-    fingerprint_bits: int = 2048
+    #: 4096 rather than 2048: measured -0.0110 macro ST-RAE over three splits, the
+    #: only hyperparameter change that helped. Leaves, trees and learning rate were
+    #: all already at or past their optimum.
+    fingerprint_bits: int = 4096
     fingerprint_radius: int = 2
     use_physicochemical: bool = True
     use_mechanistic: bool = True

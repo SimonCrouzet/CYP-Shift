@@ -7,7 +7,7 @@
     "seed": 0
   },
   "features": {
-    "fingerprint_bits": 2048,
+    "fingerprint_bits": 4096,
     "fingerprint_radius": 2,
     "use_physicochemical": true,
     "use_mechanistic": true
