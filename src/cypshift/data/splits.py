@@ -21,7 +21,7 @@ current retained set, reselect, repeat.
 
 A ceiling applies and should be reported rather than hidden. The training library is
 a diversity set, so it simply does not contain enough mutually similar compounds to
-choose_estimates a holdout as close to the retained data as the analog-expanded test set sits to
+place a holdout as close to the retained data as the analog-expanded test set sits to
 the full training set. Matching narrows the gap; it does not close it. Use
 :func:`similarity_profile_gap` to state the residual whenever a split is used.
 """

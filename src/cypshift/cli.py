@@ -14,9 +14,6 @@ from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
 from cypshift.data.screen import pseudo_labels
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.decision.calibration import ConformalCalibrator
-from cypshift.decision.interval_width import IntervalWidthModel
-from cypshift.decision.point_estimate import choose_estimates
-from cypshift.decision.selection import EstimatorSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.experiment import ExperimentConfig
@@ -171,16 +168,6 @@ def baseline(
 
     raw = model.predict(evaluation["SMILES"].tolist())
     calibrated = calibrator.apply(raw)
-    calibration_prediction = calibrator.apply(model.predict(calibration["SMILES"].tolist()))
-
-    width_models = {
-        endpoint: IntervalWidthModel.fit(
-            retained[endpoint].to_numpy(float),
-            retained[f"{endpoint}_conf_low"].to_numpy(float),
-            retained[f"{endpoint}_conf_high"].to_numpy(float),
-        )
-        for endpoint in REGRESSION_ENDPOINTS
-    }
 
     for label, distribution in (("raw", raw), ("conformally calibrated", calibrated)):
         diagnostics = pd.DataFrame(
@@ -196,44 +183,14 @@ def baseline(
         print(f"\n=== predictive distribution, {label} ===")
         print(diagnostics.round(3).to_string())
 
-    # Whether point_estimate helps is decided on the calibration half and applied to the
-    # evaluation half, never chosen on the compounds it is then scored against.
-    selector = EstimatorSelector.fit(
-        choose_estimates(calibration_prediction, width_models, seed=seed),
-        calibration_prediction.mean,
-        calibration,
-    )
-    placed_calibrated = choose_estimates(calibrated, width_models, seed=seed)
-
-    candidates = {
-        "posterior mean": raw.mean,
-        "point_estimate, raw spread": choose_estimates(raw, width_models, seed=seed),
-        "point_estimate, calibrated spread": placed_calibrated,
-        "point_estimate, selected endpoints": selector.apply(placed_calibrated, raw.mean),
-    }
-    submissions = {}
-    for label, values in candidates.items():
-        submission = evaluation[["Molecule_Name"]].copy()
-        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
-            submission[endpoint] = values[:, column]
-        submissions[label] = submission
-
-    summary = {
-        label: score_submission(frame, evaluation)["ST-RAE_mean"]
-        for label, frame in submissions.items()
-    }
+    # The submission is the model's prediction; the posterior mean is that number.
+    # Score it on the evaluation half through the official metric.
+    submission = evaluation[["Molecule_Name"]].copy()
+    for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+        submission[endpoint] = raw.mean[:, column]
+    scores = score_submission(submission, evaluation)
     print("\n=== ST-RAE (lower is better) ===")
-    print(pd.DataFrame(summary).round(4).to_string())
-
-    # Differences this small are only interpretable paired: both submissions are
-    # scored on identical bootstrap draws, so the difference is taken within a sample.
-    reference = "posterior mean"
-    for label in candidates:
-        if label == reference:
-            continue
-        comparison = paired_difference(submissions[label], submissions[reference], evaluation)
-        print(f"\n=== {label} minus {reference}, paired ===")
-        print(comparison.round(4).to_string())
+    print(scores["ST-RAE_mean"].round(4).to_string())
 
 
 @app.command()

@@ -58,7 +58,7 @@ class MemberSpec:
 
 
 #: Five members spanning two feature views and four inductive biases. The neighbour
-#: model earns its choose_estimates despite being the weakest alone: the blinded test set is
+#: model earns its place despite being the weakest alone: the blinded test set is
 #: analog series expanded from training hits, so local transfer is exactly the regime
 #: it is good at and the tree ensembles are not.
 DEFAULT_MEMBERS: tuple[MemberSpec, ...] = (

@@ -385,87 +385,8 @@ auxiliary enzyme within reach to help it.
 | Cross-model disagreement as uncertainty | Spearman +0.088 against the best model's error |
 | Basic-amine geometry features for CYP2D6 | +0.005 R² on the target endpoint, within noise |
 | Screen as a surrogate feature | 0.7176 and 0.6951 against 0.6891 for ignoring it — the published multi-fidelity result does not transfer here |
-| The loss-minimising point estimate | see below |
+| The loss-minimising point estimate | +0.042 on the current tree; removed |
 
-### What the decision layer is worth
-
-Everything below is scored with the official metric on the evaluation half of a
-similarity-matched holdout. Differences this small are only interpretable **paired**:
-the resampling seed is fixed, so both submissions are scored on identical bootstrap
-draws and the difference is taken within each sample. The win rate is the share of
-samples where the submission actually beats the posterior mean.
-
-| model | submission | MA-ST-RAE | paired Δ | win rate |
-|---|---|---|---|---|
-| seeded | posterior mean | 0.7713 | — | — |
-| seeded | placement, all endpoints | 0.7683 | −0.0030 | 76% |
-| diverse | posterior mean | 0.7742 | — | — |
-| diverse | placement, all endpoints | 0.7674 | −0.0068 | 76% |
-| diverse | placement, selected at 0.60 | 0.7710 | −0.0032 | 68% |
-| **diverse** | **placement, selected at 0.95** | **0.7657** | **−0.0085** | **99%** |
-
-**That gain did not survive the model improving.** Re-measured on the current boosted
-tree over three splits, placement now *costs* 0.042:
-
-| | CYP1A2 | CYP2C9 | CYP2D6 | CYP3A4 | macro |
-|---|---|---|---|---|---|
-| posterior mean | 0.767 | 0.693 | 0.805 | 0.409 | **0.669** |
-| loss-minimising point | 0.794 | 0.774 | 0.794 | 0.480 | 0.710 |
-| Δ | +0.027 | +0.081 | **−0.012** | +0.070 | **+0.042** |
-
-Only CYP2D6 still benefits, and CYP3A4 — the endpoint placement was built for — is
-0.070 worse. The selector catches this without being told: fitted on a calibration half
-it refuses placement on all four endpoints (p = 0.587, 0.185, 0.368, 1.000 against a
-0.05 threshold) and falls back to the mean, scoring 0.6814 where applying placement
-everywhere would score 0.7399. The layer is inert rather than harmful, which is what it
-was built for.
-
-The lesson is the general one: **this layer's value is a property of the model's
-posterior, not of the metric**, so it has to be re-measured whenever the model changes.
-
-Three findings from the original measurement, in order of how much they cost to learn.
-
-**Placement trades the accuracy metrics for the scored one**, as designed. Mean
-absolute error and R² both worsen while ST-RAE improves. That is the same signature
-visible on the public leaderboard, where the entrant with the best mean absolute
-error of all 124 places seventh.
-
-**Its value tracks how honestly the posterior states its own uncertainty.** A seeded
-ensemble understated error by twelve to fifteen times, with nominal 90% intervals
-covering 4 to 10% of compounds; on that spread placement *lost* ground. Conformal
-calibration turned the loss into a gain. Replacing seed diversity with genuine
-architectural diversity — different feature views, different inductive biases —
-widened the raw spread eightfold and doubled the gain again.
-
-**Selection on a few hundred compounds does not transfer, and assuming it does makes
-things worse.** Estimating the per-endpoint win rate on one half of the holdout and
-checking it on the other, two of four endpoints reversed:
-
-| endpoint | calibration half | evaluation half | replicates? |
-|---|---|---|---|
-| CYP3A4 | 100% | 99% | yes |
-| CYP1A2 | 16% | 24% | yes |
-| CYP2C9 | **81%** | **17%** | **reversed** |
-| CYP2D6 | **59%** | **84%** | **reversed** |
-
-Selecting at a threshold just above a coin flip scored 0.7710, *worse* than not
-selecting at all. Demanding near-unanimity instead — which is the property that
-separated what replicated from what did not — selects CYP3A4 alone and reaches
-0.7657, beating the posterior mean in 99% of paired samples. Restricting to the one
-replicated endpoint both increased the gain and made it resolvable.
-
-The general lesson is the sharper version of the validation problem below. It is not
-only that models cannot be ranked offline here; **a single binary decision per
-endpoint cannot be fitted reliably on this much held-out data.** Anything chosen on a
-few hundred compounds should be assumed not to transfer until it replicates.
-
-Read the baseline as a floor, not as a leaderboard prediction. The holdout is deliberately
-built to resemble the blinded test set, but it cannot reproduce the analog-series
-structure that makes the real test set easier, so the same model should score better
-there. Note also that the endpoint ordering differs from the public leaderboard,
-where CYP2C9 is the *easiest* endpoint and CYP2D6 the hardest. That difference is
-itself informative: it says CYP2C9 benefits most from the test set's local analog
-structure, which a holdout drawn from a diversity library cannot supply.
 
 ---
 
@@ -558,8 +479,6 @@ hf auth whoami         # verify
 | ✅ | Chemprop D-MPNN | built on chemprop 2.3.1 |
 | ✅ | Auxiliary data from ChEMBL, deduplicated | CYP2C19: 1,618 compounds, **+0.006 macro on 2/3 splits**; beats shuffled-label control by 0.009 |
 | ✅ | Train on the soft-threshold metric | **worth 0.045 over squared error** once the screen is pooled |
-| ✅ | **Build the decision layer** | −0.0085 on the old ensemble; **+0.042 on the current tree**, so the selector now correctly refuses it |
-| ⬜ | Revisit placement | it no longer helps any endpoint but CYP2D6; the selector gates it, so it is inert not harmful |
 | ✅ | **Score the TDI track** | official metrics vendored: MCC, accuracy, precision, recall, F1; ranked by MCC |
 
 ### 🧊 Structure work, if the blocking check clears it
