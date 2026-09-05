@@ -141,6 +141,13 @@ def basic_amine_geometry(molecules: list[Chem.Mol]) -> pd.DataFrame:
     and came out worse than the mean alone, and a bond count needs no conformer, no
     alignment and no random seed.
 
+    **Measured, and the gain is marginal.** Five-fold cross-validated R2 added to the
+    existing physicochemical, fingerprint and substructure blocks: CYP2D6 0.1139 to
+    0.1193, CYP2C9 0.3543 to 0.3680, CYP1A2 0.1857 to 0.1809, CYP3A4 0.5757 to 0.5729.
+    The +0.005 on CYP2D6 is the endpoint these were designed for and is within the
+    noise of a single cross-validation. Kept because they are three cheap and
+    interpretable columns that do not hurt, not because they were shown to help.
+
     Returns:
         Three columns. ``min_basic_n_to_aromatic_bonds`` is the shortest such path,
         with -1 where the molecule lacks a basic amine or an aromatic ring;
