@@ -486,8 +486,8 @@ hf auth whoami         # verify
 | ✅ | Chemprop D-MPNN | built on chemprop 2.3.1 |
 | ✅ | Auxiliary data from ChEMBL, deduplicated | CYP2C19: 1,618 compounds, **+0.006 macro on 2/3 splits**; beats shuffled-label control by 0.009 |
 | ✅ | Train on the soft-threshold metric | **worth 0.045 over squared error** once the screen is pooled |
-| ✅ | **Build the decision layer** | −0.0085 macro, 99% of paired samples |
-| ⬜ | Extend placement beyond CYP3A4 | needs a better posterior on the other three |
+| ✅ | **Build the decision layer** | −0.0085 on the old ensemble; **+0.042 on the current tree**, so the selector now correctly refuses it |
+| ⬜ | Revisit placement | it no longer helps any endpoint but CYP2D6; the selector gates it, so it is inert not harmful |
 | ✅ | **Score the TDI track** | official metrics vendored: MCC, accuracy, precision, recall, F1; ranked by MCC |
 
 ### 🧊 Structure work, if the blocking check clears it
