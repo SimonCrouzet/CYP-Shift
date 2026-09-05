@@ -50,3 +50,70 @@ def test_score_rejects_a_submission_with_a_missing_prediction(tmp_path):
     frame.to_csv(preds_path, index=False)
     result = runner.invoke(app, ["score", str(preds_path), "--truth", str(truth_path)])
     assert result.exit_code != 0
+
+
+class TestSubmit:
+    """The submission path: fit on everything, predict the blinded set, write a CSV."""
+
+    def test_submit_is_registered(self):
+        result = CliRunner().invoke(app, ["--help"])
+        assert "submit" in result.output
+
+    def test_submit_help_describes_the_blinded_set(self):
+        result = CliRunner().invoke(app, ["submit", "--help"])
+        assert result.exit_code == 0
+        assert "blinded" in result.output.lower()
+
+    def test_a_written_submission_has_the_scored_columns(self, tmp_path, monkeypatch):
+        """Every regression endpoint must be present and complete, or the leaderboard
+        rejects the file."""
+        import numpy as np
+        import pandas as pd
+
+        from cypshift.config import REGRESSION_ENDPOINTS
+
+        test_frame = pd.DataFrame(
+            {"Molecule_Name": ["A", "B", "C"], "SMILES": ["CCO", "c1ccccc1", "CCN"]}
+        )
+        train_frame = test_frame.assign(
+            **{e: [5.0, 6.0, 5.5] for e in REGRESSION_ENDPOINTS},
+            **{f"{e}_conf_low": [4.5, 5.5, 5.0] for e in REGRESSION_ENDPOINTS},
+            **{f"{e}_conf_high": [5.5, 6.5, 6.0] for e in REGRESSION_ENDPOINTS},
+        )
+
+        class FakeModel:
+            name = "fake"
+            endpoints = tuple(REGRESSION_ENDPOINTS)
+
+            def fit(self, observations):
+                return self
+
+            def predict(self, smiles):
+                from cypshift.models.base import PredictiveDistribution
+
+                values = np.full((1, len(smiles), len(REGRESSION_ENDPOINTS)), 5.0)
+                return PredictiveDistribution(samples=values, endpoints=self.endpoints)
+
+        monkeypatch.setattr(
+            "cypshift.cli.load",
+            lambda name, directory=None: test_frame if name == "test" else train_frame,
+        )
+        monkeypatch.setattr("cypshift.cli.build_model", lambda config, surrogate=None: FakeModel())
+        monkeypatch.setattr(
+            "cypshift.cli.assemble_training_data", lambda config, frame: (pd.DataFrame(), None)
+        )
+
+        output = tmp_path / "submission.csv"
+        result = CliRunner().invoke(app, ["submit", str(output)])
+        assert result.exit_code == 0, result.output
+
+        written = pd.read_csv(output)
+        assert len(written) == len(test_frame)
+        assert set(REGRESSION_ENDPOINTS) <= set(written.columns)
+        assert written[list(REGRESSION_ENDPOINTS)].notna().all().all()
+
+    def test_tdi_columns_are_omitted_when_the_model_cannot_predict_them(self):
+        """A model emitting one pIC50 has nothing to compare the arms with."""
+        from cypshift.models.boosted import BoostedTrees
+
+        assert not hasattr(BoostedTrees(), "predict_is_time_dependent")

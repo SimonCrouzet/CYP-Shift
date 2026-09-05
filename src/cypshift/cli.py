@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import typer
 
-from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
+from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, MACRO_LABEL, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import build_observations
 from cypshift.data.challenge import DEFAULT_DATA_DIR, fetch_all, load
 from cypshift.data.screen import pseudo_labels
@@ -19,12 +19,15 @@ from cypshift.decision.point_estimate import choose_estimates
 from cypshift.decision.selection import EstimatorSelector
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
+from cypshift.experiment import ExperimentConfig
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.ensemble import PerTargetEnsemble
 from cypshift.models.forest import PerTargetForest
 from cypshift.models.shared import SharedEnsemble
+from cypshift.pipeline import assemble_training_data, build_model
 
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
+
 logger = logging.getLogger(__name__)
 
 
@@ -231,6 +234,68 @@ def baseline(
         comparison = paired_difference(submissions[label], submissions[reference], evaluation)
         print(f"\n=== {label} minus {reference}, paired ===")
         print(comparison.round(4).to_string())
+
+
+@app.command()
+def submit(
+    output: Annotated[Path, typer.Argument(help="Where to write the submission CSV.")],
+    directory: Path = DEFAULT_DATA_DIR,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Experiment config; defaults to configs/default.json."),
+    ] = None,
+    with_tdi: Annotated[
+        bool,
+        typer.Option(help="Include the TDI classification columns, if the model predicts them."),
+    ] = True,
+    verbose: bool = True,
+) -> None:
+    """Fit on all training data and write predictions for the blinded test set.
+
+    Trains on everything, unlike `baseline`, which holds a similarity-matched split back
+    to score against. Nothing here is scored: the blinded file carries only
+    ``Molecule_Name`` and ``SMILES``, and the labels stay with the organisers.
+
+    The TDI columns are written only when the model can produce them, which in practice
+    means a model of the dose-response curve -- the label compares the preincubated
+    arm's midpoint against the direct arm's, so a model emitting one pIC50 has nothing
+    to compare.
+    """
+    _configure_logging(verbose)
+    config = ExperimentConfig.load(config_path) if config_path else ExperimentConfig.load()
+    config.validate()
+
+    train = load("inhibition", directory)
+    test = load("test", directory)
+    logger.info("training on all %d compounds, predicting %d", len(train), len(test))
+
+    observations, surrogate = assemble_training_data(config, train)
+    model = build_model(config, surrogate)
+    model.fit(observations)
+
+    prediction = model.predict(test["SMILES"].tolist())
+    submission = test[["Molecule_Name"]].copy()
+    for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+        submission[endpoint] = prediction.mean[:, column]
+
+    if with_tdi and hasattr(model, "predict_is_time_dependent"):
+        flags = model.predict_is_time_dependent(test["SMILES"].tolist())
+        for endpoint in CLASSIFICATION_ENDPOINTS:
+            submission[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
+        logger.info("included the TDI columns")
+    elif with_tdi:
+        logger.info("%s cannot predict TDI; writing the regression columns only", model.name)
+
+    missing = submission[list(REGRESSION_ENDPOINTS)].isna().any(axis=1).sum()
+    if missing:
+        raise typer.BadParameter(f"{missing} compounds have a missing prediction")
+    if len(submission) != len(test):
+        raise typer.BadParameter(f"expected {len(test)} rows, built {len(submission)}")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    submission.to_csv(output, index=False)
+    logger.info("wrote %d rows and %d columns to %s", len(submission), submission.shape[1], output)
+    typer.echo(f"{len(submission)} predictions written to {output}")
 
 
 @app.command()
