@@ -128,8 +128,11 @@ class TestSubmit:
         options = [opt for param in submit.params for opt in param.opts]
         assert "--track" in options
 
-    def test_tdi_columns_are_omitted_when_the_model_cannot_predict_them(self):
-        """A model emitting one pIC50 has nothing to compare the arms with."""
+    def test_scalar_models_can_also_predict_tdi_from_two_values(self):
+        """The 'two values' path: scalar models predict the direct and preincubated
+        pIC50 and compare them, so the classification track is not curve-only."""
         from cypshift.models.boosted import BoostedTrees
+        from cypshift.models.neural import NeuralNetwork
 
-        assert not hasattr(BoostedTrees(), "predict_is_time_dependent")
+        assert hasattr(BoostedTrees(), "predict_is_time_dependent")
+        assert hasattr(NeuralNetwork(), "predict_is_time_dependent")

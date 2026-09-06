@@ -103,3 +103,73 @@ def test_the_model_satisfies_the_declared_interface():
     model = _model()
     assert model.name == "boosted_trees"
     assert hasattr(model, "fit") and hasattr(model, "predict")
+
+
+def _two_arm_observations():
+    import numpy as np
+    import pandas as pd
+
+    smiles = [
+        "CN(C)CCOC(c1ccccc1)c1ccccc1",
+        "CC(=O)Oc1ccccc1C(=O)O",
+        "CN1CCC(CC1)Oc1ccccc1Cl",
+        "Cc1ccc(cc1)S(N)(=O)=O",
+        "CCN(CC)CCNC(=O)c1ccc(N)cc1",
+        "COc1ccc2nc(N)sc2c1",
+        "OC(=O)c1ccccc1O",
+        "CCCCn1cnc2c1c(=O)n(C)c(=O)n2C",
+    ]
+    rng = np.random.default_rng(0)
+    rows = []
+    for arm in ("direct_inhibition_drc", "tdi_drc"):
+        for i, smi in enumerate(smiles):
+            for target in ("CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"):
+                value = rng.uniform(4, 7)
+                rows.append(
+                    dict(
+                        Molecule_Name=f"M{i}",
+                        SMILES=smi,
+                        target=target,
+                        assay=arm,
+                        value=value,
+                        conf_low=value,
+                        conf_high=value,
+                        weight=1.0,
+                        is_censored=False,
+                    )
+                )
+    return pd.DataFrame(rows), smiles
+
+
+def test_boosted_predicts_tdi_from_two_scalar_values():
+    """The 'two values' path: a scalar model does the classification track by predicting
+    the direct and preincubated pIC50 and comparing them, matching the curve model's
+    output shape."""
+    import numpy as np
+
+    from cypshift.models.boosted import BoostedTrees
+
+    observations, smiles = _two_arm_observations()
+    model = BoostedTrees(n_bits=512, n_estimators=8, loss="squared")
+    model.fit(observations)
+    flags = model.predict_is_time_dependent(smiles[:3])
+    assert flags.shape == (3, 4)  # one column per isoform, like the curve model
+    assert flags.dtype == np.bool_
+
+
+def test_a_clear_shift_is_called_time_dependent():
+    """If the preincubated pIC50 is well above the direct one, the rule fires."""
+    import numpy as np
+
+    from cypshift.config import TDI_SHIFT_THRESHOLD
+    from cypshift.models.boosted import BoostedTrees
+
+    model = BoostedTrees()
+    # stub the per-assay prediction: a big direct->preincubated shift on every isoform
+    model._predict_pic50_at = lambda smiles, enzyme, assay: (
+        np.full(len(smiles), 6.0)
+        if assay == "tdi_drc"
+        else np.full(len(smiles), 6.0 - 2 * TDI_SHIFT_THRESHOLD)
+    )
+    flags = model.predict_is_time_dependent(["CCO", "CCN"])
+    assert flags.all()

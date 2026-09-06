@@ -24,7 +24,12 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
+from cypshift.config import (
+    ASSAY_FLOOR_PIC50,
+    ISOFORMS,
+    REGRESSION_ENDPOINTS,
+    TDI_SHIFT_THRESHOLD,
+)
 from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
@@ -213,3 +218,34 @@ class BoostedTrees:
             for index, member in enumerate(self._members):
                 samples[index, :, column] = member.predict(features) + self._offset
         return PredictiveDistribution(samples, self.endpoints)
+
+    def _predict_pic50_at(self, smiles: list[str], enzyme: str, assay: str) -> NDArray[np.float64]:
+        """Ensemble-mean pIC50 for one enzyme under one assay condition."""
+        query = pd.DataFrame(
+            {"target": [enzyme] * len(smiles), "assay": [assay] * len(smiles), "SMILES": smiles}
+        )
+        features = self._features(smiles, self._conditioning(query))
+        return np.mean([m.predict(features) + self._offset for m in self._members], axis=0)
+
+    def predict_is_time_dependent(
+        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
+    ) -> NDArray[np.bool_]:
+        """Time-dependent-inhibition call from *two scalar values* rather than two curves.
+
+        The scalar counterpart of the curve model's comparison: predict the direct and
+        preincubated pIC50 for each enzyme and apply the organisers' rule. Requires the
+        preincubated arm in training (``sources.tdi_arm``), or the tdi-assay prediction
+        is untrained. Returns one column per isoform, matching the curve model's shape.
+        """
+        flags = []
+        for enzyme in (e.split("_")[0] for e in REGRESSION_ENDPOINTS):
+            direct = self._predict_pic50_at(smiles, enzyme, "direct_inhibition_drc")
+            preincubated = self._predict_pic50_at(smiles, enzyme, "tdi_drc")
+            flags.append(
+                np.where(
+                    direct > assay_floor,
+                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
+                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                )
+            )
+        return np.stack(flags, axis=1)

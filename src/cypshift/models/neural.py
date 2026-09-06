@@ -36,7 +36,12 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
+from cypshift.config import (
+    ASSAY_FLOOR_PIC50,
+    ISOFORMS,
+    REGRESSION_ENDPOINTS,
+    TDI_SHIFT_THRESHOLD,
+)
 from cypshift.data.assembly import ASSAYS, condition_index, encode_conditions, n_conditions
 from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.molecular import featurise, physicochemical
@@ -410,3 +415,44 @@ class NeuralNetwork:
                     )
                     samples[pass_index, :, column] = predicted.numpy()
         return PredictiveDistribution(samples, self.endpoints)
+
+    def _predict_pic50_at(self, smiles: list[str], enzyme: str, assay: str) -> NDArray[np.float64]:
+        """Dropout-mean pIC50 for one enzyme under one assay condition."""
+        self._model.train()
+        query = pd.DataFrame(
+            {"target": [enzyme] * len(smiles), "assay": [assay] * len(smiles), "SMILES": smiles}
+        )
+        features, condition = self._encode(query, smiles, fit=False)
+        passes = []
+        with torch.no_grad():
+            for _ in range(self.n_forward_passes):
+                out = (
+                    self._model(features, condition)
+                    if condition is not None
+                    else self._model(features)
+                )
+                passes.append(out.numpy())
+        return np.mean(passes, axis=0)
+
+    def predict_is_time_dependent(
+        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
+    ) -> NDArray[np.bool_]:
+        """TDI call from two scalar values -- see BoostedTrees.predict_is_time_dependent.
+
+        Requires the preincubated arm in training (``sources.tdi_arm``). One column per
+        isoform, matching the curve model's shape.
+        """
+        if self._model is None:
+            raise RuntimeError("model is not fitted")
+        flags = []
+        for enzyme in (e.split("_")[0] for e in REGRESSION_ENDPOINTS):
+            direct = self._predict_pic50_at(smiles, enzyme, "direct_inhibition_drc")
+            preincubated = self._predict_pic50_at(smiles, enzyme, "tdi_drc")
+            flags.append(
+                np.where(
+                    direct > assay_floor,
+                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
+                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                )
+            )
+        return np.stack(flags, axis=1)
