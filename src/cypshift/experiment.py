@@ -132,7 +132,9 @@ class MultifidelityConfig:
     strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5
-    surrogate_estimators: int = 300
+    #: Hidden-layer width of the screen surrogate model (an MLP), which is also the
+    #: dimension of the ``embedding`` surrogate. Wired into fit_surrogate; swept.
+    surrogate_hidden: int = 16
 
 
 @dataclass

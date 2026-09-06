@@ -20,7 +20,7 @@
     "strategy": "extra_rows",
     "screen_weight": 0.3,
     "tdi_weight": 0.5,
-    "surrogate_estimators": 300
+    "surrogate_hidden": 16
   },
   "model": {
     "kind": "boosted",

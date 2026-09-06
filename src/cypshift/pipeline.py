@@ -185,6 +185,7 @@ def assemble_training_data(
             trainable=set(retained["Molecule_Name"]),
             strategy=strategy,
             n_bits=config.features.fingerprint_bits,
+            hidden=config.multifidelity.surrogate_hidden,
             seed=config.data.seed,
         )
         observations = build_observations(retained, tdi=tdi, weights=weights)
