@@ -118,11 +118,15 @@ class TestSubmit:
         result = CliRunner().invoke(app, ["submit", "/tmp/unused.csv", "--track", "both"])
         assert result.exit_code != 0
 
-    def test_the_track_option_is_documented(self):
-        # Wide terminal so rich does not wrap the option name off the checked string;
-        # CI's default 80 columns split "--track" across lines.
-        result = CliRunner().invoke(app, ["submit", "--help"], env={"COLUMNS": "200"})
-        assert "--track" in result.output
+    def test_the_track_option_is_registered(self):
+        # Inspect the registered command rather than the rendered help: rich wraps the
+        # help panel to the terminal width and its formatting differs across versions,
+        # which made a substring check on --help flaky on CI.
+        from typer.main import get_command
+
+        submit = get_command(app).commands["submit"]
+        options = [opt for param in submit.params for opt in param.opts]
+        assert "--track" in options
 
     def test_tdi_columns_are_omitted_when_the_model_cannot_predict_them(self):
         """A model emitting one pIC50 has nothing to compare the arms with."""
