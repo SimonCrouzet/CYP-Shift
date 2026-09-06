@@ -102,6 +102,13 @@ class AuxiliaryConfig:
     #: SandboxAQ cofolded IC50 repository, ~61k rows across the four CYPs; needs the
     #: local index at data/external/sair.parquet).
     source: str = "chembl"
+    #: Also add the source's data for the *scored* enzymes themselves as extra training
+    #: rows (not just non-scored relatives). This is the direct-augmentation path -- e.g.
+    #: SAIR's ~2,600 CYP2D6 compounds -- and is what actually enlarges the hard endpoints.
+    include_scored: bool = False
+    #: Weight on those scored-enzyme augmentation rows. Separate from target_weight (the
+    #: challenge's own rows) because the source is a different, noisier assay mix.
+    scored_weight: float = 1.0
     #: Admit a candidate whose binding site is within this of a scored enzyme. The
     #: default admits seven human CYPs; 3.0 admits seventeen, most of them past halfway
     #: to the distance two unrelated sites score.

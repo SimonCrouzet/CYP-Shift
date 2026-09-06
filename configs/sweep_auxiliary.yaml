@@ -1,0 +1,43 @@
+# Stage: extra training data (auxiliary enzymes + SAIR augmentation).
+#
+#   wandb sweep configs/sweep_auxiliary.yaml
+#
+# A distinct axis from model hyperparameters -- how much and which outside data to add --
+# so it has its own stage rather than multiplying the boosted grid. Fixed to the boosted
+# tree, the strongest family; re-point model.kind if another wins stage one.
+#
+# SAIR is SandboxAQ's cofolded IC50 repository: ~10k real pIC50 rows for the four scored
+# CYPs, deduplicated against the whole challenge (only 4 of 750 test compounds overlap).
+# The labels are real experimental measurements; only the 3D poses are predicted, and
+# those are not used on this path. include_scored adds the scored enzymes' own rows (the
+# lever for CYP2D6, which has no near relative); scored_weight trades that noisier assay
+# mix against the challenge's own dose-response.
+program: scripts/run_experiment.py
+method: bayes
+metric:
+  name: holdout/MA_ST-RAE
+  goal: minimize
+
+parameters:
+  model.kind:
+    value: boosted
+
+  auxiliary.enabled:
+    values: [false, true]
+  auxiliary.source:
+    values: [chembl, sair]
+  auxiliary.include_scored:
+    values: [false, true]
+  auxiliary.max_distance:
+    values: [0.0, 1.5, 3.0]
+  auxiliary.scored_weight:
+    values: [0.3, 0.6, 1.0]
+  auxiliary.target_weight:
+    values: [1.0, 2.0]
+
+  data.holdout_fraction:
+    value: 0.2
+
+early_terminate:
+  type: hyperband
+  min_iter: 3

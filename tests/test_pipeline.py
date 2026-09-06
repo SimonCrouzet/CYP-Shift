@@ -286,3 +286,45 @@ def test_neural_builds_an_embedding_table_when_asked():
     model = build_model(config)
     assert model.conditioning == "embedding"
     assert model.embedding_dim == 8
+
+
+def test_include_scored_adds_rows_for_the_scored_enzymes(monkeypatch):
+    """The direct-augmentation path: the source's data for the scored endpoints
+    themselves, not only non-scored relatives."""
+    import cypshift.pipeline as pipe
+
+    monkeypatch.setattr(
+        "cypshift.data.chembl.load_auxiliary",
+        lambda enzyme, smiles, *a, **k: pd.DataFrame(
+            {"SMILES": ["c1ccccc1"], "value": [6.0], "target": enzyme}
+        ),
+    )
+    config = ExperimentConfig()
+    config.auxiliary.enabled = True
+    config.auxiliary.max_distance = 0.0  # admit no relatives; only scored augmentation
+    config.auxiliary.include_scored = True
+    config.auxiliary.scored_weight = 0.5
+    rows = pipe.auxiliary_observations(config, _retained())
+    assert set(rows["target"]) == {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"}
+    assert np.allclose(rows["weight"], 0.5)
+
+
+def test_auxiliary_dedups_against_the_whole_challenge_not_just_retained(monkeypatch):
+    """A source row matching a held-out or blinded-test compound must never enter
+    training. The loader is handed the full challenge SMILES, so assert that."""
+    import cypshift.pipeline as pipe
+
+    captured = {}
+
+    def fake_loader(enzyme, smiles, *a, **k):
+        captured["n_dedup_smiles"] = len(smiles)
+        return pd.DataFrame({"SMILES": [], "value": [], "target": []})
+
+    monkeypatch.setattr("cypshift.data.chembl.load_auxiliary", fake_loader)
+    config = ExperimentConfig()
+    config.auxiliary.enabled = True
+    config.auxiliary.max_distance = 0.0
+    config.auxiliary.include_scored = True
+    pipe.auxiliary_observations(config, _retained(n=5))
+    # the dedup set is the full challenge (train + test), far larger than the 5 retained
+    assert captured["n_dedup_smiles"] > 100

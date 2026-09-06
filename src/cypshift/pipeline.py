@@ -278,27 +278,42 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
     if not config.auxiliary.enabled:
         return empty
+
+    # Deduplicate against the WHOLE challenge -- every train and test compound, not just
+    # this split's retained rows -- so a source row matching a held-out or blinded-test
+    # compound can never leak into training. Measured: 246 challenge compounds sit in
+    # SAIR, so this is not hypothetical.
+    directory = Path(config.data.directory)
+    challenge = pd.concat(
+        [load("inhibition", directory)["SMILES"], load("test", directory)["SMILES"]]
+    )
+
+    # (enzyme, weight) pairs to pull. Non-scored relatives are selected by binding-site
+    # distance and weighted by it; the scored enzymes are added directly when
+    # include_scored is set -- the same source's data for the endpoints themselves.
+    to_pull: list[tuple[str, float]] = []
     try:
         candidates = {g: sequence_for(g) for g in ACCESSIONS if g not in scored}
-        distances = site_distances(scored, candidates)
         admitted = select_auxiliaries(
-            distances,
+            site_distances(scored, candidates),
             max_distance=config.auxiliary.max_distance,
             weighting=config.auxiliary.weighting,
             scale=config.auxiliary.scale,
         )
-    except Exception as error:  # noqa: BLE001 -- any failure means "no auxiliary source"
-        logger.info("auxiliary selection unavailable (%s); using the challenge data only", error)
-        return empty
-    if not admitted:
+        to_pull.extend((aux.name, aux.weight * config.auxiliary.target_weight) for aux in admitted)
+    except Exception as error:  # noqa: BLE001 -- any failure means "no relatives"
+        logger.info("auxiliary selection unavailable (%s)", error)
+    if config.auxiliary.include_scored:
+        to_pull.extend((name, config.auxiliary.scored_weight) for name in scored)
+    if not to_pull:
         return empty
 
     frames = []
-    for aux in admitted:
+    for enzyme, weight in to_pull:
         try:
-            data = load_auxiliary(aux.name, retained["SMILES"])
+            data = load_auxiliary(enzyme, challenge)
         except Exception as error:  # noqa: BLE001
-            logger.info("no ChEMBL data for %s (%s); skipping", aux.name, error)
+            logger.info("no %s data for %s (%s); skipping", config.auxiliary.source, enzyme, error)
             continue
         if data.empty:
             continue
@@ -306,16 +321,16 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         frames.append(
             pd.DataFrame(
                 {
-                    "Molecule_Name": [f"{aux.name}:{i}" for i in range(len(data))],
+                    "Molecule_Name": [f"{enzyme}:{i}" for i in range(len(data))],
                     "SMILES": data["SMILES"].to_numpy(),
-                    "target": aux.name,
+                    "target": enzyme,
                     "assay": "direct_inhibition_drc",
                     "value": value,
-                    # No credible interval accompanies a ChEMBL potency, so the bounds
+                    # No credible interval accompanies a source potency, so the bounds
                     # collapse to the point -- no invented tolerance.
                     "conf_low": value,
                     "conf_high": value,
-                    "weight": aux.weight * config.auxiliary.target_weight,
+                    "weight": weight,
                     "is_censored": False,
                 }
             )
