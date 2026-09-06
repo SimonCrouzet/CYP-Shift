@@ -126,10 +126,12 @@ stop being three tasks:
 | source | what it observes | how it enters |
 |---|---|---|
 | 12-point dose-response | the curve's midpoint | constrains `pIC50` |
-| Emax | the plateau | constrains `Emax` |
 | single-concentration screen | **one point on the same curve** | constrains `inhibition(49.5 µM)` |
 
-The screen is not a pseudo-label and needs no calibration — it is the curve evaluated
+The curve also carries an `Emax` (plateau) and `Hill` slope, but we do **not** currently
+feed Emax measurements as observations — they sit at a pharmacological default prior and
+are shaped only indirectly by the fitted rows. The screen is not a pseudo-label and needs
+no calibration — it is the curve evaluated
 where the experiment sampled it. Preincubation is a **second curve**, not an offset on
 the first: it measures enzyme destroyed by turnover, not enzyme occupied, and time
 dependence is whatever the two curves say through the organisers' own rule.

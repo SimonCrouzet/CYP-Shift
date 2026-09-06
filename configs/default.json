@@ -18,6 +18,7 @@
     "tdi_arm": false,
     "chembl": false,
     "sair": false,
+    "octant": false,
     "relatives": true,
     "scored": false,
     "structure": false
@@ -36,9 +37,6 @@
     "surrogate_hidden": 16
   },
   "auxiliary": {
-    "enabled": false,
-    "source": "chembl",
-    "include_scored": false,
     "scored_weight": 1.0,
     "max_distance": 1.5,
     "weighting": "exponential",
