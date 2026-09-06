@@ -28,6 +28,8 @@ parameters:
   # descriptor block was measured to cost 0.089, so the block scaler stays on.
   features.fingerprint_bits:
     values: [1024, 2048, 4096]
+  features.fingerprint_radius:
+    values: [2, 3]
 
   # The surrogate strategies belong here rather than in stage one, because they apply
   # only to a model that predicts a scalar pIC50 and so cannot consume a response

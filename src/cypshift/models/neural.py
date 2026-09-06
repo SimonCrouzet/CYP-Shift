@@ -130,6 +130,9 @@ class NeuralNetwork:
         assays: tuple[str, ...] = ASSAYS,
         conditioning: str = "factorised",
         n_bits: int = 2048,
+        physchem: bool = True,
+        mechanism: bool = True,
+        fingerprint_radius: int = 2,
         surrogate: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
@@ -145,6 +148,12 @@ class NeuralNetwork:
         self.assays = assays
         self.conditioning = conditioning
         self.n_bits = n_bits
+        #: Which molecular feature blocks to include and the fingerprint radius.
+        #: These are read by featurise; toggling physchem changes the dense-block width,
+        #: which the scaler follows. Swept via features.* in the config.
+        self.physchem = physchem
+        self.mechanism = mechanism
+        self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
         #: rows. See :mod:`cypshift.data.surrogate`.
@@ -162,13 +171,23 @@ class NeuralNetwork:
 
     def _features(self, smiles: list[str], one_hot: NDArray[np.float32]) -> NDArray[np.float32]:
         return np.hstack(
-            [featurise(smiles, n_bits=self.n_bits, extra=self.surrogate), one_hot]
+            [
+                featurise(
+                    smiles,
+                    n_bits=self.n_bits,
+                    radius=self.fingerprint_radius,
+                    physchem=self.physchem,
+                    mechanism=self.mechanism,
+                    extra=self.surrogate,
+                ),
+                one_hot,
+            ]
         ).astype(np.float32)
 
     def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
         """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
         if fit:
-            n_dense = len(physicochemical(["CCO"]).columns)
+            n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
             self._scaler = BlockScaler(n_count_columns=self.n_bits, n_dense_columns=n_dense)
             self._scaler.fit(features)
         if self._scaler is None:

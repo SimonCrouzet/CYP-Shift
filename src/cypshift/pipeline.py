@@ -34,6 +34,9 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
     shared = dict(
         conditioning=config.conditioning.strategy,
         n_bits=config.features.fingerprint_bits,
+        fingerprint_radius=config.features.fingerprint_radius,
+        physchem=config.features.use_physicochemical,
+        mechanism=config.features.use_mechanistic,
         seed=config.data.seed,
         surrogate=surrogate,
     )
@@ -81,6 +84,9 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
 
         return CurveModel(
             n_bits=config.features.fingerprint_bits,
+            fingerprint_radius=config.features.fingerprint_radius,
+            physchem=config.features.use_physicochemical,
+            mechanism=config.features.use_mechanistic,
             hidden=config.model.curve.hidden,
             dropout=config.model.curve.dropout,
             epochs=config.model.curve.epochs,

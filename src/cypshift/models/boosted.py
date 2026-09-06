@@ -73,6 +73,9 @@ class BoostedTrees:
         assays: tuple[str, ...] = ASSAYS,
         conditioning: str = "factorised",
         n_bits: int = 2048,
+        physchem: bool = True,
+        mechanism: bool = True,
+        fingerprint_radius: int = 2,
         surrogate: object | None = None,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
@@ -87,6 +90,12 @@ class BoostedTrees:
         self.assays = assays
         self.conditioning = conditioning
         self.n_bits = n_bits
+        #: Which molecular feature blocks to include and the fingerprint radius.
+        #: These are read by featurise; toggling physchem changes the dense-block width,
+        #: which the scaler follows. Swept via features.* in the config.
+        self.physchem = physchem
+        self.mechanism = mechanism
+        self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
         #: rows. See :mod:`cypshift.data.surrogate`.
@@ -103,7 +112,17 @@ class BoostedTrees:
 
     def _features(self, smiles: list[str], encoding: NDArray[np.float32]) -> NDArray[np.float32]:
         return np.hstack(
-            [featurise(smiles, n_bits=self.n_bits, extra=self.surrogate), encoding]
+            [
+                featurise(
+                    smiles,
+                    n_bits=self.n_bits,
+                    radius=self.fingerprint_radius,
+                    physchem=self.physchem,
+                    mechanism=self.mechanism,
+                    extra=self.surrogate,
+                ),
+                encoding,
+            ]
         ).astype(np.float32)
 
     def fit(self, observations: pd.DataFrame) -> "BoostedTrees":

@@ -49,6 +49,14 @@ parameters:
     min: 0.05
     max: 1.0
 
+  # Which molecular feature blocks to include. These are real, wired knobs (featurise
+  # reads them and the neural/curve scaler follows the changed block widths); the sweep
+  # decides whether each block earns its place rather than it being fixed by hand.
+  features.use_physicochemical:
+    values: [true, false]
+  features.use_mechanistic:
+    values: [true, false]
+
   data.holdout_fraction:
     value: 0.2
 

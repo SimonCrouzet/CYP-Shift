@@ -236,6 +236,9 @@ class CurveModel:
         self,
         targets: tuple[str, ...] = ISOFORMS,
         n_bits: int = 2048,
+        physchem: bool = True,
+        mechanism: bool = True,
+        fingerprint_radius: int = 2,
         surrogate: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
@@ -254,6 +257,12 @@ class CurveModel:
         self.descriptor_sources = descriptor_sources
         self.targets = targets
         self.n_bits = n_bits
+        #: Which molecular feature blocks to include and the fingerprint radius.
+        #: These are read by featurise; toggling physchem changes the dense-block width,
+        #: which the scaler follows. Swept via features.* in the config.
+        self.physchem = physchem
+        self.mechanism = mechanism
+        self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
         #: rows. See :mod:`cypshift.data.surrogate`.
@@ -269,9 +278,16 @@ class CurveModel:
         self._scaler: BlockScaler | None = None
 
     def _features(self, smiles: list[str], fit: bool) -> torch.Tensor:
-        matrix = featurise(smiles, n_bits=self.n_bits, extra=self.surrogate).astype(np.float32)
+        matrix = featurise(
+            smiles,
+            n_bits=self.n_bits,
+            radius=self.fingerprint_radius,
+            physchem=self.physchem,
+            mechanism=self.mechanism,
+            extra=self.surrogate,
+        ).astype(np.float32)
         if fit:
-            n_dense = len(physicochemical(["CCO"]).columns)
+            n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
             self._scaler = BlockScaler(self.n_bits, n_dense).fit(matrix)
         if self._scaler is None:
             raise RuntimeError("model is not fitted")

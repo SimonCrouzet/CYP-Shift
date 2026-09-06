@@ -225,6 +225,7 @@ def featurise(
     physchem: bool = True,
     mechanism: bool = True,
     n_bits: int = 2048,
+    radius: int = 2,
     extra: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
 ) -> NDArray[np.float32]:
     """Assemble the requested blocks into one dense matrix.
@@ -244,7 +245,7 @@ def featurise(
     """
     blocks: list[NDArray[np.float32]] = []
     if fingerprint:
-        blocks.append(morgan_counts(smiles, n_bits=n_bits))
+        blocks.append(morgan_counts(smiles, radius=radius, n_bits=n_bits))
     if physchem:
         blocks.append(physicochemical(smiles).to_numpy(dtype=np.float32))
     if mechanism:
