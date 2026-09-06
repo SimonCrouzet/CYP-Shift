@@ -83,15 +83,45 @@ Lower is better. **1.0 means no better than predicting the mean.**
 
 ## 🏗️ Architecture
 
-The model predicts a **dose-response curve**, and every answer is read off it the way
-a biologist reads one off a plot.
+The pipeline is **modular**: several model families sit over one shared conditioning
+vocabulary and a set of optional evidence sources. A config picks one combination; the
+W&B sweeps explore them. Nothing below is hard-wired — each box is a swept choice.
+
+```mermaid
+flowchart TD
+    subgraph inputs [" "]
+      L[("ligand<br/>SMILES")]
+      C[["(enzyme, assay)<br/>condition"]]
+      X[["optional evidence:<br/>screen · ChEMBL · Boltz-2 pose"]]
+    end
+    L --> F["features<br/><i>fingerprint · physchem ·<br/>mechanistic · graph</i>"]
+    F --> M{"model family"}
+    C --> M
+    X --> M
+    M -->|boosted trees| Y["prediction"]
+    M -->|neural MLP| Y
+    M -->|D-MPNN| Y
+    M -->|curve| CV["dose-response curve<br/>pIC50 · Hill · Emax"]
+    CV --> Y
+    Y --> S["scored on the<br/>similarity-matched holdout<br/>(soft-threshold ST-RAE)"]
+```
+
+**Two tracks, two environments.** The ligand models run in the `cypshift` environment;
+the Boltz-2 cofolding head needs a GPU and its own CUDA stack, so it lives in
+`cypshift-struct` (a superset — see [Setup](#️-setup)). Structure features are a GPU
+*precompute* cached to disk, so a sweep trial reads them without ever invoking Boltz.
+
+### The curve model
+
+One family, `curve`, predicts a **dose-response curve** and reads every answer off it
+the way a biologist reads one off a plot.
 
 ```
 inhibition(c) = Emax / (1 + 10^(h·(pC − pIC50)))          pC = −log₁₀ c
 ```
 
-Three parameters per compound, per enzyme, per arm. What makes this the right shape is
-that the three data sources stop being three tasks:
+Three parameters per compound, per enzyme, per arm — which makes the three data sources
+stop being three tasks:
 
 | source | what it observes | how it enters |
 |---|---|---|
@@ -100,35 +130,52 @@ that the three data sources stop being three tasks:
 | single-concentration screen | **one point on the same curve** | constrains `inhibition(49.5 µM)` |
 
 The screen is not a pseudo-label and needs no calibration — it is the curve evaluated
-where the experiment sampled it. A compound whose signal never dropped is simply one
-whose predicted response there should be near zero.
+where the experiment sampled it. Preincubation is a **second curve**, not an offset on
+the first: it measures enzyme destroyed by turnover, not enzyme occupied, and time
+dependence is whatever the two curves say through the organisers' own rule.
 
-Preincubation is a **second curve**, not an offset on the first, because it measures a
-different thing: enzyme destroyed by turnover rather than enzyme occupied. Time
-dependence is then whatever the two curves say, put through the organisers' own rule.
+### Conditioning — one vocabulary, gated per model
 
-```mermaid
-flowchart TD
-    D[("molecular graph / features")] --> T["shared trunk<br/><i>chemistry common to every enzyme</i>"]
-    T --> C{"enzyme conditioning"}
-    C -->|heads| H["one head per enzyme × arm"]
-    C -->|descriptor| S["one shared head +<br/>pocket descriptor"]
-    H --> P["curve parameters<br/>pIC50 · Hill · Emax"]
-    S --> P
-    P --> O["the observation's own<br/>(enzyme, arm, channel)<br/>selects what is compared"]
-    O --> R["pIC50 · response at any dose ·<br/>time-dependence call"]
-```
+How a model is told *which enzyme and assay* a row came from. Six strategies, and which
+a family can use is gated by `supported_conditioning`, because not every one suits every
+model:
 
-**Conditioning is a swept choice, not a settled one.** `heads` gives one output head
-per (enzyme, arm) — maximally flexible, but a head is an index, so an enzyme outside
-the scored set trains parameters that are then discarded. `descriptor` gives one shared
-head a vector describing the enzyme's pocket, which is less free per enzyme but lets
-auxiliary enzymes pretrain the same model.
+| strategy | what it does | boosted | neural | graph | curve |
+|---|---|:--:|:--:|:--:|:--:|
+| `factorised` | target one-hot ⊕ **assay one-hot** (assay identity) | ✅ | ✅ | ✅ | — |
+| `metadata` | target one-hot ⊕ **assay property scalars** (preincubation, dose-response) | ✅ | ✅ | ✅ | — |
+| `embedding` | a learned `(enzyme, assay)` table | — | ✅ | ~ | — |
+| `descriptor` | append the **pocket descriptor** vector | — | ✅ | — | ✅ |
+| `heads` | one output **head per condition** | ⇢* | ✅ | — | ✅ |
+| `film` | the descriptor **scales/shifts the trunk** | — | ✅ | — | ✅ |
+
+`factorised` and `metadata` are genuinely different, not one inside the other:
+factorised gives the assay its own identity column, metadata describes it by its
+properties (so it could place an assay it has not seen). A tree has no trunk to embed
+into or modulate; the graph model already projects its one-hot through a linear readout;
+per-enzyme `heads` for a tree is the separate per-target model (⇢*). The curve model
+conditions on its own structure — `heads`/`descriptor`/`film` over its curve parameters.
 
 **The condition routes the loss, not just the forward pass.** A measurement on one
-enzyme in one arm produces gradient in exactly one head and none anywhere else — there
-is a test asserting it. That matters biologically: CYP2C9 and CYP2D6 recognise opposite
-charges, so leakage between them would be actively harmful.
+enzyme in one arm produces gradient in exactly that condition and nowhere else — there
+is a test asserting it. CYP2C9 and CYP2D6 recognise opposite charges, so leakage
+between them would be actively harmful.
+
+### Evidence beyond the ligand
+
+Three optional sources, each a swept on/off:
+
+| source | what it adds | how it enters |
+|---|---|---|
+| **single-concentration screen** | 17,504 censored readings | pooled as curve points (curve) or calibrated pseudo-labels (scalar models) |
+| **auxiliary enzymes** (ChEMBL) | e.g. CYP2C19, ~1,600 compounds | extra rows, weighted by binding-site distance ([proteochemometrics](#-terms)) |
+| **Boltz-2 cofold** | affinity **and** heme-coordination pose | per-(compound, enzyme) features from a cofold cache |
+
+The structure source is the two heads of the cofold: **(A)** Boltz-2's predicted
+affinity for the complex, and **(B)** the pose — how close the inhibitor's coordinating
+nitrogen sits to the heme iron. On a validation cofold, imidazole's nitrogen landed
+**2.19 Å** from the iron: textbook type-II coordination, and exactly the mechanism the
+fingerprint model is measurably worst on.
 
 ### Describing an enzyme instead of indexing it
 
@@ -145,11 +192,12 @@ That is what transfers: CYP2C9 and CYP2C19 are ~91% identical, so their descript
 nearly coincide and 14,492 auxiliary compounds pool into a scored endpoint. Adding an
 enzyme is a `register()` call, not an architecture change.
 
-Descriptors come from three places, and all are recorded.
+Descriptors come from six sources, all recorded and selectable (swept via
+`conditioning.descriptor_sources`).
 
 | source | dims | what it encodes |
 |---|---|---|
-| `cypshift.data.enzymes` | 5 | curated table, crystallographic paper cited per entry |
+| `cypshift.data.enzymes` | 9 | curated table, crystallographic paper cited per entry |
 | `cypshift.data.pocket` | 8 | residue counts and fractions, computed from a PDB entry |
 | `cypshift.data.zscales` | 6 | Z-scales of those residues — chemistry, not class counts |
 | `cypshift.data.srs` | 21 | the same Z-scales, **per recognition site** |
