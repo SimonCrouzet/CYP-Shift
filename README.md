@@ -455,6 +455,26 @@ pip install -e ".[dev]"     # everything, including the deep-learning stack
 a given model needs, use the extras directly: the package alone gives the boosted
 model, and `.[nn]` adds the neural, graph and curve models.
 
+### Two environments
+
+The ligand and structure tracks have incompatible dependency stacks (a co-folding model
+pins its own CUDA-built torch), so they live in separate environments and the pipeline
+runs whichever the configured model needs.
+
+```bash
+# structure-free: everything the ligand models need
+mamba env create -f environment.yml
+
+# structure: start from an existing co-folding environment (Boltz-2), then add this
+# package's core so its data and featurisation code is importable alongside cofolding
+mamba create -p <prefix>/cypshift-struct --clone <your-boltz-env>
+<prefix>/cypshift-struct/bin/pip install -e . --no-deps lightgbm "typer>=0.12"
+```
+
+The structure environment only needs the package core (rdkit, pandas, scikit-learn are
+already in the Boltz environment); `--no-deps` keeps it from disturbing the pinned
+cofolding torch.
+
 Gated HuggingFace assets need an authenticated account with access granted:
 
 ```bash
@@ -479,6 +499,7 @@ hf auth whoami         # verify
 | | task | notes |
 |---|---|---|
 | ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
+| ✅ | **Two environments: structure-free and structure** | `cypshift` (ligand stack) and `cypshift-struct` (Boltz-2 clone + package core), so the two tracks' incompatible deps coexist |
 | ✅ | Define the shared model interface | predictive distribution in, nothing else |
 | ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **best current MA-ST-RAE 0.6625** (boosted tree, pooled screen, 4096-bit) |
 | ✅ | **Use the single-concentration screen** | pooled as pseudo-labels: **+0.0304 macro on 3/3 splits**, now the default |
@@ -491,8 +512,8 @@ hf auth whoami         # verify
 
 | | task | notes |
 |---|---|---|
-| ⬜ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures — **blocked: needs a co-folding backend (Boltz-2) + GPU, not in this environment** |
-| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness — **blocked on the same tooling; needs poses first** |
+| ◐ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures — **`cypshift-struct` env prepared (Boltz-2 2.2.1)**; head not yet built, and a GPU would make it practical |
+| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness, now **measured real**: azole coordinators score MAE 0.712 vs 0.512, p=0.028 (small subset) — blocked on cofolding tooling for poses |
 | ◐ | Disagreement between models as epistemic uncertainty | built (`eval/disagreement.py`, cross-model spread + conformal width); an epistemic-uncertainty estimate to tune, not yet wired into a submission |
 | ⬜ | CYP2D6 as a dedicated project | it decides the macro average; the basic-amine geometry probe was marginal |
 
