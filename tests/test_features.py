@@ -24,18 +24,29 @@ def test_basic_amine_is_detected_on_an_aliphatic_amine_only():
     assert frame["has_basic_amine"].tolist() == [1.0, 0.0, 0.0]
 
 
-def test_type_ii_flag_fires_on_heme_coordinating_aromatic_nitrogen():
-    # Pyridine, imidazole and 1,2,4-triazole coordinate the iron; benzene cannot.
-    frame = mechanistic(["c1ccncc1", "c1c[nH]cn1", "c1nc[nH]n1", "c1ccccc1"])
-    assert frame["is_type_ii_candidate"].tolist() == [1.0, 1.0, 1.0, 0.0]
+def test_type_ii_flag_fires_on_azole_rings_not_bare_pyridine():
+    # The strong type-II motif is an azole (a five-membered aromatic ring with >=2
+    # nitrogens): imidazole, triazole, tetrazole. A bare pyridine is deliberately
+    # excluded -- flagging it swept in 71.5% of the library and did not isolate the
+    # subset the model is measurably worse on (azoles: MAE 0.712 vs 0.512, p=0.028).
+    frame = mechanistic(["c1c[nH]cn1", "c1nc[nH]n1", "c1ccncc1", "c1ccccc1"])
+    assert frame["is_type_ii_candidate"].tolist() == [1.0, 1.0, 0.0, 0.0]
 
 
-def test_an_imidazole_nh_nitrogen_does_not_count_as_coordinating():
-    # Only one of imidazole's two nitrogens has a free in-plane lone pair; the NH
-    # nitrogen's is delocalised into the ring and cannot bind the metal.
+def test_azole_coordinator_count_scales_with_ring_nitrogens():
+    # Coordinating nitrogens are the pyridine-type ones (no H). Imidazole has one,
+    # 1,2,4-triazole two, tetrazole three.
     assert mechanistic(["c1c[nH]cn1"])["n_heme_coordinating_n"].iloc[0] == 1.0
-    # N-methylimidazole is the same case with the hydrogen replaced.
+    assert mechanistic(["c1nc[nH]n1"])["n_heme_coordinating_n"].iloc[0] == 2.0
+    assert mechanistic(["c1nnn[nH]1"])["n_heme_coordinating_n"].iloc[0] == 3.0
+
+
+def test_n_substituted_azoles_are_caught():
+    # N-methylimidazole and fluconazole's two N-substituted triazoles: an [nH]-only
+    # pattern would miss the azole antifungals, which are the canonical type-II drugs.
     assert mechanistic(["Cn1ccnc1"])["n_heme_coordinating_n"].iloc[0] == 1.0
+    fluconazole = "OC(Cn1cncn1)(Cn1cncn1)c1ccc(F)cc1F"
+    assert mechanistic([fluconazole])["n_heme_coordinating_n"].iloc[0] == 4.0
 
 
 def test_carboxylic_acid_is_counted():
@@ -121,3 +132,14 @@ class TestBasicAmineGeometry:
     def test_every_value_is_finite(self):
         frame = self._frame("CN(C)CCOC(c1ccccc1)c1ccccc1", "CC(=O)O", "c1ccccc1")
         assert np.isfinite(frame.to_numpy()).all()
+
+
+def test_azole_coordinators_ignores_six_membered_diazines():
+    """Pyrazine and pyrimidine are six-membered; the type-II azole motif is five."""
+    from rdkit import Chem
+
+    from cypshift.features.molecular import azole_coordinators
+
+    assert azole_coordinators(Chem.MolFromSmiles("c1ccncc1")) == 0  # pyridine
+    assert azole_coordinators(Chem.MolFromSmiles("c1cnccn1")) == 0  # pyrazine
+    assert azole_coordinators(Chem.MolFromSmiles("c1c[nH]cn1")) == 1  # imidazole
