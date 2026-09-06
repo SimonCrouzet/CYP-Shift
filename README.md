@@ -166,21 +166,43 @@ between them would be actively harmful.
 ### Evidence beyond the ligand
 
 Every source is an independent **use: yes/no** switch (`sources.*`); *how* each one is
-folded in is a separate strategy axis. Turning several on composes.
+folded in is a separate strategy axis (`screen_strategy`, `auxiliary.weighting`, …).
+Turning several on composes. The table below is the whole menu.
 
-| `sources.*` | what it adds | *how* (the strategy axis) |
-|---|---|---|
-| `screen` | the single-concentration screen, 17,504 censored readings | `multifidelity.screen_strategy`: pooled points (curve) / pseudo-labels / a surrogate feature |
-| `tdi_arm` | the preincubated arm | needed for the classification track; costs the regression one |
-| `chembl` | ChEMBL potencies | `auxiliary.weighting` · `scale` · `max_distance` |
-| `sair` | SAIR potencies (~10k CYP rows, real IC50s) | same; deduplicated against the whole challenge |
-| `relatives` | non-scored enzymes selected by binding-site distance | weighted by that distance |
-| `scored` | the scored enzymes' own extra rows (the CYP2D6 lever) | `auxiliary.scored_weight` |
-| `structure` | Boltz-2 cofold: affinity **and** heme-coordination pose | per-(compound, enzyme) features from the cofold cache |
+**🟢 Always on** — the target itself:
 
-`chembl` and `sair` compose (their shared compounds are median-pooled); so do `relatives`
-and `scored`. Nothing here is a default beyond the screen — a plain run trains on the
-challenge data alone.
+| source | data points | what it is |
+|---|--:|---|
+| challenge dose-response | **6,325** labels · 4,905 compounds | the 12-point curves we are scored on — direct pIC50 per compound × enzyme |
+
+**🎯 Challenge evidence** — more of the *same* experiment, in other shapes:
+
+| `sources.*` | data points | consumed as | note |
+|---|--:|---|---|
+| `screen` | **17,504** | curve model → a native point at 49.5 µM · scalar models → pseudo-label or surrogate feature | on by default |
+| `tdi_arm` | **6,145** | curve → a *second* curve · scalar → a second-assay value | unlocks the classification track |
+
+**🧪 Auxiliary potencies** — outside compounds, deduplicated against the whole challenge:
+
+| `sources.*` | data points | consumed as | contamination |
+|---|--:|---|---|
+| `chembl` | ~1,600 / enzyme | extra pIC50 rows | ChEMBL-derived |
+| `sair` | ~10.5k / 4 CYPs | extra pIC50 rows | 4 / 750 test → deduped |
+| `octant` | ~1,018 (CYP3A4) | extra rows, **credible intervals kept** | 1 / 750 test → deduped |
+| `relatives` | varies | extra rows, weighted by binding-site distance | non-scored enzymes |
+| `scored` | up to ~10.5k | extra rows, `auxiliary.scored_weight` | the **CYP2D6 lever** |
+
+**🧊 Structure** — the cofold, as features:
+
+| `sources.*` | data points | consumed as | contamination |
+|---|--:|---|---|
+| `structure` | per (compound, enzyme) | Boltz-2 affinity **+** heme-coordination pose, from the cofold cache | poses predicted |
+
+`chembl`, `sair` and `octant` compose (shared compounds are median-pooled); so do
+`relatives` and `scored`. **Nothing here is a default beyond the screen** — a plain run
+trains on the challenge data alone. Three honest gaps: **`octant` is CYP3A4-only**,
+**Emax is a curve parameter but is never fed as an observation**, and **CYP2D6 has no
+independent public data lever** — `scored` SAIR rows are its only real addition.
 
 The structure source is the two heads of the cofold: **(A)** Boltz-2's predicted
 affinity for the complex, and **(B)** the pose — how close the inhibitor's coordinating
