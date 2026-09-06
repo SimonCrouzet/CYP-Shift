@@ -104,9 +104,19 @@ def test_factorised_conditioning_shares_a_condition_across_targets():
 
 
 def test_metadata_conditioning_describes_the_experiment():
+    # metadata is the target one-hot followed by two assay scalars: preincubated, then
+    # dose_response. The last two columns, not an assay one-hot.
     encoded = encode_conditions(OBSERVATIONS, "metadata")
-    preincubated = encoded[:, -3]
+    preincubated = encoded[:, -2]
     assert preincubated[0] == 0.0 and preincubated[1] == 1.0
+
+
+def test_metadata_is_narrower_than_factorised_not_a_superset():
+    # metadata replaces the assay one-hot with two scalars, so it must be distinct from
+    # and narrower than factorised -- otherwise it would add nothing over it.
+    factorised = encode_conditions(OBSERVATIONS, "factorised")
+    metadata = encode_conditions(OBSERVATIONS, "metadata")
+    assert metadata.shape[1] < factorised.shape[1]
 
 
 def test_an_unknown_conditioning_strategy_is_rejected():

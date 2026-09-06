@@ -178,9 +178,12 @@ def encode_conditions(
 
     Args:
         observations: Rows carrying ``target`` and ``assay`` columns.
-        strategy: ``factorised`` uses a target block and an assay block, so a
-            condition is one direction common to every enzyme. ``metadata`` extends
-            that with scalar properties of the assay.
+        strategy: ``factorised`` is a target one-hot beside an *assay one-hot* -- assay
+            identity. ``metadata`` is the target one-hot beside *scalar assay
+            properties* (preincubation, dose-response) and no assay one-hot, so the
+            assay enters by what it is rather than which one it is. The two are distinct
+            encodings: metadata's scalars would be redundant with an assay one-hot if
+            both were present, so metadata replaces it rather than adding to it.
         targets: Target vocabulary.
         assays: Assay vocabulary.
 
@@ -190,15 +193,20 @@ def encode_conditions(
     Raises:
         ValueError: On an unknown strategy, target or assay.
     """
-    if strategy in ("factorised", "metadata"):
-        blocks = [one_hot_encode(observations, targets, assays)]
-        if strategy == "metadata":
-            blocks.append(
-                np.array(
-                    [ASSAY_METADATA[assay] for assay in observations["assay"]], dtype=np.float32
-                )
-            )
-        return np.hstack(blocks)
+    if strategy == "factorised":
+        return one_hot_encode(observations, targets, assays)
+    if strategy == "metadata":
+        unknown_targets = set(observations["target"]) - set(targets)
+        unknown_assays = set(observations["assay"]) - set(assays)
+        if unknown_targets or unknown_assays:
+            raise ValueError(f"unrecognised target {unknown_targets} or assay {unknown_assays}")
+        target_block = np.array(
+            [[row == t for t in targets] for row in observations["target"]], dtype=np.float32
+        )
+        scalars = np.array(
+            [ASSAY_METADATA[assay] for assay in observations["assay"]], dtype=np.float32
+        )
+        return np.hstack([target_block, scalars])
     raise ValueError(f"unknown conditioning strategy {strategy!r}")
 
 
@@ -211,7 +219,7 @@ def n_condition_columns(
     if strategy == "factorised":
         return len(targets) + len(assays)
     if strategy == "metadata":
-        return len(targets) + len(assays) + N_METADATA_COLUMNS
+        return len(targets) + N_METADATA_COLUMNS
     raise ValueError(f"unknown conditioning strategy {strategy!r}")
 
 
