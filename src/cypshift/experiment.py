@@ -98,6 +98,10 @@ class AuxiliaryConfig:
     #: cache and pulls thousands of extra rows, so it is opt-in and the sweep turns it
     #: on -- a default run trains on the challenge data alone.
     enabled: bool = False
+    #: Where auxiliary rows come from: "chembl" (per-target API pull) or "sair" (the
+    #: SandboxAQ cofolded IC50 repository, ~61k rows across the four CYPs; needs the
+    #: local index at data/external/sair.parquet).
+    source: str = "chembl"
     #: Admit a candidate whose binding site is within this of a scored enzyme. The
     #: default admits seven human CYPs; 3.0 admits seventeen, most of them past halfway
     #: to the distance two unrelated sites score.

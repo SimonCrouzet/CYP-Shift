@@ -263,9 +263,16 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     never fails for lack of an auxiliary source.
     """
     from cypshift.config import ISOFORMS
+    from cypshift.data import chembl, sair
     from cypshift.data.auxiliary import select_auxiliaries, site_distances
-    from cypshift.data.chembl import load_auxiliary
     from cypshift.data.sequences import ACCESSIONS, sequence_for
+
+    loaders = {"chembl": chembl.load_auxiliary, "sair": sair.load_auxiliary}
+    if config.auxiliary.source not in loaders:
+        raise ValueError(
+            f"auxiliary.source={config.auxiliary.source!r} is not one of {tuple(loaders)}"
+        )
+    load_auxiliary = loaders[config.auxiliary.source]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
     empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
