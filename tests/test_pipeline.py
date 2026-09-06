@@ -44,9 +44,9 @@ def test_an_unbuildable_model_kind_is_rejected():
         build_model(config)
 
 
-def test_the_no_screen_strategy_uses_only_the_curves():
+def test_screen_off_uses_only_the_curves():
     config = ExperimentConfig()
-    config.override("multifidelity.strategy", "none")
+    config.sources.screen = False
     observations, surrogate = assemble_training_data(config, _retained())
     assert set(observations["assay"]) == {"direct_inhibition_drc"}
     assert surrogate is None
@@ -55,8 +55,8 @@ def test_the_no_screen_strategy_uses_only_the_curves():
 def test_an_unknown_strategy_says_so_rather_than_falling_back():
     """Declaring an option in the config must not silently do something else."""
     config = ExperimentConfig()
-    config.multifidelity.strategy = "distillation"
-    with pytest.raises(ValueError, match="unknown multi-fidelity strategy"):
+    config.multifidelity.screen_strategy = "distillation"
+    with pytest.raises(ValueError, match="unknown screen strategy"):
         assemble_training_data(config, _retained())
 
 
@@ -68,7 +68,8 @@ def test_a_surrogate_strategy_is_refused_where_it_makes_no_sense(kind, strategy)
     a point on the curve it predicts, so substituting a prediction of a measurement we
     hold would be strictly worse. The graph model has no dense matrix to append to."""
     config = ExperimentConfig()
-    config.override("multifidelity.strategy", strategy)
+    config.sources.screen = True
+    config.multifidelity.screen_strategy = strategy
     config.override("model.kind", kind)
     with pytest.raises(ValueError, match="is not available for"):
         assemble_training_data(config, _retained())
@@ -78,14 +79,14 @@ def test_a_surrogate_strategy_is_refused_where_it_makes_no_sense(kind, strategy)
 def test_scalar_models_keep_the_surrogate_strategies(kind):
     """They predict a pIC50 and so cannot consume a response measurement; the surrogate
     is the only route the screen has into them."""
-    from cypshift.pipeline import supported_multifidelity
+    from cypshift.pipeline import supported_screen_strategy
 
-    assert set(supported_multifidelity(kind)) >= {"predicted_label", "embedding"}
+    assert set(supported_screen_strategy(kind)) >= {"predicted_label", "embedding"}
 
 
 def test_source_weights_reach_the_observation_table():
     config = ExperimentConfig()
-    config.override("multifidelity.strategy", "none")
+    config.sources.screen = False
     observations, _ = assemble_training_data(config, _retained())
     assert (observations["weight"] == 1.0).all()
 
@@ -135,7 +136,7 @@ def test_an_empty_preincubated_intersection_is_treated_as_absent():
     left nothing to concatenate; absent is what an empty intersection means."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.multifidelity.use_tdi_arm = True
+    config.sources.tdi_arm = True
     observations, _ = assemble_training_data(config, _retained())
     assert "tdi_drc" not in set(observations["assay"])
 
@@ -148,7 +149,7 @@ def test_the_preincubated_arm_reaches_the_training_table():
     pipeline never passed."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.multifidelity.use_tdi_arm = True
+    config.sources.tdi_arm = True
     observations, _ = assemble_training_data(config, _retained_with_tdi())
     assert "tdi_drc" in set(observations["assay"])
 
@@ -156,13 +157,13 @@ def test_the_preincubated_arm_reaches_the_training_table():
 def test_the_arm_is_off_by_default_to_protect_the_regression_track():
     """It costs about 0.04 macro ST-RAE at every weight tried, more than every gain
     measured so far combined. The classification track turns it on instead."""
-    assert ExperimentConfig().multifidelity.use_tdi_arm is False
+    assert ExperimentConfig().sources.tdi_arm is False
 
 
 def test_the_preincubated_arm_can_be_switched_off():
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.multifidelity.use_tdi_arm = False
+    config.sources.tdi_arm = False
     observations, _ = assemble_training_data(config, _retained_with_tdi())
     assert "tdi_drc" not in set(observations["assay"])
 
@@ -172,7 +173,7 @@ def test_the_preincubated_arm_is_restricted_to_retained_compounds():
     retained = _retained_with_tdi()
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.multifidelity.use_tdi_arm = True
+    config.sources.tdi_arm = True
     observations, _ = assemble_training_data(config, retained)
     arm = observations[observations["assay"] == "tdi_drc"]
     assert set(arm["Molecule_Name"]) <= set(retained["Molecule_Name"])
@@ -198,7 +199,7 @@ def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):
         ),
     )
     config = ExperimentConfig()
-    config.auxiliary.enabled = True
+    config.sources.chembl = True
     config.auxiliary.target_weight = 1.0
     rows = pipe.auxiliary_observations(config, _retained())
     assert set(rows["target"]) == {"CYP2C19"}
@@ -218,7 +219,7 @@ def test_auxiliary_is_absent_when_the_source_is_unreachable(monkeypatch):
 
     monkeypatch.setattr("cypshift.data.sequences.sequence_for", boom)
     config = ExperimentConfig()
-    config.auxiliary.enabled = True
+    config.sources.chembl = True
     assert pipe.auxiliary_observations(config, _retained()).empty
 
 
@@ -300,9 +301,9 @@ def test_include_scored_adds_rows_for_the_scored_enzymes(monkeypatch):
         ),
     )
     config = ExperimentConfig()
-    config.auxiliary.enabled = True
+    config.sources.chembl = True
     config.auxiliary.max_distance = 0.0  # admit no relatives; only scored augmentation
-    config.auxiliary.include_scored = True
+    config.sources.scored = True
     config.auxiliary.scored_weight = 0.5
     rows = pipe.auxiliary_observations(config, _retained())
     assert set(rows["target"]) == {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"}
@@ -322,9 +323,9 @@ def test_auxiliary_dedups_against_the_whole_challenge_not_just_retained(monkeypa
 
     monkeypatch.setattr("cypshift.data.chembl.load_auxiliary", fake_loader)
     config = ExperimentConfig()
-    config.auxiliary.enabled = True
+    config.sources.chembl = True
     config.auxiliary.max_distance = 0.0
-    config.auxiliary.include_scored = True
+    config.sources.scored = True
     pipe.auxiliary_observations(config, _retained(n=5))
     # the dedup set is the full challenge (train + test), far larger than the 5 retained
     assert captured["n_dedup_smiles"] > 100

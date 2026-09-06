@@ -10,17 +10,40 @@
     "fingerprint_bits": 4096,
     "fingerprint_radius": 2,
     "use_physicochemical": true,
-    "use_mechanistic": true
+    "use_mechanistic": true,
+    "structure_cache": "data/structure"
+  },
+  "sources": {
+    "screen": true,
+    "tdi_arm": false,
+    "chembl": false,
+    "sair": false,
+    "relatives": true,
+    "scored": false,
+    "structure": false
   },
   "conditioning": {
     "strategy": "factorised",
-    "embedding_dim": 8
+    "embedding_dim": 8,
+    "descriptor_sources": [
+      "curated"
+    ]
   },
   "multifidelity": {
-    "strategy": "extra_rows",
+    "screen_strategy": "extra_rows",
     "screen_weight": 0.3,
     "tdi_weight": 0.5,
     "surrogate_hidden": 16
+  },
+  "auxiliary": {
+    "enabled": false,
+    "source": "chembl",
+    "include_scored": false,
+    "scored_weight": 1.0,
+    "max_distance": 1.5,
+    "weighting": "exponential",
+    "scale": 1.0,
+    "target_weight": 1.0
   },
   "model": {
     "kind": "boosted",
@@ -68,11 +91,5 @@
     "project": "cyp-shift",
     "entity": null,
     "tags": []
-  },
-  "auxiliary": {
-    "max_distance": 1.5,
-    "weighting": "exponential",
-    "scale": 1.0,
-    "target_weight": 1.0
   }
 }

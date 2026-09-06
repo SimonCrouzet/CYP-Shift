@@ -53,7 +53,7 @@ DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES
 #: Re-exported for the same reason.
 AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
 
-MULTIFIDELITY_STRATEGIES = ("none", "extra_rows", "predicted_label", "embedding")
+SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding")
 
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
 OBJECTIVES = ("squared", "absolute", "soft_threshold")
@@ -79,9 +79,9 @@ class FeatureConfig:
     use_mechanistic: bool = True
     #: Append Boltz-2 cofold features (affinity + pose/interaction) per (compound,
     #: enzyme). Off by default: it needs a precomputed cofold cache
-    #: (scripts/cofold_structures.py); missing pairs are NaN. See
+    #: (scripts/cofold_structures.py); missing pairs are NaN. Toggled by
+    #: ``sources.structure``; this is only where the cofold cache lives. See
     #: :mod:`cypshift.structure`.
-    use_structure: bool = False
     structure_cache: str = "data/structure"
 
 
@@ -124,6 +124,36 @@ class AuxiliaryConfig:
 
 
 @dataclass
+class SourcesConfig:
+    """Which evidence to use, each an independent yes/no.
+
+    Deliberately just switches. *How* each source is folded in is the separate strategy
+    axis: the screen through ``multifidelity.screen_strategy`` and ``screen_weight``,
+    auxiliary data through ``auxiliary.max_distance`` / ``weighting`` / ``scale`` and the
+    weight fields, structure through ``features.structure_cache``. Turning several on at
+    once is expected -- they compose.
+    """
+
+    #: The single-concentration screen (17,504 censored readings).
+    screen: bool = True
+    #: The preincubated (TDI) arm -- needed for the classification track, costly for the
+    #: regression one, so off by default.
+    tdi_arm: bool = False
+    #: ChEMBL auxiliary potencies.
+    chembl: bool = False
+    #: SAIR auxiliary potencies (needs data/external/sair.parquet).
+    sair: bool = False
+    #: When chembl/sair are on, add non-scored relative enzymes selected by binding-site
+    #: distance.
+    relatives: bool = True
+    #: When chembl/sair are on, add the scored enzymes' own rows directly (the CYP2D6
+    #: lever).
+    scored: bool = False
+    #: Boltz-2 cofold features (affinity + heme-coordination pose), from the cache.
+    structure: bool = False
+
+
+@dataclass
 class ConditioningConfig:
     #: How a model is told which enzyme and assay a row came from. Not every strategy
     #: suits every model -- see :func:`cypshift.pipeline.supported_conditioning`:
@@ -150,13 +180,10 @@ class MultifidelityConfig:
     #: 0.033 to 0.061 macro ST-RAE on the regression track at every weight tried, more
     #: than every improvement measured so far put together.
     #:
-    #: There is no weight that avoids this: 0.1 / 0.3 / 0.6 / 1.0 gave regression
-    #: 0.780 / 0.801 / 0.781 / 0.773 against 0.740 without the arm, while macro MCC
-    #: moved only between 0.14 and 0.19. So the two tracks want different models, and
-    #: since they are scored on separate leaderboards there is no reason to compromise:
-    #: submit one run with this off and another with it on.
-    use_tdi_arm: bool = False
-    strategy: str = "extra_rows"
+    #: How the single-concentration screen is folded in when ``sources.screen`` is on:
+    #: extra_rows (pooled points / pseudo-labels), predicted_label or embedding (a
+    #: surrogate feature). The "use it at all" decision is ``sources.screen``.
+    screen_strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5
     #: Hidden-layer width of the screen surrogate model (an MLP), which is also the
@@ -241,6 +268,7 @@ class ExperimentConfig:
 
     data: DataConfig = field(default_factory=DataConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
+    sources: SourcesConfig = field(default_factory=SourcesConfig)
     conditioning: ConditioningConfig = field(default_factory=ConditioningConfig)
     multifidelity: MultifidelityConfig = field(default_factory=MultifidelityConfig)
     auxiliary: AuxiliaryConfig = field(default_factory=AuxiliaryConfig)
@@ -257,7 +285,11 @@ class ExperimentConfig:
                 for source in self.model.curve.descriptor_sources
             ),
             (self.auxiliary.weighting, AUXILIARY_WEIGHTING, "auxiliary.weighting"),
-            (self.multifidelity.strategy, MULTIFIDELITY_STRATEGIES, "multifidelity.strategy"),
+            (
+                self.multifidelity.screen_strategy,
+                SCREEN_STRATEGIES,
+                "multifidelity.screen_strategy",
+            ),
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),
         ]

@@ -20,7 +20,7 @@ import yaml
 from cypshift.config import REGRESSION_ENDPOINTS
 from cypshift.experiment import ExperimentConfig
 from cypshift.models.base import Model
-from cypshift.pipeline import build_model, supported_multifidelity
+from cypshift.pipeline import build_model, supported_screen_strategy
 from tests.test_sweeps import SWEEPS
 
 #: Varied enough that a fingerprint has non-constant columns to split on. Eight tiny
@@ -142,6 +142,6 @@ def test_swept_multifidelity_pairs_are_supported(path):
 
     for kind, strategy in itertools.product(
         options("model.kind", ["boosted", "neural", "graph", "curve"]),
-        options("multifidelity.strategy", ["none"]),
+        options("multifidelity.screen_strategy", ["extra_rows"]),
     ):
-        assert strategy in supported_multifidelity(kind), f"{path.name}: {kind} x {strategy}"
+        assert strategy in supported_screen_strategy(kind), f"{path.name}: {kind} x {strategy}"

@@ -9,7 +9,7 @@ from cypshift.data.assembly import encode_conditions, n_condition_columns
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
     CURVE_CONDITIONING,
-    MULTIFIDELITY_STRATEGIES,
+    SCREEN_STRATEGIES,
     ExperimentConfig,
 )
 
@@ -30,7 +30,7 @@ def test_defaults_validate():
     [
         ("conditioning.strategy", "telepathy"),
         ("model.curve.conditioning", "telepathy"),
-        ("multifidelity.strategy", "wishing"),
+        ("multifidelity.screen_strategy", "wishing"),
         ("model.kind", "oracle"),
         ("model.objective", "vibes"),
     ],
@@ -141,4 +141,4 @@ def test_only_the_neural_model_gets_the_full_conditioning_vocabulary():
 
 
 def test_all_multifidelity_strategies_are_named():
-    assert set(MULTIFIDELITY_STRATEGIES) == {"none", "extra_rows", "predicted_label", "embedding"}
+    assert set(SCREEN_STRATEGIES) == {"extra_rows", "predicted_label", "embedding"}

@@ -34,7 +34,7 @@ parameters:
   # Append Boltz-2 cofold features (affinity + heme-coordination pose). Needs a
   # precomputed cofold cache (scripts/cofold_structures.py); with no cache the block is
   # all-NaN, which a tree tolerates, so "true" is only meaningful once the cache exists.
-  features.use_structure:
+  sources.structure:
     values: [false, true]
 
   # The surrogate strategies belong here rather than in stage one, because they apply
@@ -43,8 +43,10 @@ parameters:
   # hidden layer, in as input columns -- a way of using the cheap data without letting
   # its 17,504 readings outvote 6,325 dose-response labels. The curve model needs none
   # of this: the screen is already a point on the curve it predicts.
-  multifidelity.strategy:
-    values: [none, extra_rows, predicted_label, embedding]
+  sources.screen:
+    values: [true, false]
+  # How the screen is folded in (the strategy axis) is swept in configs/sweep_sources.yaml,
+  # kept out of the hyperparameter grid here to keep it legible.
 
   data.holdout_fraction:
     value: 0.2

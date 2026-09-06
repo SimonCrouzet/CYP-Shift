@@ -46,8 +46,10 @@ parameters:
   # unrelated binding sites score. CYP2D6 has no relative at either and trains alone.
   # Whether to train on auxiliary-enzyme data at all, then how far to reach and how
   # to weight it. Off is the honest baseline: does auxiliary data help here?
-  auxiliary.enabled:
+  sources.sair:
     values: [false, true]
+  sources.relatives:
+    values: [true, false]
   auxiliary.max_distance:
     values: [1.5, 3.0]
 

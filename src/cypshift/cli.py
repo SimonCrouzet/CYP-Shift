@@ -231,7 +231,7 @@ def submit(
     # curve model answers "no" for every compound -- and it costs about 0.04 macro
     # ST-RAE on the regression track at every weight tried. The tracks are scored on
     # separate leaderboards, so each gets the model that suits it.
-    config.multifidelity.use_tdi_arm = track == "classification"
+    config.sources.tdi_arm = track == "classification"
     config.validate()
 
     train = load("inhibition", directory)

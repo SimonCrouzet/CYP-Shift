@@ -20,7 +20,7 @@ from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
-    MULTIFIDELITY_STRATEGIES,
+    SCREEN_STRATEGIES,
     ExperimentConfig,
 )
 from cypshift.models.base import PredictiveDistribution
@@ -59,7 +59,7 @@ def build_model(
 
         return BoostedTrees(
             loss=config.model.objective,
-            use_structure=config.features.use_structure,
+            use_structure=config.sources.structure,
             structure_cache=config.features.structure_cache,
             n_members=config.model.n_members,
             n_estimators=config.model.boosted.n_estimators,
@@ -143,8 +143,8 @@ def supported_conditioning(kind: str) -> tuple[str, ...]:
     return ("factorised", "metadata")
 
 
-def supported_multifidelity(kind: str) -> tuple[str, ...]:
-    """Which multi-fidelity strategies a model family can actually use.
+def supported_screen_strategy(kind: str) -> tuple[str, ...]:
+    """Which screen strategies a model family can use when ``sources.screen`` is on.
 
     The surrogate strategies fit a model to the screen and hand its output, or its
     hidden layer, to the real model as an input column. That is a way of using a cheap
@@ -166,8 +166,8 @@ def supported_multifidelity(kind: str) -> tuple[str, ...]:
     report a comparison that never happened.
     """
     if kind in ("curve", "graph"):
-        return ("none", "extra_rows")
-    return MULTIFIDELITY_STRATEGIES
+        return ("extra_rows",)
+    return SCREEN_STRATEGIES
 
 
 def assemble_training_data(
@@ -178,15 +178,16 @@ def assemble_training_data(
     Returns the observations and, where the strategy produces one, a per-compound
     surrogate feature derived from the screen rather than extra training rows.
     """
-    strategy = config.multifidelity.strategy
-    if strategy not in MULTIFIDELITY_STRATEGIES:
-        raise ValueError(f"unknown multi-fidelity strategy {strategy!r}")
-    allowed = supported_multifidelity(config.model.kind)
-    if strategy not in allowed:
-        raise ValueError(
-            f"multifidelity.strategy={strategy!r} is not available for "
-            f"model.kind={config.model.kind!r}; it supports {allowed}"
-        )
+    screen_strategy = config.multifidelity.screen_strategy
+    if screen_strategy not in SCREEN_STRATEGIES:
+        raise ValueError(f"unknown screen strategy {screen_strategy!r}")
+    if config.sources.screen:
+        allowed = supported_screen_strategy(config.model.kind)
+        if screen_strategy not in allowed:
+            raise ValueError(
+                f"multifidelity.screen_strategy={screen_strategy!r} is not available for "
+                f"model.kind={config.model.kind!r}; it supports {allowed}"
+            )
 
     weights = SourceWeights(
         screen_pseudo_label=config.multifidelity.screen_weight,
@@ -198,7 +199,7 @@ def assemble_training_data(
     # returned False for every compound -- MCC 0.0, identical to answering "no" to
     # everything. It is a real measurement of the same compounds under preincubation,
     # so it belongs in the table whatever the model does with it.
-    tdi = load("tdi", Path(config.data.directory)) if config.multifidelity.use_tdi_arm else None
+    tdi = load("tdi", Path(config.data.directory)) if config.sources.tdi_arm else None
     if tdi is not None:
         tdi = tdi[tdi["Molecule_Name"].isin(retained["Molecule_Name"])]
         if tdi.empty:
@@ -208,9 +209,9 @@ def assemble_training_data(
             logger.info("no retained compound has a preincubated measurement")
             tdi = None
     surrogate = None
-    if strategy == "none":
+    if not config.sources.screen:
         observations = build_observations(retained, tdi=tdi, weights=weights)
-    elif strategy in SURROGATE_STRATEGIES:
+    elif screen_strategy in SURROGATE_STRATEGIES:
         # Fitted only on retained compounds. Letting it see the holdout would carry
         # those compounds' screen readings into the feature and inflate the score
         # without improving anything on the blinded test set.
@@ -218,7 +219,7 @@ def assemble_training_data(
         surrogate = fit_surrogate(
             screen,
             trainable=set(retained["Molecule_Name"]),
-            strategy=strategy,
+            strategy=screen_strategy,
             n_bits=config.features.fingerprint_bits,
             hidden=config.multifidelity.surrogate_hidden,
             seed=config.data.seed,
@@ -267,16 +268,12 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     from cypshift.data.auxiliary import select_auxiliaries, site_distances
     from cypshift.data.sequences import ACCESSIONS, sequence_for
 
-    loaders = {"chembl": chembl.load_auxiliary, "sair": sair.load_auxiliary}
-    if config.auxiliary.source not in loaders:
-        raise ValueError(
-            f"auxiliary.source={config.auxiliary.source!r} is not one of {tuple(loaders)}"
-        )
-    load_auxiliary = loaders[config.auxiliary.source]
+    all_loaders = {"chembl": chembl.load_auxiliary, "sair": sair.load_auxiliary}
+    datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
     empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
-    if not config.auxiliary.enabled:
+    if not datasets:
         return empty
 
     # Deduplicate against the WHOLE challenge -- every train and test compound, not just
@@ -292,31 +289,41 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     # distance and weighted by it; the scored enzymes are added directly when
     # include_scored is set -- the same source's data for the endpoints themselves.
     to_pull: list[tuple[str, float]] = []
-    try:
-        candidates = {g: sequence_for(g) for g in ACCESSIONS if g not in scored}
-        admitted = select_auxiliaries(
-            site_distances(scored, candidates),
-            max_distance=config.auxiliary.max_distance,
-            weighting=config.auxiliary.weighting,
-            scale=config.auxiliary.scale,
-        )
-        to_pull.extend((aux.name, aux.weight * config.auxiliary.target_weight) for aux in admitted)
-    except Exception as error:  # noqa: BLE001 -- any failure means "no relatives"
-        logger.info("auxiliary selection unavailable (%s)", error)
-    if config.auxiliary.include_scored:
+    if config.sources.relatives:
+        try:
+            candidates = {g: sequence_for(g) for g in ACCESSIONS if g not in scored}
+            admitted = select_auxiliaries(
+                site_distances(scored, candidates),
+                max_distance=config.auxiliary.max_distance,
+                weighting=config.auxiliary.weighting,
+                scale=config.auxiliary.scale,
+            )
+            to_pull.extend(
+                (aux.name, aux.weight * config.auxiliary.target_weight) for aux in admitted
+            )
+        except Exception as error:  # noqa: BLE001 -- any failure means "no relatives"
+            logger.info("auxiliary relative selection unavailable (%s)", error)
+    if config.sources.scored:
         to_pull.extend((name, config.auxiliary.scored_weight) for name in scored)
     if not to_pull:
         return empty
 
     frames = []
     for enzyme, weight in to_pull:
-        try:
-            data = load_auxiliary(enzyme, challenge)
-        except Exception as error:  # noqa: BLE001
-            logger.info("no %s data for %s (%s); skipping", config.auxiliary.source, enzyme, error)
+        # Pool the chosen datasets for this enzyme, deduplicating shared compounds by
+        # median so chembl and sair can be used together without double-counting.
+        gathered = []
+        for name in datasets:
+            try:
+                gathered.append(all_loaders[name](enzyme, challenge))
+            except Exception as error:  # noqa: BLE001
+                logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
+        gathered = [g for g in gathered if not g.empty]
+        if not gathered:
             continue
-        if data.empty:
-            continue
+        data = pd.concat(gathered, ignore_index=True)
+        if len(datasets) > 1:
+            data = data.groupby("SMILES", as_index=False)["value"].median()
         value = data["value"].to_numpy(float)
         frames.append(
             pd.DataFrame(
@@ -370,7 +377,7 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
         "%s | conditioning %s | multifidelity %s | %d observations",
         config.model.kind,
         config.conditioning.strategy,
-        config.multifidelity.strategy,
+        config.multifidelity.screen_strategy,
         len(observations),
     )
 

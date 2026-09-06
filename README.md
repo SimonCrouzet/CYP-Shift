@@ -163,13 +163,22 @@ between them would be actively harmful.
 
 ### Evidence beyond the ligand
 
-Three optional sources, each a swept on/off:
+Every source is an independent **use: yes/no** switch (`sources.*`); *how* each one is
+folded in is a separate strategy axis. Turning several on composes.
 
-| source | what it adds | how it enters |
+| `sources.*` | what it adds | *how* (the strategy axis) |
 |---|---|---|
-| **single-concentration screen** | 17,504 censored readings | pooled as curve points (curve) or calibrated pseudo-labels (scalar models) |
-| **auxiliary enzymes** (ChEMBL) | e.g. CYP2C19, ~1,600 compounds | extra rows, weighted by binding-site distance ([proteochemometrics](#-terms)) |
-| **Boltz-2 cofold** | affinity **and** heme-coordination pose | per-(compound, enzyme) features from a cofold cache |
+| `screen` | the single-concentration screen, 17,504 censored readings | `multifidelity.screen_strategy`: pooled points (curve) / pseudo-labels / a surrogate feature |
+| `tdi_arm` | the preincubated arm | needed for the classification track; costs the regression one |
+| `chembl` | ChEMBL potencies | `auxiliary.weighting` · `scale` · `max_distance` |
+| `sair` | SAIR potencies (~10k CYP rows, real IC50s) | same; deduplicated against the whole challenge |
+| `relatives` | non-scored enzymes selected by binding-site distance | weighted by that distance |
+| `scored` | the scored enzymes' own extra rows (the CYP2D6 lever) | `auxiliary.scored_weight` |
+| `structure` | Boltz-2 cofold: affinity **and** heme-coordination pose | per-(compound, enzyme) features from the cofold cache |
+
+`chembl` and `sair` compose (their shared compounds are median-pooled); so do `relatives`
+and `scored`. Nothing here is a default beyond the screen — a plain run trains on the
+challenge data alone.
 
 The structure source is the two heads of the cofold: **(A)** Boltz-2's predicted
 affinity for the complex, and **(B)** the pose — how close the inhibitor's coordinating

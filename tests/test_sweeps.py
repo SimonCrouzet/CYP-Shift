@@ -89,7 +89,7 @@ def test_no_sweep_proposes_a_combination_the_pipeline_refuses(path: Path):
     model reads the screen directly as a point on the curve, and the graph model has
     no dense matrix to append a column to. A sweep pairing them would fail at run time
     rather than at review time."""
-    from cypshift.pipeline import supported_multifidelity
+    from cypshift.pipeline import supported_screen_strategy
 
     spec = yaml.safe_load(path.read_text())
     parameters = spec["parameters"]
@@ -101,10 +101,10 @@ def test_no_sweep_proposes_a_combination_the_pipeline_refuses(path: Path):
         return body.get("values", [body["value"]] if "value" in body else fallback)
 
     kinds = options("model.kind", ["boosted", "neural", "graph", "curve"])
-    strategies = options("multifidelity.strategy", ["none"])
+    strategies = options("multifidelity.screen_strategy", ["extra_rows"])
     for kind in kinds:
         for strategy in strategies:
-            assert strategy in supported_multifidelity(kind), (
+            assert strategy in supported_screen_strategy(kind), (
                 f"{path.name} pairs model.kind={kind} with "
                 f"multifidelity.strategy={strategy}, which it does not support"
             )

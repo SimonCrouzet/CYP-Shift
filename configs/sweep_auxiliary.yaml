@@ -22,11 +22,13 @@ parameters:
   model.kind:
     value: boosted
 
-  auxiliary.enabled:
+  sources.chembl:
     values: [false, true]
-  auxiliary.source:
-    values: [chembl, sair]
-  auxiliary.include_scored:
+  sources.sair:
+    values: [false, true]
+  sources.relatives:
+    values: [true, false]
+  sources.scored:
     values: [false, true]
   auxiliary.max_distance:
     values: [0.0, 1.5, 3.0]

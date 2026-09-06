@@ -42,8 +42,8 @@ parameters:
   # For a model predicting a scalar pIC50 the same reading has to be calibrated onto
   # that scale first. The surrogate strategies are swept in configs/sweep_boosted.yaml,
   # where they apply.
-  multifidelity.strategy:
-    values: [none, extra_rows]
+  sources.screen:
+    values: [true, false]
   multifidelity.screen_weight:
     distribution: uniform
     min: 0.05
