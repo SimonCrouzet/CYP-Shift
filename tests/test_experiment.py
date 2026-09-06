@@ -80,10 +80,20 @@ def test_load_applies_overrides_with_double_underscores(tmp_path):
     assert config.model.kind == "graph"
 
 
-def test_every_declared_conditioning_strategy_encodes():
+def test_every_column_conditioning_strategy_encodes():
+    # embedding is a strategy but not a *column* encoding: the neural model looks the
+    # condition up in a learned table rather than appending one-hot columns, so
+    # encode_conditions handles only the column-based strategies.
     for strategy in CONDITIONING_STRATEGIES:
+        if strategy == "embedding":
+            continue
         encoded = encode_conditions(OBSERVATIONS, strategy)
         assert encoded.shape == (len(OBSERVATIONS), n_condition_columns(strategy))
+
+
+def test_embedding_is_not_a_column_encoding():
+    with pytest.raises(ValueError, match="unknown conditioning strategy"):
+        encode_conditions(OBSERVATIONS, "embedding")
 
 
 def test_factorised_conditioning_shares_a_condition_across_targets():

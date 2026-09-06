@@ -258,3 +258,31 @@ def test_run_widens_the_target_vocabulary_for_auxiliary_enzymes(monkeypatch):
     scores, prediction = pipe.run(config)
     assert "CYP2C19" in captured["targets"]
     assert prediction.mean.shape[1] == 4  # still only the scored endpoints
+
+
+def test_embedding_conditioning_is_neural_only():
+    """A tree cannot embed; the graph already linear-projects its one-hot. Only the
+    neural model offers a learned (target, assay) table."""
+    from cypshift.pipeline import supported_conditioning
+
+    assert "embedding" in supported_conditioning("neural")
+    assert "embedding" not in supported_conditioning("boosted")
+    assert "embedding" not in supported_conditioning("graph")
+
+
+def test_embedding_conditioning_is_rejected_for_a_tree():
+    config = ExperimentConfig()
+    config.override("model.kind", "boosted")
+    config.override("conditioning.strategy", "embedding")
+    with pytest.raises(ValueError, match="not available"):
+        build_model(config)
+
+
+def test_neural_builds_an_embedding_table_when_asked():
+    config = ExperimentConfig()
+    config.override("model.kind", "neural")
+    config.override("conditioning.strategy", "embedding")
+    config.conditioning.embedding_dim = 8
+    model = build_model(config)
+    assert model.conditioning == "embedding"
+    assert model.embedding_dim == 8

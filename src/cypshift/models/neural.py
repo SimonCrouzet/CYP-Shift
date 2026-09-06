@@ -37,7 +37,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, encode_conditions
+from cypshift.data.assembly import ASSAYS, condition_index, encode_conditions, n_conditions
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
@@ -118,6 +118,40 @@ class ConditionedMLP(nn.Module):
         return self.trunk(x).squeeze(-1)
 
 
+class EmbeddedMLP(nn.Module):
+    """Molecular features concatenated with a learned (target, assay) embedding.
+
+    The one-hot conditioning of :class:`ConditionedMLP` spends a column per level and
+    lets the first trunk layer learn its own projection. This instead looks the
+    condition up in a small trainable table, which shares parameters across rows of the
+    same enzyme and gives a fixed-width, swept bottleneck (``embedding_dim``) rather
+    than a width tied to the number of levels.
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        n_conditions: int,
+        embedding_dim: int = 8,
+        hidden: int = 256,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.embedding = nn.Embedding(n_conditions, embedding_dim)
+        self.trunk = nn.Sequential(
+            nn.Linear(n_features + embedding_dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 2, 1),
+        )
+
+    def forward(self, x: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+        return self.trunk(torch.cat([x, self.embedding(index)], dim=1)).squeeze(-1)
+
+
 class NeuralNetwork:
     """Structure-free model trained on the challenge's own loss."""
 
@@ -141,6 +175,7 @@ class NeuralNetwork:
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
         loss: str = "soft_threshold",
+        embedding_dim: int = 8,
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -165,24 +200,45 @@ class NeuralNetwork:
         self.learning_rate = learning_rate
         self.n_forward_passes = n_forward_passes
         self.loss = loss
+        #: Width of the learned (target, assay) table when conditioning == "embedding".
+        self.embedding_dim = embedding_dim
         self.seed = seed
-        self._model: ConditionedMLP | None = None
+        self._model: ConditionedMLP | EmbeddedMLP | None = None
         self._scaler: BlockScaler | None = None
 
-    def _features(self, smiles: list[str], one_hot: NDArray[np.float32]) -> NDArray[np.float32]:
-        return np.hstack(
-            [
-                featurise(
-                    smiles,
-                    n_bits=self.n_bits,
-                    radius=self.fingerprint_radius,
-                    physchem=self.physchem,
-                    mechanism=self.mechanism,
-                    extra=self.surrogate,
-                ),
-                one_hot,
-            ]
-        ).astype(np.float32)
+    def _features(
+        self, smiles: list[str], one_hot: NDArray[np.float32] | None = None
+    ) -> NDArray[np.float32]:
+        molecular = featurise(
+            smiles,
+            n_bits=self.n_bits,
+            radius=self.fingerprint_radius,
+            physchem=self.physchem,
+            mechanism=self.mechanism,
+            extra=self.surrogate,
+        )
+        if one_hot is None:
+            return molecular.astype(np.float32)
+        return np.hstack([molecular, one_hot]).astype(np.float32)
+
+    def _encode(
+        self, frame: pd.DataFrame, smiles: list[str], fit: bool
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Scaled molecular features and, for the embedding strategy, condition indices.
+
+        Returns ``(features, index)`` where ``index`` is None unless conditioning is
+        ``embedding``. The embedding path keeps the condition out of the scaled feature
+        block -- it is looked up in a learned table inside the model instead of being
+        one-hot columns fed through the scaler.
+        """
+        if self.conditioning == "embedding":
+            features = self._scale_blocks(self._features(smiles), fit=fit)
+            index = torch.tensor(
+                condition_index(frame, self.targets, self.assays), dtype=torch.long
+            )
+            return features, index
+        one_hot = encode_conditions(frame, self.conditioning, self.targets, self.assays)
+        return self._scale_blocks(self._features(smiles, one_hot), fit=fit), None
 
     def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
         """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
@@ -205,8 +261,7 @@ class NeuralNetwork:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        one_hot = encode_conditions(usable, self.conditioning, self.targets, self.assays)
-        features = self._scale_blocks(self._features(usable["SMILES"].tolist(), one_hot), fit=True)
+        features, condition = self._encode(usable, usable["SMILES"].tolist(), fit=True)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
@@ -217,7 +272,16 @@ class NeuralNetwork:
         value_t = torch.tensor(value, dtype=torch.float32)
         weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
 
-        self._model = ConditionedMLP(features.shape[1], self.hidden, self.dropout)
+        if self.conditioning == "embedding":
+            self._model = EmbeddedMLP(
+                features.shape[1],
+                n_conditions(self.targets, self.assays),
+                self.embedding_dim,
+                self.hidden,
+                self.dropout,
+            )
+        else:
+            self._model = ConditionedMLP(features.shape[1], self.hidden, self.dropout)
         optimiser = torch.optim.Adam(self._model.parameters(), lr=self.learning_rate)
         n = len(usable)
         logger.info("training %s loss on %d observations", self.loss, n)
@@ -228,7 +292,12 @@ class NeuralNetwork:
             for start in range(0, n, self.batch_size):
                 index = order[start : start + self.batch_size]
                 optimiser.zero_grad()
-                predicted = self._model(features[index])
+                batch = features[index]
+                predicted = (
+                    self._model(batch, condition[index])
+                    if condition is not None
+                    else self._model(batch)
+                )
                 batch_loss = _objective(
                     self.loss,
                     predicted,
@@ -256,8 +325,12 @@ class NeuralNetwork:
                 query = pd.DataFrame(
                     {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
                 )
-                one_hot = encode_conditions(query, self.conditioning, self.targets, self.assays)
-                features = self._scale_blocks(self._features(smiles, one_hot), fit=False)
+                features, condition = self._encode(query, smiles, fit=False)
                 for pass_index in range(self.n_forward_passes):
-                    samples[pass_index, :, column] = self._model(features).numpy()
+                    predicted = (
+                        self._model(features, condition)
+                        if condition is not None
+                        else self._model(features)
+                    )
+                    samples[pass_index, :, column] = predicted.numpy()
         return PredictiveDistribution(samples, self.endpoints)

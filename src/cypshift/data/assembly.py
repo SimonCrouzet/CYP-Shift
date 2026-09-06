@@ -215,6 +215,37 @@ def n_condition_columns(
     raise ValueError(f"unknown conditioning strategy {strategy!r}")
 
 
+def n_conditions(targets: tuple[str, ...] = ISOFORMS, assays: tuple[str, ...] = ASSAYS) -> int:
+    """Number of distinct (target, assay) pairs, i.e. the embedding vocabulary size."""
+    return len(targets) * len(assays)
+
+
+def condition_index(
+    observations: pd.DataFrame,
+    targets: tuple[str, ...] = ISOFORMS,
+    assays: tuple[str, ...] = ASSAYS,
+) -> np.ndarray:
+    """Map each row to a single (target, assay) index, for an embedding lookup.
+
+    The one-hot encoders spend a column per level; an embedding indexes a learned table
+    instead, so it needs one integer per row. Index is ``target * n_assays + assay`` in
+    the given vocabularies.
+
+    Raises:
+        ValueError: On an unknown target or assay -- the same contract as
+            :func:`encode_conditions`.
+    """
+    target_of = {name: i for i, name in enumerate(targets)}
+    assay_of = {name: i for i, name in enumerate(assays)}
+    unknown_t = set(observations["target"]) - set(target_of)
+    unknown_a = set(observations["assay"]) - set(assay_of)
+    if unknown_t or unknown_a:
+        raise ValueError(f"unknown target(s) {unknown_t} or assay(s) {unknown_a}")
+    t = observations["target"].map(target_of).to_numpy()
+    a = observations["assay"].map(assay_of).to_numpy()
+    return (t * len(assays) + a).astype(np.int64)
+
+
 def one_hot_encode(
     observations: pd.DataFrame,
     targets: tuple[str, ...] = ISOFORMS,

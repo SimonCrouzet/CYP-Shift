@@ -18,7 +18,11 @@ from cypshift.data.splits import similarity_matched_holdout
 from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
-from cypshift.experiment import MULTIFIDELITY_STRATEGIES, ExperimentConfig
+from cypshift.experiment import (
+    CONDITIONING_STRATEGIES,
+    MULTIFIDELITY_STRATEGIES,
+    ExperimentConfig,
+)
 from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
@@ -35,6 +39,11 @@ def build_model(
     missing optional dependency fails only when that model is actually requested.
     """
     kind = config.model.kind
+    if config.conditioning.strategy not in supported_conditioning(kind):
+        raise ValueError(
+            f"conditioning.strategy={config.conditioning.strategy!r} is not available "
+            f"for model.kind={kind!r}; it supports {supported_conditioning(kind)}"
+        )
     shared = dict(
         conditioning=config.conditioning.strategy,
         n_bits=config.features.fingerprint_bits,
@@ -62,6 +71,7 @@ def build_model(
 
         return NeuralNetwork(
             loss=config.model.objective,
+            embedding_dim=config.conditioning.embedding_dim,
             hidden=config.model.neural.hidden,
             dropout=config.model.neural.dropout,
             epochs=config.model.neural.epochs,
@@ -106,6 +116,21 @@ def build_model(
             surrogate=surrogate,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
+
+
+def supported_conditioning(kind: str) -> tuple[str, ...]:
+    """Which input-conditioning strategies a model family can use.
+
+    ``embedding`` looks the (target, assay) pair up in a learned table, which only a
+    torch model with a trunk can do -- the neural model. A boosted tree splits on the
+    one-hot columns and has nothing to embed; the graph model already feeds its one-hot
+    through a linear readout (``x_d``), which is itself a learned projection, so a
+    separate embedding would be redundant. The curve model ignores this axis entirely --
+    it conditions through its own ``model.curve.conditioning`` (heads/descriptor/film).
+    """
+    if kind == "neural":
+        return CONDITIONING_STRATEGIES
+    return tuple(c for c in CONDITIONING_STRATEGIES if c != "embedding")
 
 
 def supported_multifidelity(kind: str) -> tuple[str, ...]:

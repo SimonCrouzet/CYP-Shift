@@ -35,7 +35,7 @@ DEFAULT_CONFIG_PATH = Path("configs/default.json")
 #: A flat encoding over (target, assay) pairs was removed. It shared nothing between
 #: conditions, and once the assay dimension moved out of conditioning there was no
 #: argument left for it.
-CONDITIONING_STRATEGIES = ("factorised", "metadata")
+CONDITIONING_STRATEGIES = ("factorised", "metadata", "embedding")
 
 #: How the curve model makes its output depend on the enzyme. This is a *structural*
 #: choice rather than an encoding, which is why it is a separate axis.
