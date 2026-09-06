@@ -98,7 +98,7 @@ class TestSubmit:
             "cypshift.cli.load",
             lambda name, directory=None: test_frame if name == "test" else train_frame,
         )
-        monkeypatch.setattr("cypshift.cli.build_model", lambda config, surrogate=None: FakeModel())
+        monkeypatch.setattr("cypshift.cli.build_model", lambda config, surrogate=None, targets=None: FakeModel())
         monkeypatch.setattr(
             "cypshift.cli.assemble_training_data", lambda config, frame: (pd.DataFrame(), None)
         )

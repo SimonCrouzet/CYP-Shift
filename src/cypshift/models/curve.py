@@ -390,8 +390,13 @@ class CurveModel:
         never scored -- every run through the pipeline died at prediction.
         """
         curves = self._curves(smiles)
-        samples = curves[:, :, :, ARMS.index("direct"), PIC50]
-        return PredictiveDistribution(samples=samples, endpoints=tuple(REGRESSION_ENDPOINTS))
+        direct = curves[:, :, :, ARMS.index("direct"), PIC50]
+        # self.targets may be wider than the scored four when auxiliary enzymes were
+        # trained on; select the scored endpoints in their canonical order.
+        columns = [self.targets.index(e.split("_")[0]) for e in REGRESSION_ENDPOINTS]
+        return PredictiveDistribution(
+            samples=direct[:, :, columns], endpoints=tuple(REGRESSION_ENDPOINTS)
+        )
 
     def predict_pic50(self, smiles: list[str], arm: str = "direct") -> NDArray[np.float64]:
         """The curve's midpoint, which is what the regression track asks for."""

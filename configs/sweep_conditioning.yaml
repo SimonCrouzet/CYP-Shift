@@ -44,6 +44,10 @@ parameters:
 
   # 1.5 admits seven human CYPs, 3.0 admits seventeen at up to half the distance two
   # unrelated binding sites score. CYP2D6 has no relative at either and trains alone.
+  # Whether to train on auxiliary-enzyme data at all, then how far to reach and how
+  # to weight it. Off is the honest baseline: does auxiliary data help here?
+  auxiliary.enabled:
+    values: [false, true]
   auxiliary.max_distance:
     values: [1.5, 3.0]
 

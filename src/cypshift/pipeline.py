@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import SourceWeights, build_observations
+from cypshift.data.assembly import OBSERVATION_COLUMNS, SourceWeights, build_observations
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
@@ -24,7 +24,11 @@ from cypshift.models.base import PredictiveDistribution
 logger = logging.getLogger(__name__)
 
 
-def build_model(config: ExperimentConfig, surrogate: object | None = None) -> object:
+def build_model(
+    config: ExperimentConfig,
+    surrogate: object | None = None,
+    targets: tuple[str, ...] = ISOFORMS,
+) -> object:
     """Construct the model a configuration names.
 
     Imported lazily so a run needing only boosted trees does not pay for torch, and a
@@ -37,6 +41,7 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
         fingerprint_radius=config.features.fingerprint_radius,
         physchem=config.features.use_physicochemical,
         mechanism=config.features.use_mechanistic,
+        targets=targets,
         seed=config.data.seed,
         surrogate=surrogate,
     )
@@ -77,12 +82,14 @@ def build_model(config: ExperimentConfig, surrogate: object | None = None) -> ob
             batch_size=config.model.graph.batch_size,
             n_members=config.model.n_members,
             conditioning=config.conditioning.strategy,
+            targets=targets,
             seed=config.data.seed,
         )
     if kind == "curve":
         from cypshift.models.curve import CurveModel
 
         return CurveModel(
+            targets=targets,
             n_bits=config.features.fingerprint_bits,
             fingerprint_radius=config.features.fingerprint_radius,
             physchem=config.features.use_physicochemical,
@@ -165,10 +172,10 @@ def assemble_training_data(
             # is what an empty intersection means.
             logger.info("no retained compound has a preincubated measurement")
             tdi = None
+    surrogate = None
     if strategy == "none":
-        return build_observations(retained, tdi=tdi, weights=weights), None
-
-    if strategy in SURROGATE_STRATEGIES:
+        observations = build_observations(retained, tdi=tdi, weights=weights)
+    elif strategy in SURROGATE_STRATEGIES:
         # Fitted only on retained compounds. Letting it see the holdout would carry
         # those compounds' screen readings into the feature and inflate the score
         # without improving anything on the blinded test set.
@@ -180,24 +187,101 @@ def assemble_training_data(
             n_bits=config.features.fingerprint_bits,
             seed=config.data.seed,
         )
-        return build_observations(retained, tdi=tdi, weights=weights), surrogate
+        observations = build_observations(retained, tdi=tdi, weights=weights)
+    else:
+        screen = load("screen", Path(config.data.directory))
+        kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
+        if config.model.kind == "curve":
+            # The curve model predicts a response, so the screen enters as the quantity
+            # it actually measured -- an inhibited fraction at one concentration. No
+            # calibration, and the units match what the loss compares against.
+            curves = build_observations(retained, tdi=tdi, weights=weights)
+            points = response_observations(kept, config.model.curve.screen_noise)
+            points["weight"] = config.multifidelity.screen_weight
+            observations = pd.concat([curves, points[curves.columns]], ignore_index=True)
+        else:
+            # Every other model predicts a pIC50, so the screen has to be mapped onto
+            # that scale first, which is what the isotonic calibration does.
+            labels, _ = pseudo_labels(kept, retained)
+            observations = build_observations(
+                retained, screen_labels=labels, tdi=tdi, weights=weights
+            )
 
-    screen = load("screen", Path(config.data.directory))
-    kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
-    curves = build_observations(retained, tdi=tdi, weights=weights)
+    auxiliary = auxiliary_observations(config, retained)
+    if not auxiliary.empty:
+        observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
+    return observations, surrogate
 
-    if config.model.kind == "curve":
-        # The curve model predicts a response, so the screen enters as the quantity it
-        # actually measured -- an inhibited fraction at one concentration. No
-        # calibration, and the units match what the loss compares against.
-        points = response_observations(kept, config.model.curve.screen_noise)
-        points["weight"] = config.multifidelity.screen_weight
-        return pd.concat([curves, points[curves.columns]], ignore_index=True), None
 
-    # Every other model predicts a pIC50, so the screen has to be mapped onto that
-    # scale first, which is what the isotonic calibration does.
-    labels, _ = pseudo_labels(kept, retained)
-    return build_observations(retained, screen_labels=labels, tdi=tdi, weights=weights), None
+def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> pd.DataFrame:
+    """Weighted training rows from auxiliary enzymes, per the auxiliary config.
+
+    Selects enzymes whose binding site is within ``auxiliary.max_distance`` of a scored
+    one, pulls their cleaned ChEMBL potencies, and weights each enzyme's rows by
+    distance (:mod:`cypshift.data.auxiliary`). Rows carry the auxiliary enzyme as their
+    ``target``; the model's encoding vocabulary is widened to fit them while predictions
+    stay on the four scored endpoints.
+
+    Returns an empty frame -- and the run trains on the challenge data alone -- when the
+    config admits nothing or the data is unreachable (no network and no cache), so a run
+    never fails for lack of an auxiliary source.
+    """
+    from cypshift.config import ISOFORMS
+    from cypshift.data.auxiliary import select_auxiliaries, site_distances
+    from cypshift.data.chembl import load_auxiliary
+    from cypshift.data.sequences import ACCESSIONS, sequence_for
+
+    scored = tuple(name.split("_")[0] for name in ISOFORMS)
+    empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
+    if not config.auxiliary.enabled:
+        return empty
+    try:
+        candidates = {g: sequence_for(g) for g in ACCESSIONS if g not in scored}
+        distances = site_distances(scored, candidates)
+        admitted = select_auxiliaries(
+            distances,
+            max_distance=config.auxiliary.max_distance,
+            weighting=config.auxiliary.weighting,
+            scale=config.auxiliary.scale,
+        )
+    except Exception as error:  # noqa: BLE001 -- any failure means "no auxiliary source"
+        logger.info("auxiliary selection unavailable (%s); using the challenge data only", error)
+        return empty
+    if not admitted:
+        return empty
+
+    frames = []
+    for aux in admitted:
+        try:
+            data = load_auxiliary(aux.name, retained["SMILES"])
+        except Exception as error:  # noqa: BLE001
+            logger.info("no ChEMBL data for %s (%s); skipping", aux.name, error)
+            continue
+        if data.empty:
+            continue
+        value = data["value"].to_numpy(float)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "Molecule_Name": [f"{aux.name}:{i}" for i in range(len(data))],
+                    "SMILES": data["SMILES"].to_numpy(),
+                    "target": aux.name,
+                    "assay": "direct_inhibition_drc",
+                    "value": value,
+                    # No credible interval accompanies a ChEMBL potency, so the bounds
+                    # collapse to the point -- no invented tolerance.
+                    "conf_low": value,
+                    "conf_high": value,
+                    "weight": aux.weight * config.auxiliary.target_weight,
+                    "is_censored": False,
+                }
+            )
+        )
+    if not frames:
+        return empty
+    out = pd.concat(frames, ignore_index=True)
+    logger.info("added %d auxiliary rows from %d enzymes", len(out), out["target"].nunique())
+    return out
 
 
 def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]:
@@ -221,6 +305,9 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
     )
     retained, evaluation = train.loc[~mask], train.loc[mask]
     observations, surrogate = assemble_training_data(config, retained)
+    scored = list(ISOFORMS)
+    extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]
+    targets = tuple(scored + sorted(extra))
     logger.info(
         "%s | conditioning %s | multifidelity %s | %d observations",
         config.model.kind,
@@ -229,7 +316,7 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
         len(observations),
     )
 
-    model = build_model(config, surrogate)
+    model = build_model(config, surrogate, targets=targets)
     model.fit(observations)
     prediction = model.predict(evaluation["SMILES"].tolist())
 

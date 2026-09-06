@@ -176,3 +176,85 @@ def test_the_preincubated_arm_is_restricted_to_retained_compounds():
     observations, _ = assemble_training_data(config, retained)
     arm = observations[observations["assay"] == "tdi_drc"]
     assert set(arm["Molecule_Name"]) <= set(retained["Molecule_Name"])
+
+
+def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):
+    """The auxiliary config must actually pull and weight rows -- it was swept but
+    unwired. Mocked so the test needs no network."""
+    import cypshift.pipeline as pipe
+    from cypshift.data.auxiliary import Auxiliary
+
+    monkeypatch.setattr(pipe, "site_distances", lambda scored, cands: None, raising=False)
+    monkeypatch.setattr(
+        "cypshift.data.auxiliary.select_auxiliaries",
+        lambda *a, **k: [Auxiliary("CYP2C19", "CYP2C9", 0.53, 0.6)],
+    )
+    monkeypatch.setattr("cypshift.data.sequences.sequence_for", lambda name, *a, **k: "M")
+    monkeypatch.setattr("cypshift.data.auxiliary.site_distances", lambda scored, cands: None)
+    monkeypatch.setattr(
+        "cypshift.data.chembl.load_auxiliary",
+        lambda enzyme, smiles, *a, **k: pd.DataFrame(
+            {"SMILES": ["CCO", "CCN"], "value": [5.0, 6.0], "target": enzyme}
+        ),
+    )
+    config = ExperimentConfig()
+    config.auxiliary.enabled = True
+    config.auxiliary.target_weight = 1.0
+    rows = pipe.auxiliary_observations(config, _retained())
+    assert set(rows["target"]) == {"CYP2C19"}
+    import numpy as np
+
+    assert np.allclose(rows["weight"], 0.6)
+    # no invented interval: bounds collapse to the point
+    assert (rows["conf_low"] == rows["value"]).all()
+
+
+def test_auxiliary_is_absent_when_the_source_is_unreachable(monkeypatch):
+    """A run must not fail for lack of an auxiliary source (no network, no cache)."""
+    import cypshift.pipeline as pipe
+
+    def boom(name, *a, **k):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr("cypshift.data.sequences.sequence_for", boom)
+    config = ExperimentConfig()
+    config.auxiliary.enabled = True
+    assert pipe.auxiliary_observations(config, _retained()).empty
+
+
+def test_run_widens_the_target_vocabulary_for_auxiliary_enzymes(monkeypatch):
+    """Predictions stay on the scored four even when training on more targets."""
+    import cypshift.pipeline as pipe
+
+    captured = {}
+    real_build = pipe.build_model
+
+    def spy(config, surrogate=None, targets=None):
+        captured["targets"] = targets
+        return real_build(config, surrogate, targets=targets)
+
+    monkeypatch.setattr(pipe, "build_model", spy)
+    monkeypatch.setattr(
+        pipe,
+        "auxiliary_observations",
+        lambda config, retained: pd.DataFrame(
+            {
+                "Molecule_Name": ["CYP2C19:0"],
+                "SMILES": [retained["SMILES"].iloc[0]],
+                "target": ["CYP2C19"],
+                "assay": ["direct_inhibition_drc"],
+                "value": [5.0],
+                "conf_low": [5.0],
+                "conf_high": [5.0],
+                "weight": [0.6],
+                "is_censored": [False],
+            }
+        ),
+    )
+    config = ExperimentConfig()
+    config.override("model.kind", "boosted")
+    config.model.boosted.n_estimators = 4
+    config.features.fingerprint_bits = 256
+    scores, prediction = pipe.run(config)
+    assert "CYP2C19" in captured["targets"]
+    assert prediction.mean.shape[1] == 4  # still only the scored endpoints

@@ -88,6 +88,10 @@ class AuxiliaryConfig:
     See :mod:`cypshift.data.auxiliary`.
     """
 
+    #: Off by default. Pulling auxiliary data needs a network fetch (ChEMBL) or a warm
+    #: cache and pulls thousands of extra rows, so it is opt-in and the sweep turns it
+    #: on -- a default run trains on the challenge data alone.
+    enabled: bool = False
     #: Admit a candidate whose binding site is within this of a scored enzyme. The
     #: default admits seven human CYPs; 3.0 admits seventeen, most of them past halfway
     #: to the distance two unrelated sites score.

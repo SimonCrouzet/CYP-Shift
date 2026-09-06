@@ -239,7 +239,10 @@ def submit(
     logger.info("training on all %d compounds, predicting %d", len(train), len(test))
 
     observations, surrogate = assemble_training_data(config, train)
-    model = build_model(config, surrogate)
+    scored = list(ISOFORMS)
+    present = observations.get("target", [])
+    extra = [t for t in dict.fromkeys(present) if t not in scored]
+    model = build_model(config, surrogate, targets=tuple(scored + sorted(extra)))
     model.fit(observations)
 
     prediction = model.predict(test["SMILES"].tolist())
