@@ -264,11 +264,15 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     never fails for lack of an auxiliary source.
     """
     from cypshift.config import ISOFORMS
-    from cypshift.data import chembl, sair
+    from cypshift.data import chembl, octant, sair
     from cypshift.data.auxiliary import select_auxiliaries, site_distances
     from cypshift.data.sequences import ACCESSIONS, sequence_for
 
-    all_loaders = {"chembl": chembl.load_auxiliary, "sair": sair.load_auxiliary}
+    all_loaders = {
+        "chembl": chembl.load_auxiliary,
+        "sair": sair.load_auxiliary,
+        "octant": octant.load_auxiliary,
+    }
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
@@ -323,8 +327,13 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
             continue
         data = pd.concat(gathered, ignore_index=True)
         if len(datasets) > 1:
+            # Pooling drops per-source intervals; collapse to the point on the median.
             data = data.groupby("SMILES", as_index=False)["value"].median()
         value = data["value"].to_numpy(float)
+        # Keep a real credible interval where the source ships one (Octant does),
+        # otherwise the bounds collapse to the point -- no invented tolerance.
+        low = data["conf_low"].to_numpy(float) if "conf_low" in data.columns else value
+        high = data["conf_high"].to_numpy(float) if "conf_high" in data.columns else value
         frames.append(
             pd.DataFrame(
                 {
@@ -333,10 +342,8 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                     "target": enzyme,
                     "assay": "direct_inhibition_drc",
                     "value": value,
-                    # No credible interval accompanies a source potency, so the bounds
-                    # collapse to the point -- no invented tolerance.
-                    "conf_low": value,
-                    "conf_high": value,
+                    "conf_low": low,
+                    "conf_high": high,
                     "weight": weight,
                     "is_censored": False,
                 }

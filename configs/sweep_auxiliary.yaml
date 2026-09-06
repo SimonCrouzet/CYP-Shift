@@ -26,6 +26,8 @@ parameters:
     values: [false, true]
   sources.sair:
     values: [false, true]
+  sources.octant:
+    values: [false, true]
   sources.relatives:
     values: [true, false]
   sources.scored:
@@ -34,8 +36,6 @@ parameters:
     values: [0.0, 1.5, 3.0]
   auxiliary.scored_weight:
     values: [0.3, 0.6, 1.0]
-  auxiliary.target_weight:
-    values: [1.0, 2.0]
 
   data.holdout_fraction:
     value: 0.2
