@@ -463,17 +463,17 @@ runs whichever the configured model needs.
 
 ```bash
 # structure-free: everything the ligand models need
-mamba env create -f environment.yml
+mamba env create -p <prefix>/cypshift -f environment.yml
 
-# structure: start from an existing co-folding environment (Boltz-2), then add this
-# package's core so its data and featurisation code is importable alongside cofolding
-mamba create -p <prefix>/cypshift-struct --clone <your-boltz-env>
-<prefix>/cypshift-struct/bin/pip install -e . --no-deps lightgbm "typer>=0.12"
+# structure: the same full stack, then Boltz-2 cofolding on top
+mamba env create -p <prefix>/cypshift-struct -f environment.yml
+<prefix>/cypshift-struct/bin/pip install boltz
 ```
 
-The structure environment only needs the package core (rdkit, pandas, scikit-learn are
-already in the Boltz environment); `--no-deps` keeps it from disturbing the pinned
-cofolding torch.
+The structure environment is a superset of the structure-free one -- built from the same
+`environment.yml`, so it runs every ligand model, plus Boltz-2 for the structure track.
+Boltz brings its own CUDA-built torch, which chemprop accepts, so the two stacks share
+one torch rather than conflicting.
 
 Gated HuggingFace assets need an authenticated account with access granted:
 
