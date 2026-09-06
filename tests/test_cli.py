@@ -56,11 +56,11 @@ class TestSubmit:
     """The submission path: fit on everything, predict the blinded set, write a CSV."""
 
     def test_submit_is_registered(self):
-        result = CliRunner().invoke(app, ["--help"])
+        result = CliRunner().invoke(app, ["--help"], env={"COLUMNS": "200"})
         assert "submit" in result.output
 
     def test_submit_help_describes_the_blinded_set(self):
-        result = CliRunner().invoke(app, ["submit", "--help"])
+        result = CliRunner().invoke(app, ["submit", "--help"], env={"COLUMNS": "200"})
         assert result.exit_code == 0
         assert "blinded" in result.output.lower()
 
@@ -119,7 +119,9 @@ class TestSubmit:
         assert result.exit_code != 0
 
     def test_the_track_option_is_documented(self):
-        result = CliRunner().invoke(app, ["submit", "--help"])
+        # Wide terminal so rich does not wrap the option name off the checked string;
+        # CI's default 80 columns split "--track" across lines.
+        result = CliRunner().invoke(app, ["submit", "--help"], env={"COLUMNS": "200"})
         assert "--track" in result.output
 
     def test_tdi_columns_are_omitted_when_the_model_cannot_predict_them(self):
