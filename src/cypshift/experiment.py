@@ -35,7 +35,7 @@ DEFAULT_CONFIG_PATH = Path("configs/default.json")
 #: A flat encoding over (target, assay) pairs was removed. It shared nothing between
 #: conditions, and once the assay dimension moved out of conditioning there was no
 #: argument left for it.
-CONDITIONING_STRATEGIES = ("factorised", "metadata", "embedding")
+CONDITIONING_STRATEGIES = ("factorised", "metadata", "embedding", "descriptor", "heads", "film")
 
 #: How the curve model makes its output depend on the enzyme. This is a *structural*
 #: choice rather than an encoding, which is why it is a separate axis.
@@ -108,8 +108,18 @@ class AuxiliaryConfig:
 
 @dataclass
 class ConditioningConfig:
+    #: How a model is told which enzyme and assay a row came from. Not every strategy
+    #: suits every model -- see :func:`cypshift.pipeline.supported_conditioning`:
+    #: ``factorised``/``metadata`` are one-hot input blocks (all input models);
+    #: ``embedding`` is a learned table, ``descriptor`` appends the pocket vector,
+    #: ``heads`` gives one output head per condition, ``film`` lets the descriptor scale
+    #: the trunk (the last three are the neural model's, mirroring the curve model's).
     strategy: str = "factorised"
+    #: Width of the learned table when strategy is ``embedding``.
     embedding_dim: int = 8
+    #: Which pocket-descriptor sources build the vector for ``descriptor`` and ``film``;
+    #: see :data:`cypshift.data.conditioning.DESCRIPTOR_SOURCES`.
+    descriptor_sources: tuple[str, ...] = ("curated",)
 
 
 @dataclass

@@ -38,6 +38,7 @@ from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, condition_index, encode_conditions, n_conditions
+from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import PredictiveDistribution
@@ -152,6 +153,69 @@ class EmbeddedMLP(nn.Module):
         return self.trunk(torch.cat([x, self.embedding(index)], dim=1)).squeeze(-1)
 
 
+class HeadsMLP(nn.Module):
+    """A shared trunk with one output head per (target, assay) condition.
+
+    The scalar analogue of the curve model's ``heads`` mode: the trunk is common to
+    every enzyme, and a final linear layer holds one column per condition, of which the
+    row's own condition is read off. Maximally flexible per condition, but a condition
+    with no training rows never trains its column.
+    """
+
+    def __init__(
+        self, n_features: int, n_conditions: int, hidden: int = 256, dropout: float = 0.2
+    ) -> None:
+        super().__init__()
+        self.trunk = nn.Sequential(
+            nn.Linear(n_features, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.heads = nn.Linear(hidden // 2, n_conditions)
+
+    def forward(self, x: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+        alled = self.heads(self.trunk(x))
+        return alled.gather(1, index.unsqueeze(1)).squeeze(1)
+
+
+class FilmMLP(nn.Module):
+    """The pocket descriptor scales and shifts the trunk (feature-wise modulation).
+
+    The scalar analogue of the curve model's ``film`` mode. A small layer turns the
+    descriptor-and-assay vector into a per-feature scale and shift applied to the shared
+    representation, so the enzyme multiplies the molecular features rather than only
+    adding a constant offset. Initialised to the identity, so training starts from the
+    unconditioned model.
+    """
+
+    def __init__(
+        self, n_features: int, n_condition: int, hidden: int = 256, dropout: float = 0.2
+    ) -> None:
+        super().__init__()
+        width = hidden // 2
+        self.trunk = nn.Sequential(
+            nn.Linear(n_features, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, width),
+            nn.ReLU(),
+        )
+        self.modulation = nn.Linear(n_condition, 2 * width)
+        nn.init.zeros_(self.modulation.weight)
+        nn.init.zeros_(self.modulation.bias)
+        self.dropout = nn.Dropout(dropout)
+        self.head = nn.Linear(width, 1)
+
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        hidden = self.trunk(x)
+        scale, shift = self.modulation(condition).chunk(2, dim=1)
+        modulated = self.dropout((1.0 + scale) * hidden + shift)
+        return self.head(modulated).squeeze(-1)
+
+
 class NeuralNetwork:
     """Structure-free model trained on the challenge's own loss."""
 
@@ -176,6 +240,7 @@ class NeuralNetwork:
         n_forward_passes: int = 30,
         loss: str = "soft_threshold",
         embedding_dim: int = 8,
+        descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -202,8 +267,10 @@ class NeuralNetwork:
         self.loss = loss
         #: Width of the learned (target, assay) table when conditioning == "embedding".
         self.embedding_dim = embedding_dim
+        #: Pocket-descriptor sources for the "descriptor" and "film" strategies.
+        self.descriptor_sources = descriptor_sources
         self.seed = seed
-        self._model: ConditionedMLP | EmbeddedMLP | None = None
+        self._model: nn.Module | None = None
         self._scaler: BlockScaler | None = None
 
     def _features(
@@ -231,12 +298,19 @@ class NeuralNetwork:
         block -- it is looked up in a learned table inside the model instead of being
         one-hot columns fed through the scaler.
         """
-        if self.conditioning == "embedding":
+        if self.conditioning in ("embedding", "heads"):
             features = self._scale_blocks(self._features(smiles), fit=fit)
             index = torch.tensor(
                 condition_index(frame, self.targets, self.assays), dtype=torch.long
             )
             return features, index
+        if self.conditioning == "film":
+            features = self._scale_blocks(self._features(smiles), fit=fit)
+            block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
+            return features, torch.tensor(block, dtype=torch.float32)
+        if self.conditioning == "descriptor":
+            block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
+            return self._scale_blocks(self._features(smiles, block), fit=fit), None
         one_hot = encode_conditions(frame, self.conditioning, self.targets, self.assays)
         return self._scale_blocks(self._features(smiles, one_hot), fit=fit), None
 
@@ -272,16 +346,18 @@ class NeuralNetwork:
         value_t = torch.tensor(value, dtype=torch.float32)
         weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
 
+        n_features = features.shape[1]
+        n_cond = n_conditions(self.targets, self.assays)
         if self.conditioning == "embedding":
             self._model = EmbeddedMLP(
-                features.shape[1],
-                n_conditions(self.targets, self.assays),
-                self.embedding_dim,
-                self.hidden,
-                self.dropout,
+                n_features, n_cond, self.embedding_dim, self.hidden, self.dropout
             )
+        elif self.conditioning == "heads":
+            self._model = HeadsMLP(n_features, n_cond, self.hidden, self.dropout)
+        elif self.conditioning == "film":
+            self._model = FilmMLP(n_features, condition.shape[1], self.hidden, self.dropout)
         else:
-            self._model = ConditionedMLP(features.shape[1], self.hidden, self.dropout)
+            self._model = ConditionedMLP(n_features, self.hidden, self.dropout)
         optimiser = torch.optim.Adam(self._model.parameters(), lr=self.learning_rate)
         n = len(usable)
         logger.info("training %s loss on %d observations", self.loss, n)

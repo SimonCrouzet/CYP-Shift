@@ -39,6 +39,7 @@ one, which is the whole reason for describing an enzyme rather than indexing it.
 import logging
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.data import enzymes
@@ -156,3 +157,43 @@ def describe_all(names: list[str], sources: tuple[str, ...] = ("curated",)) -> N
     """Descriptors for a list of enzymes, one row each."""
     logger.info("describing %d enzymes from %s", len(names), ", ".join(sources))
     return np.stack([enzyme_descriptor(name, sources) for name in names])
+
+
+def descriptor_conditions(
+    frame: pd.DataFrame,
+    assays: tuple[str, ...],
+    sources: tuple[str, ...] = ("curated",),
+) -> NDArray[np.float32]:
+    """Per-row conditioning block: the enzyme's pocket descriptor plus an assay one-hot.
+
+    This is the ``descriptor`` conditioning input for a scalar model -- the pocket
+    vector standing in for the target's one-hot, with the assay still one-hot because it
+    is not an enzyme property. Rows are keyed by the ``target`` and ``assay`` columns.
+
+    Raises:
+        ValueError: On an assay outside ``assays`` -- the same contract as the one-hot
+            encoders.
+    """
+    import numpy as np
+
+    assay_of = {name: i for i, name in enumerate(assays)}
+    unknown = set(frame["assay"]) - set(assay_of)
+    if unknown:
+        raise ValueError(f"unknown assay(s) {unknown}")
+    vectors = {name: enzyme_descriptor(name, sources) for name in frame["target"].unique()}
+    rows = []
+    for target, assay in zip(frame["target"], frame["assay"], strict=True):
+        one_hot = np.zeros(len(assays), dtype=np.float32)
+        one_hot[assay_of[assay]] = 1.0
+        rows.append(np.concatenate([vectors[target], one_hot]))
+    return np.asarray(rows, dtype=np.float32)
+
+
+def descriptor_condition_width(assays: tuple[str, ...], sources: tuple[str, ...]) -> int:
+    """Width of the block :func:`descriptor_conditions` produces."""
+    return len(source_names_width(sources)) + len(assays)
+
+
+def source_names_width(sources: tuple[str, ...]) -> tuple[str, ...]:
+    """Descriptor column names for the given sources (for width and provenance)."""
+    return descriptor_names(sources)

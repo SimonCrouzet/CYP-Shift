@@ -81,19 +81,18 @@ def test_load_applies_overrides_with_double_underscores(tmp_path):
 
 
 def test_every_column_conditioning_strategy_encodes():
-    # embedding is a strategy but not a *column* encoding: the neural model looks the
-    # condition up in a learned table rather than appending one-hot columns, so
-    # encode_conditions handles only the column-based strategies.
-    for strategy in CONDITIONING_STRATEGIES:
-        if strategy == "embedding":
-            continue
+    # Only factorised and metadata are *column* encodings that encode_conditions builds.
+    # embedding/descriptor/heads/film are model-internal (a learned table, an appended
+    # descriptor, per-condition heads, trunk modulation), handled inside the model.
+    for strategy in ("factorised", "metadata"):
         encoded = encode_conditions(OBSERVATIONS, strategy)
         assert encoded.shape == (len(OBSERVATIONS), n_condition_columns(strategy))
 
 
-def test_embedding_is_not_a_column_encoding():
-    with pytest.raises(ValueError, match="unknown conditioning strategy"):
-        encode_conditions(OBSERVATIONS, "embedding")
+def test_model_internal_strategies_are_not_column_encodings():
+    for strategy in ("embedding", "descriptor", "heads", "film"):
+        with pytest.raises(ValueError, match="unknown conditioning strategy"):
+            encode_conditions(OBSERVATIONS, strategy)
 
 
 def test_factorised_conditioning_shares_a_condition_across_targets():
@@ -115,10 +114,20 @@ def test_an_unknown_conditioning_strategy_is_rejected():
         encode_conditions(OBSERVATIONS, "osmosis")
 
 
-def test_input_encodings_and_structural_conditioning_are_separate_axes():
-    """One is columns appended to the input, the other is how the model is wired."""
-    assert set(CONDITIONING_STRATEGIES).isdisjoint(CURVE_CONDITIONING)
+def test_the_curve_conditioning_names_are_shared_with_the_neural_vocabulary():
+    """heads/descriptor/film were unified: the neural model offers the same conditioning
+    the curve model does, so the names overlap by design. Which model may use which is
+    gated per family by supported_conditioning, not by keeping the constants disjoint."""
     assert set(CURVE_CONDITIONING) == {"heads", "descriptor", "film"}
+    assert set(CURVE_CONDITIONING) <= set(CONDITIONING_STRATEGIES)
+
+
+def test_only_the_neural_model_gets_the_full_conditioning_vocabulary():
+    from cypshift.pipeline import supported_conditioning
+
+    assert set(supported_conditioning("neural")) == set(CONDITIONING_STRATEGIES)
+    assert set(supported_conditioning("boosted")) == {"factorised", "metadata"}
+    assert set(supported_conditioning("graph")) == {"factorised", "metadata"}
 
 
 def test_all_multifidelity_strategies_are_named():

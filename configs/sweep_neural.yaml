@@ -18,11 +18,20 @@ parameters:
 
   # factorised and metadata are one-hot input encodings; embedding looks the condition
   # up in a learned table instead. Whether the table beats the one-hot is the question.
+  # Every strategy the neural model implements: one-hot inputs (factorised, metadata),
+  # a learned table (embedding), the pocket vector (descriptor), per-condition output
+  # heads (heads), and descriptor-driven trunk modulation (film).
   conditioning.strategy:
-    values: [factorised, metadata, embedding]
+    values: [factorised, metadata, embedding, descriptor, heads, film]
   # Only read when conditioning.strategy is embedding: the width of that table.
   conditioning.embedding_dim:
     values: [4, 8, 16]
+  # Only read for descriptor/film: which pocket-descriptor sources build the vector.
+  conditioning.descriptor_sources:
+    values:
+      - [curated]
+      - [curated, zscales]
+      - [ctd]
 
   model.neural.hidden:
     values: [128, 256, 512]

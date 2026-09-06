@@ -130,3 +130,50 @@ def test_absolute_and_squared_objectives_differ():
     absolute = _route(loss="absolute").fit(observations).predict(SMILES).mean
     squared = _route(loss="squared").fit(observations).predict(SMILES).mean
     assert not np.allclose(absolute, squared)
+
+
+@pytest.mark.parametrize(
+    "strategy", ["factorised", "metadata", "embedding", "descriptor", "heads", "film"]
+)
+def test_every_conditioning_strategy_fits_and_predicts(strategy):
+    """The neural model implements the full conditioning vocabulary, mirroring the
+    curve model's heads/descriptor/film alongside the one-hot and embedding inputs."""
+    import numpy as np
+    import pandas as pd
+
+    from cypshift.models.neural import NeuralNetwork
+
+    observations = pd.DataFrame(
+        {
+            "Molecule_Name": [f"M{i}" for i in range(12)],
+            "SMILES": ["CCO", "c1ccccc1", "CCN", "CC(=O)O"] * 3,
+            "target": ["CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"] * 3,
+            "assay": ["direct_inhibition_drc"] * 12,
+            "value": [5.0, 6.0, 5.5, 4.5] * 3,
+            "conf_low": [4.5] * 12,
+            "conf_high": [6.5] * 12,
+            "weight": [1.0] * 12,
+            "is_censored": [False] * 12,
+        }
+    )
+    model = NeuralNetwork(n_bits=128, epochs=2, n_forward_passes=3, conditioning=strategy)
+    model.fit(observations)
+    prediction = model.predict(["CCO", "CCN"])
+    assert prediction.mean.shape == (2, 4)
+    assert np.isfinite(prediction.mean).all()
+
+
+def test_film_starts_from_the_unconditioned_model():
+    """The modulation is zero-initialised, so at init every condition sees the same
+    representation -- training has to earn any departure."""
+    import numpy as np
+
+    from cypshift.models.neural import FilmMLP
+
+    net = FilmMLP(n_features=16, n_condition=6, hidden=32)
+    net.eval()  # disable dropout so the comparison isolates the modulation
+    x = torch.randn(4, 16)
+    with torch.no_grad():
+        a = net(x, torch.zeros(4, 6))
+        b = net(x, torch.randn(4, 6))
+    assert np.allclose(a.numpy(), b.numpy(), atol=1e-6)

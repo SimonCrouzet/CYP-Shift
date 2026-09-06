@@ -72,6 +72,7 @@ def build_model(
         return NeuralNetwork(
             loss=config.model.objective,
             embedding_dim=config.conditioning.embedding_dim,
+            descriptor_sources=tuple(config.conditioning.descriptor_sources),
             hidden=config.model.neural.hidden,
             dropout=config.model.neural.dropout,
             epochs=config.model.neural.epochs,
@@ -129,8 +130,15 @@ def supported_conditioning(kind: str) -> tuple[str, ...]:
     it conditions through its own ``model.curve.conditioning`` (heads/descriptor/film).
     """
     if kind == "neural":
+        # The neural model implements every strategy: one-hot (factorised/metadata),
+        # a learned table (embedding), the pocket vector (descriptor), per-condition
+        # output heads (heads), and descriptor-driven trunk modulation (film).
         return CONDITIONING_STRATEGIES
-    return tuple(c for c in CONDITIONING_STRATEGIES if c != "embedding")
+    # A tree has no trunk to embed into or modulate, and per-enzyme "heads" for a tree
+    # is the separate per-target model. The graph model feeds its one-hot through a
+    # linear readout already. The curve model conditions on its own axis and ignores
+    # this one. So the other families keep the two one-hot input encodings.
+    return ("factorised", "metadata")
 
 
 def supported_multifidelity(kind: str) -> tuple[str, ...]:
