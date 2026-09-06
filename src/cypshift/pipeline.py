@@ -59,6 +59,8 @@ def build_model(
 
         return BoostedTrees(
             loss=config.model.objective,
+            use_structure=config.features.use_structure,
+            structure_cache=config.features.structure_cache,
             n_members=config.model.n_members,
             n_estimators=config.model.boosted.n_estimators,
             learning_rate=config.model.boosted.learning_rate,

@@ -77,6 +77,12 @@ class FeatureConfig:
     fingerprint_radius: int = 2
     use_physicochemical: bool = True
     use_mechanistic: bool = True
+    #: Append Boltz-2 cofold features (affinity + pose/interaction) per (compound,
+    #: enzyme). Off by default: it needs a precomputed cofold cache
+    #: (scripts/cofold_structures.py); missing pairs are NaN. See
+    #: :mod:`cypshift.structure`.
+    use_structure: bool = False
+    structure_cache: str = "data/structure"
 
 
 @dataclass

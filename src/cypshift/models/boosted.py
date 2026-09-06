@@ -17,6 +17,7 @@ governed by the learning rate rather than by curvature.
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
@@ -76,6 +77,8 @@ class BoostedTrees:
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
+        use_structure: bool = False,
+        structure_cache: str = "data/structure",
         surrogate: object | None = None,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
@@ -96,6 +99,10 @@ class BoostedTrees:
         self.physchem = physchem
         self.mechanism = mechanism
         self.fingerprint_radius = fingerprint_radius
+        #: Append cached Boltz-2 cofold features per (compound, enzyme). See
+        #: :mod:`cypshift.structure`.
+        self.use_structure = use_structure
+        self.structure_cache = structure_cache
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
         #: rows. See :mod:`cypshift.data.surrogate`.
@@ -125,6 +132,16 @@ class BoostedTrees:
             ]
         ).astype(np.float32)
 
+    def _conditioning(self, frame: pd.DataFrame) -> NDArray[np.float32]:
+        """The per-row conditioning block: the one-hot, plus cofold features when on."""
+        encoding = encode_conditions(frame, self.conditioning, self.targets, self.assays)
+        if not self.use_structure:
+            return encoding
+        from cypshift.structure.features import structure_block
+
+        block = structure_block(frame, Path(self.structure_cache))
+        return np.hstack([encoding, block]).astype(np.float32)
+
     def fit(self, observations: pd.DataFrame) -> "BoostedTrees":
         """Train on the observation table, using each row's own credible interval.
 
@@ -135,7 +152,7 @@ class BoostedTrees:
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
 
-        encoding = encode_conditions(usable, self.conditioning, self.targets, self.assays)
+        encoding = self._conditioning(usable)
         features = self._features(usable["SMILES"].tolist(), encoding)
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
@@ -191,9 +208,8 @@ class BoostedTrees:
             query = pd.DataFrame(
                 {"target": [endpoint.split("_")[0]] * n, "assay": [SCORED_ASSAY] * n}
             )
-            features = self._features(
-                smiles, encode_conditions(query, self.conditioning, self.targets, self.assays)
-            )
+            query["SMILES"] = smiles
+            features = self._features(smiles, self._conditioning(query))
             for index, member in enumerate(self._members):
                 samples[index, :, column] = member.predict(features) + self._offset
         return PredictiveDistribution(samples, self.endpoints)

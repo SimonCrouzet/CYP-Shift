@@ -512,8 +512,8 @@ hf auth whoami         # verify
 
 | | task | notes |
 |---|---|---|
-| ◐ | Co-folded affinity head on the four isoforms | include the heme, constrain the axial bond, template on crystal structures — **`cypshift-struct` env prepared (Boltz-2 2.2.1)**; head not yet built, and a GPU would make it practical |
-| ⬜ | Interaction-energy potential on co-folded poses | closes the type-II blindness, now **measured real**: azole coordinators score MAE 0.712 vs 0.512, p=0.028 (small subset) — blocked on cofolding tooling for poses |
+| ✅ | Co-folded affinity + pose head via Boltz-2 | `cypshift.structure`: cofolds CYP+heme+inhibitor, extracts Boltz affinity **and** pose features, cached per pair; **validated end-to-end** (imidazole+CYP1A2, 9.5 min on the laptop GPU) |
+| ✅ | Type-II pose feature: coordinating N to heme iron | measured real on the cofold — imidazole's N sits **2.19 Å from the iron**, textbook type-II coordination; wired into the boosted model via `features.use_structure` |
 | ◐ | Disagreement between models as epistemic uncertainty | built (`eval/disagreement.py`, cross-model spread + conformal width); an epistemic-uncertainty estimate to tune, not yet wired into a submission |
 | ⬜ | CYP2D6 as a dedicated project | it decides the macro average; the basic-amine geometry probe was marginal |
 

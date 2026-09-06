@@ -31,6 +31,12 @@ parameters:
   features.fingerprint_radius:
     values: [2, 3]
 
+  # Append Boltz-2 cofold features (affinity + heme-coordination pose). Needs a
+  # precomputed cofold cache (scripts/cofold_structures.py); with no cache the block is
+  # all-NaN, which a tree tolerates, so "true" is only meaningful once the cache exists.
+  features.use_structure:
+    values: [false, true]
+
   # The surrogate strategies belong here rather than in stage one, because they apply
   # only to a model that predicts a scalar pIC50 and so cannot consume a response
   # measurement directly. They fit a model to the screen and pass its output, or its
