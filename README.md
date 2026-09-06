@@ -182,15 +182,26 @@ Turning several on composes. The table below is the whole menu.
 | `screen` | **17,504** | curve model → a native point at 49.5 µM · scalar models → pseudo-label or surrogate feature | on by default |
 | `tdi_arm` | **6,145** | curve → a *second* curve · scalar → a second-assay value | unlocks the classification track |
 
-**🧪 Auxiliary potencies** — outside compounds, deduplicated against the whole challenge:
+**🧪 Auxiliary potencies** — outside compounds, deduplicated against the whole challenge.
+These are the *where the data comes from* switches; all enter as extra pIC50 rows:
 
-| `sources.*` | data points | consumed as | contamination |
+| `sources.*` | data points | note | contamination |
 |---|--:|---|---|
-| `chembl` | ~1,600 / enzyme | extra pIC50 rows | ChEMBL-derived |
-| `sair` | ~10.5k / 4 CYPs | extra pIC50 rows | 4 / 750 test → deduped |
-| `octant` | ~1,018 (CYP3A4) | extra rows, **credible intervals kept** | 1 / 750 test → deduped |
-| `relatives` | varies | extra rows, weighted by binding-site distance | non-scored enzymes |
-| `scored` | up to ~10.5k | extra rows, `auxiliary.scored_weight` | the **CYP2D6 lever** |
+| `chembl` | ~1,600 / enzyme | ChEMBL IC50 / Ki | ChEMBL-derived |
+| `sair` | ~10.5k / 4 CYPs | real IC50s (poses unused here) | 4 / 750 test → deduped |
+| `octant` | ~1,018 (CYP3A4) | **credible intervals kept** | 1 / 750 test → deduped |
+
+…and a **separate axis picks which enzymes' rows** to admit from the sources above (this
+is the selector, not a source of its own):
+
+| `sources.*` | which enzymes | weighting |
+|---|---|---|
+| `relatives` *(on)* | the **non-scored** CYPs, admitted if their binding site is within `max_distance` of a scored one | by binding-site distance (`weighting` · `scale`) |
+| `scored` *(off)* | the **four scored enzymes themselves** — real CYP1A2·2C9·2D6·3A4 rows straight onto the graded endpoints | flat `auxiliary.scored_weight` |
+
+Because Octant only carries CYP3A4 (a scored enzyme), it contributes only when `scored`
+is on. `scored` is the **CYP2D6 lever**: SAIR/ChEMBL hold independent CYP2D6
+measurements, and that is the one scored enzyme with no other data.
 
 **🧊 Structure** — the cofold, as features:
 
@@ -198,11 +209,11 @@ Turning several on composes. The table below is the whole menu.
 |---|--:|---|---|
 | `structure` | per (compound, enzyme) | Boltz-2 affinity **+** heme-coordination pose, from the cofold cache | poses predicted |
 
-`chembl`, `sair` and `octant` compose (shared compounds are median-pooled); so do
-`relatives` and `scored`. **Nothing here is a default beyond the screen** — a plain run
-trains on the challenge data alone. Three honest gaps: **`octant` is CYP3A4-only**,
-**Emax is a curve parameter but is never fed as an observation**, and **CYP2D6 has no
-independent public data lever** — `scored` SAIR rows are its only real addition.
+`chembl`, `sair` and `octant` compose (shared compounds are median-pooled).
+**Nothing here is a default beyond the screen and `relatives`** — a plain run trains on
+the challenge data alone. Two honest gaps: **Emax is a curve parameter but is never fed
+as an observation**, and **CYP2D6 has no independent public data lever** beyond the
+`scored` SAIR/ChEMBL rows.
 
 The structure source is the two heads of the cofold: **(A)** Boltz-2's predicted
 affinity for the complex, and **(B)** the pose — how close the inhibitor's coordinating
