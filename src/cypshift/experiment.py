@@ -146,6 +146,9 @@ class SourcesConfig:
     #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
     #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
     tox21: bool = False
+    #: Novartis reversible pIC50 for CYP3A4/2C9/2D6 (Polaris). ~16k rows per enzyme, a
+    #: large independent CYP2D6 lever; off by default, needs the Polaris SDK.
+    novartis: bool = False
     #: Boltz-2 cofold features (affinity + heme-coordination pose), from the cache.
     structure: bool = False
 

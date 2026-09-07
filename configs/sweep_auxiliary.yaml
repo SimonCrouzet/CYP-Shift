@@ -33,10 +33,12 @@ parameters:
     values: [false, true]
   sources.tox21:
     values: [false, true]
+  sources.novartis:
+    values: [false, true]
   auxiliary.max_distance:
     values: [0.0, 1.5, 3.0]
   auxiliary.scored_weight:
-    values: [0.3, 0.6, 1.0]
+    values: [0.3, 1.0]
 
   data.holdout_fraction:
     value: 0.2

@@ -21,6 +21,7 @@
     "octant": false,
     "veith": false,
     "tox21": false,
+    "novartis": false,
     "structure": false
   },
   "conditioning": {
