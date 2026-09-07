@@ -191,6 +191,7 @@ These are the *where the data comes from* switches; all enter as extra pIC50 row
 | `sair` | ~10.5k / 4 CYPs | real IC50s (poses unused here) | 4 / 750 test → deduped |
 | `octant` | ~1,018 (CYP3A4) | **credible intervals kept** | 1 / 750 test → deduped |
 | `veith` | ~1.3–4.1k / isoform | qHTS AC50 (luminescent ranking signal) | same 2009 campaign as ChEMBL's AC50 block |
+| `tox21` | ~1.5–2.8k / isoform | 2025 NCATS P450-Glo IC50 (biochemical, distinct library) | overlaps challenge/ChEMBL → deduped |
 
 …and **one knob picks which enzymes' rows** to admit from the sources above, on a single
 binding-site **distance axis** (`auxiliary.max_distance`). Two moves live on that axis:

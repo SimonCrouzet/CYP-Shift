@@ -20,6 +20,7 @@
     "sair": false,
     "octant": false,
     "veith": false,
+    "tox21": false,
     "structure": false
   },
   "conditioning": {

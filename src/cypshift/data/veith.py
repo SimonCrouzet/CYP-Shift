@@ -24,20 +24,17 @@ the other auxiliary sources); the raw points are a curve-model-specific extensio
 for later.
 """
 
-import io
 import logging
-import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
+from cypshift.data.pubchem import download_assay
 
 logger = logging.getLogger(__name__)
 
-PUBCHEM_ASSAY = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/assay/aid"
 DEFAULT_CACHE = Path("data/external/veith")
 
 #: PubChem assay id per isozyme. Only these enzymes are covered; any other returns empty.
@@ -46,32 +43,6 @@ AID = {"CYP1A2": 410, "CYP2C9": 883, "CYP2D6": 891, "CYP3A4": 884, "CYP2C19": 89
 #: Curve fits we trust. A single active point or a poor fit is not a potency measurement,
 #: so it is dropped rather than fed as one -- the same discipline ChEMBL censoring gets.
 _BAD_CURVE = ("single point", "poor fit", "inactive")
-
-
-def _download_assay(
-    aid: int, chunk: int = 4000, timeout: int = 300, pause: float = 0.2
-) -> pd.DataFrame:
-    """Every concise activity record for one PubChem assay, paged by SID.
-
-    The direct ``/CSV`` endpoint rejects large assays ("Too many SIDs"), so the SID list
-    is fetched first and the data pulled in POST batches.
-    """
-    sid_response = requests.get(f"{PUBCHEM_ASSAY}/{aid}/sids/JSON", timeout=timeout)
-    sid_response.raise_for_status()
-    sids = sid_response.json()["InformationList"]["Information"][0]["SID"]
-    frames = []
-    for start in range(0, len(sids), chunk):
-        batch = sids[start : start + chunk]
-        response = requests.post(
-            f"{PUBCHEM_ASSAY}/{aid}/CSV",
-            data={"sid": ",".join(map(str, batch))},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        frames.append(pd.read_csv(io.StringIO(response.text), low_memory=False))
-        logger.info("  AID %d: %d of %d SIDs", aid, min(start + chunk, len(sids)), len(sids))
-        time.sleep(pause)
-    return pd.concat(frames, ignore_index=True)
 
 
 def _clean(raw: pd.DataFrame) -> pd.DataFrame:
@@ -128,7 +99,7 @@ def load_auxiliary(
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(_download_assay(AID[enzyme]))
+        frame = _clean(download_assay(AID[enzyme]))
         frame.to_csv(path, index=False)
         logger.info("Veith: cached %d %s compounds", len(frame), enzyme)
     deduplicated = deduplicate_against(frame, challenge_smiles)

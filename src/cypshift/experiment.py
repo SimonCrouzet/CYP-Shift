@@ -143,6 +143,9 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
+    #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
+    #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
+    tox21: bool = False
     #: Boltz-2 cofold features (affinity + heme-coordination pose), from the cache.
     structure: bool = False
 
