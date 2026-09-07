@@ -276,19 +276,59 @@ class Stage:
     freeze_trunk: bool = False
 
 
+_DRC = "direct_inhibition_drc"
+_SCREEN = "direct_inhibition_screen"
+
+#: Named curricula, so the whole stage sequence is one swept categorical rather than a
+#: hand-edited list. Each is a *way of fine-tuning*, not a different dataset -- turn on
+#: the sources you want and pick a preset. ``pooled`` is the baseline single fit.
+CURRICULUM_PRESETS: dict[str, list[Stage]] = {
+    "pooled": [Stage()],
+    # Coarse to fine: pretrain on outside data, adapt to the challenge, sharpen on the
+    # scored dose-response with the trunk frozen.
+    "coarse_to_fine": [
+        Stage(tiers=("distant_aux", "near_aux")),
+        Stage(tiers=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
+        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+    ],
+    # The single-concentration screen as its own stage before the dose-response.
+    "assay_first": [
+        Stage(tiers=("distant_aux", "near_aux")),
+        Stage(tiers=("challenge",), assays=(_SCREEN,), lr=5e-4),
+        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+    ],
+    # Coarse to fine, then a short unfrozen polish at a very low lr (progressive unfreezing).
+    "progressive": [
+        Stage(tiers=("distant_aux", "near_aux")),
+        Stage(tiers=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
+        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+        Stage(tiers=("challenge",), assays=(_DRC,), epochs=10, lr=5e-5),
+    ],
+}
+
+
 @dataclass
 class TrainingConfig:
     """The training curriculum: an ordered list of stages, trained farthest tier first.
 
-    The default is a single stage over every tier -- the pooled baseline, one fit over
-    the whole weighted table. Give more stages to pretrain on distant, noisier data
-    before adapting to the challenge's own dose-response. The stages (which data, in what
-    order) are set deliberately, not swept; what a sweep varies is each stage's strategy
-    (``freeze_trunk``, ``lr``, ``epochs``). Every model runs the same stage sequence, each
-    with its own transition mechanism.
+    Two ways to set it. A ``preset`` names a whole curriculum from
+    :data:`CURRICULUM_PRESETS`, so the fine-tuning strategy is one swept categorical --
+    the presets are alternative *ways of fine-tuning*, not different datasets. Or leave
+    ``preset`` unset and give an explicit ``stages`` list. The default is the pooled
+    baseline: one fit over the whole weighted table. The stages (which data, in what
+    order) are set deliberately; what a stage's strategy varies is ``freeze_trunk``,
+    ``lr`` and ``epochs``. Every model runs the same sequence with its own transition
+    mechanism.
     """
 
+    preset: str | None = None
     stages: list[Stage] = field(default_factory=lambda: [Stage()])
+
+    def effective_stages(self) -> list[Stage]:
+        """The curriculum to run: the named preset if set, otherwise the explicit stages."""
+        if self.preset is not None:
+            return CURRICULUM_PRESETS[self.preset]
+        return self.stages
 
 
 @dataclass
@@ -338,9 +378,15 @@ class ExperimentConfig:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
         if self.model.n_members < 1:
             raise ValueError("model.n_members must be at least 1")
-        if not self.training.stages:
-            raise ValueError("training.stages must list at least one stage")
-        for index, stage in enumerate(self.training.stages):
+        if self.training.preset is not None and self.training.preset not in CURRICULUM_PRESETS:
+            raise ValueError(
+                f"training.preset={self.training.preset!r} is not one of "
+                f"{tuple(CURRICULUM_PRESETS)}"
+            )
+        stages = self.training.effective_stages()
+        if not stages:
+            raise ValueError("training must resolve to at least one stage")
+        for index, stage in enumerate(stages):
             if not stage.tiers:
                 raise ValueError(f"training.stages[{index}].tiers is empty")
             unknown_tiers = set(stage.tiers) - set(TIERS)

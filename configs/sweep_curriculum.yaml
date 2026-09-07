@@ -1,0 +1,30 @@
+# Stage: which fine-tuning curriculum, as one categorical.
+#
+#   wandb sweep configs/sweep_curriculum.yaml
+#
+# The presets are alternative *ways of fine-tuning* the same data, not different datasets:
+# turn on the sources you want, and this flips training.preset between them. "pooled" is
+# the baseline single fit; the others pretrain on outside tiers before the challenge. See
+# CURRICULUM_PRESETS in cypshift.experiment. Fixed to the neural model with a head so
+# freeze_trunk is meaningful; the boosted tree runs the same presets via init_model.
+program: scripts/run_experiment.py
+method: grid
+metric:
+  name: holdout/MA_ST-RAE
+  goal: minimize
+
+parameters:
+  model.kind:
+    value: neural
+  conditioning.strategy:
+    value: heads
+  sources.sair:
+    value: true
+  sources.novartis:
+    value: true
+  sources.tox21:
+    value: true
+  training.preset:
+    values: [pooled, coarse_to_fine, assay_first, progressive]
+  data.holdout_fraction:
+    value: 0.2

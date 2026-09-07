@@ -11,7 +11,7 @@ import pytest
 
 from cypshift.config import ISOFORMS
 from cypshift.data.assembly import TIERS, build_observations
-from cypshift.experiment import ExperimentConfig, Stage, TrainingConfig
+from cypshift.experiment import CURRICULUM_PRESETS, ExperimentConfig, Stage, TrainingConfig
 from cypshift.models.base import ResolvedStage, active_stages, rows_for_stage, training_stages
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.neural import NeuralNetwork
@@ -88,6 +88,27 @@ def test_active_stages_drop_an_absent_assay_facet():
     )
     # every stage empty -> fall back to one pooled stage over all tiers
     assert active_stages(observations, tdi_only)[0].assays is None
+
+
+def test_preset_selects_a_named_curriculum():
+    training = TrainingConfig(preset="coarse_to_fine")
+    assert training.effective_stages() == CURRICULUM_PRESETS["coarse_to_fine"]
+    assert len(training.effective_stages()) == 3
+
+
+def test_preset_overrides_an_explicit_stage_list():
+    training = TrainingConfig(preset="pooled", stages=[Stage(tiers=("challenge",))])
+    assert training.effective_stages() == CURRICULUM_PRESETS["pooled"]
+
+
+def test_every_preset_validates():
+    for name in CURRICULUM_PRESETS:
+        ExperimentConfig(training=TrainingConfig(preset=name)).validate()
+
+
+def test_unknown_preset_is_rejected_by_validation():
+    with pytest.raises(ValueError, match="preset"):
+        ExperimentConfig(training=TrainingConfig(preset="nope")).validate()
 
 
 def test_unknown_tier_is_rejected_by_validation():

@@ -246,10 +246,11 @@ and what *assay* produced a number. Every observation carries a proximity `tier`
 | **`tier`** (proximity) | `distant_aux` (relatives, noisier datasets) · `near_aux` (a scored enzyme's own outside rows) · `challenge` (the challenge's own data) |
 | **`assay`** (data type) | `direct_inhibition_drc` (dose-response) · `direct_inhibition_screen` (single-concentration) · `tdi_drc` (preincubation arm) |
 
-`training.stages` is an ordered list; each stage selects on **either or both** facets and
-carries its **swappable strategy** — `epochs`, `lr`, `freeze_trunk`. The stages (which
-data, in what order) are set deliberately; what varies between runs is a stage's strategy.
-The default is a single stage over everything — the pooled baseline.
+The curriculum is set one of two ways. **`training.preset`** names a whole curriculum, so
+the fine-tuning strategy is a single swept categorical; or leave it unset and give an
+explicit **`training.stages`** list, where each stage selects on either or both facets and
+carries its **swappable strategy** — `epochs`, `lr`, `freeze_trunk`. The default is a
+single stage over everything — the pooled baseline.
 
 ```jsonc
 "training": { "stages": [
@@ -269,13 +270,16 @@ stage **continues boosting** from the previous stage's trees (`init_model`) — 
 config file runs on any family, `freeze_trunk` simply idle for the tree. A stage whose
 facet is absent this run is skipped, and a run never trains on nothing.
 
-Three ready curricula, all opt-in over the pooled default:
+Four named presets (`training.preset`), swept as one categorical in
+[`configs/sweep_curriculum.yaml`](configs/sweep_curriculum.yaml) — alternative *ways of
+fine-tuning*, not different data:
 
-| config | shape |
+| preset | shape |
 |---|---|
-| [`curriculum_example.json`](configs/curriculum_example.json) | the 3-stage main above — coarse → fine |
-| [`curriculum_assay_first.json`](configs/curriculum_assay_first.json) | the single-concentration screen as its own stage before the dose-response |
-| [`curriculum_progressive.json`](configs/curriculum_progressive.json) | the main, then a short **unfrozen** polish at a very low `lr` (progressive unfreezing) |
+| `pooled` | the baseline — one fit over the whole weighted table |
+| `coarse_to_fine` | the 3-stage main above — pretrain → adapt → sharpen (frozen) |
+| `assay_first` | the single-concentration screen as its own stage before the dose-response |
+| `progressive` | `coarse_to_fine`, then a short **unfrozen** polish at a very low `lr` |
 
 ### Describing an enzyme instead of indexing it
 

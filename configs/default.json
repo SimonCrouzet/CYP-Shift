@@ -45,6 +45,7 @@
     "target_weight": 1.0
   },
   "training": {
+    "preset": null,
     "stages": [
       {
         "tiers": [

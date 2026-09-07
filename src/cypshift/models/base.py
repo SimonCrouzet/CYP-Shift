@@ -138,7 +138,10 @@ def training_stages(
     keeps its data facets and its swappable strategy, reusing the model's own epochs and
     learning rate wherever the stage left them unset.
     """
-    stages = getattr(training, "stages", None)
+    if training is not None and hasattr(training, "effective_stages"):
+        stages = training.effective_stages()
+    else:
+        stages = getattr(training, "stages", None)
     if not stages:
         return [ResolvedStage(TIERS, None, default_epochs, default_lr, False)]
     return [
