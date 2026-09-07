@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
-from cypshift.data.assembly import TIERS
+from cypshift.data.assembly import ASSAYS, TIERS
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 
@@ -252,15 +252,19 @@ class ModelConfig:
 class Stage:
     """One stage of the training curriculum: which data, and how to train on it.
 
-    ``tiers`` names the data this stage sees (a subset of :data:`cypshift.data.assembly.TIERS`)
-    and is fixed by the curriculum. The rest are the *swappable strategy* for the stage:
-    ``epochs`` and ``lr`` (``None`` reuses the model's own), and ``freeze_trunk``, which
-    holds the trunk fixed so only the conditioning heads adapt (neural/curve; the boosted
-    tree has no trunk and instead continues boosting from the previous stage). The same
-    stage can be run frozen or fully fine-tuned without changing which data it trains on.
+    Two facets select the data, after the pattern that separates target relatedness from
+    assay context: ``tiers`` is the proximity facet (a subset of
+    :data:`cypshift.data.assembly.TIERS`) and ``assays`` the data-type facet (a subset of
+    :data:`cypshift.data.assembly.ASSAYS`, or ``None`` for every assay). Both are fixed by
+    the curriculum. The rest are the *swappable strategy* for the stage: ``epochs`` and
+    ``lr`` (``None`` reuses the model's own), and ``freeze_trunk``, which holds the trunk
+    fixed so only the conditioning heads adapt (neural/curve; the boosted tree has no
+    trunk and instead continues boosting from the previous stage). The same stage can be
+    run frozen or fully fine-tuned without changing which data it trains on.
     """
 
     tiers: tuple[str, ...] = TIERS
+    assays: tuple[str, ...] | None = None
     epochs: int | None = None
     lr: float | None = None
     freeze_trunk: bool = False
@@ -331,11 +335,18 @@ class ExperimentConfig:
         if not self.training.stages:
             raise ValueError("training.stages must list at least one stage")
         for index, stage in enumerate(self.training.stages):
-            unknown = set(stage.tiers) - set(TIERS)
-            if unknown:
-                raise ValueError(f"training.stages[{index}].tiers has unknown {sorted(unknown)}")
             if not stage.tiers:
                 raise ValueError(f"training.stages[{index}].tiers is empty")
+            unknown_tiers = set(stage.tiers) - set(TIERS)
+            if unknown_tiers:
+                raise ValueError(
+                    f"training.stages[{index}].tiers has unknown {sorted(unknown_tiers)}"
+                )
+            unknown_assays = set(stage.assays or ()) - set(ASSAYS)
+            if unknown_assays:
+                raise ValueError(
+                    f"training.stages[{index}].assays has unknown {sorted(unknown_assays)}"
+                )
         return self
 
     def to_dict(self) -> dict[str, Any]:

@@ -49,14 +49,17 @@
           "distant_aux",
           "near_aux"
         ],
+        "assays": null,
         "epochs": null,
         "lr": null,
         "freeze_trunk": false
       },
       {
         "tiers": [
-          "challenge_indirect",
-          "challenge_direct"
+          "challenge"
+        ],
+        "assays": [
+          "direct_inhibition_drc"
         ],
         "epochs": 30,
         "lr": 0.0003,

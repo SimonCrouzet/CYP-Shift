@@ -35,7 +35,7 @@ from cypshift.features.molecular import featurise
 from cypshift.models.base import (
     PredictiveDistribution,
     active_stages,
-    rows_for_tiers,
+    rows_for_stage,
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
@@ -195,7 +195,7 @@ class BoostedTrees:
         for member in range(self.n_members):
             booster = None
             for stage in stages:
-                mask = rows_for_tiers(usable, stage.tiers)
+                mask = rows_for_stage(usable, stage)
                 parameters = dict(
                     n_estimators=self.n_estimators,
                     learning_rate=self.learning_rate,

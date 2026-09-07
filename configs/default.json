@@ -48,9 +48,9 @@
         "tiers": [
           "distant_aux",
           "near_aux",
-          "challenge_indirect",
-          "challenge_direct"
+          "challenge"
         ],
+        "assays": null,
         "epochs": null,
         "lr": null,
         "freeze_trunk": false

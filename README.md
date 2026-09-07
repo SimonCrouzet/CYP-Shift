@@ -234,26 +234,26 @@ luminescence row and a clean challenge dose-response label differ only by a scal
 alternative is a **curriculum**: learn general structure→potency on the distant, noisier
 data first, then adapt to the challenge's own measurements.
 
-The stages are **model-agnostic and defined by the data**. Every observation is stamped
-with a `tier`, ordered from farthest to the scored endpoint to the endpoint itself:
+The stages are **model-agnostic and defined by the data**, on two orthogonal facets —
+the same separation a proteochemometric corpus draws between how related the *protein* is
+and what *assay* produced a number. Every observation carries a proximity `tier` and an
+`assay`:
 
-| tier | rows |
+| facet | values |
 |---|---|
-| `distant_aux` | relatives (distance > 0); the noisier outside datasets |
-| `near_aux` | the scored enzymes' own outside rows (distance 0); SAIR |
-| `challenge_indirect` | the challenge's single-concentration screen + TDI arm |
-| `challenge_direct` | the challenge dose-response — the scored endpoint |
+| **`tier`** (proximity) | `distant_aux` (relatives, noisier datasets) · `near_aux` (a scored enzyme's own outside rows) · `challenge` (the challenge's own data) |
+| **`assay`** (data type) | `direct_inhibition_drc` (dose-response) · `direct_inhibition_screen` (single-concentration) · `tdi_drc` (preincubation arm) |
 
-`training.stages` is an ordered list, each stage naming the tiers it trains on and its
-**swappable strategy** — `epochs`, `lr`, and `freeze_trunk`. The stages (which data, in
-what order) are set deliberately; what varies between runs is a stage's strategy. The
-default is a single stage over every tier — the pooled baseline.
+`training.stages` is an ordered list; each stage selects on **either or both** facets and
+carries its **swappable strategy** — `epochs`, `lr`, `freeze_trunk`. The stages (which
+data, in what order) are set deliberately; what varies between runs is a stage's strategy.
+The default is a single stage over everything — the pooled baseline.
 
 ```jsonc
 "training": { "stages": [
-  { "tiers": ["distant_aux", "near_aux"] },                          // pretrain
-  { "tiers": ["challenge_indirect", "challenge_direct"],
-    "epochs": 30, "lr": 0.0003, "freeze_trunk": true }               // fine-tune, head only
+  { "tiers": ["distant_aux", "near_aux"] },                          // pretrain on outside data
+  { "tiers": ["challenge"], "assays": ["direct_inhibition_drc"],     // fine-tune on the scored
+    "epochs": 30, "lr": 0.0003, "freeze_trunk": true }               //   dose-response, head only
 ]}
 ```
 

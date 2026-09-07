@@ -49,7 +49,7 @@ from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
     active_stages,
-    rows_for_tiers,
+    rows_for_stage,
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
@@ -422,11 +422,12 @@ class NeuralNetwork:
         all_rows = torch.arange(len(usable))
         stages = training_stages(self.training, self.epochs, self.learning_rate)
         for stage in active_stages(usable, stages):
-            mask = rows_for_tiers(usable, stage.tiers)
+            mask = rows_for_stage(usable, stage)
             rows = all_rows[torch.tensor(mask)]
             logger.info(
-                "stage %s: %d rows, %d epochs, lr %.1e%s",
+                "stage tiers=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
                 stage.tiers,
+                stage.assays or "all",
                 int(mask.sum()),
                 stage.epochs,
                 stage.lr,

@@ -1,4 +1,9 @@
-"""The staged training curriculum shared across the model families."""
+"""The staged training curriculum shared across the model families.
+
+A stage selects data on two facets -- proximity ``tiers`` and data-type ``assays`` -- and
+carries a swappable strategy (``epochs``, ``lr``, ``freeze_trunk``). The stage sequence is
+shared; each model applies its own transition mechanism.
+"""
 
 import numpy as np
 import pandas as pd
@@ -7,7 +12,7 @@ import pytest
 from cypshift.config import ISOFORMS
 from cypshift.data.assembly import TIERS, build_observations
 from cypshift.experiment import ExperimentConfig, Stage, TrainingConfig
-from cypshift.models.base import ResolvedStage, active_stages, training_stages
+from cypshift.models.base import ResolvedStage, active_stages, rows_for_stage, training_stages
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.neural import NeuralNetwork
 
@@ -15,8 +20,7 @@ SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
 
 
-def _observations(seed=0):
-    """Challenge dose-response rows plus a block of distant-auxiliary rows."""
+def _challenge(seed=0):
     rng = np.random.default_rng(seed)
     frame = {"Molecule_Name": [f"OCNT-{i:04d}" for i in range(len(SMILES))], "SMILES": SMILES}
     for isoform in ISOFORMS:
@@ -24,7 +28,12 @@ def _observations(seed=0):
         frame[f"{isoform}_pIC50_direct_inhibition"] = y
         frame[f"{isoform}_pIC50_direct_inhibition_conf_low"] = y - 0.2
         frame[f"{isoform}_pIC50_direct_inhibition_conf_high"] = y + 0.2
-    challenge = build_observations(pd.DataFrame(frame))
+    return build_observations(pd.DataFrame(frame))
+
+
+def _observations(seed=0):
+    """Challenge dose-response rows plus a block of distant-auxiliary rows."""
+    challenge = _challenge(seed)
     aux = challenge.head(12).copy()
     aux["tier"] = "distant_aux"
     aux["weight"] = 0.4
@@ -35,53 +44,62 @@ def _two_stage():
     return TrainingConfig(
         stages=[
             Stage(tiers=("distant_aux", "near_aux"), epochs=2),
-            Stage(tiers=("challenge_indirect", "challenge_direct"), epochs=2, freeze_trunk=True),
+            Stage(
+                tiers=("challenge",),
+                assays=("direct_inhibition_drc",),
+                epochs=2,
+                freeze_trunk=True,
+            ),
         ]
     )
 
 
 def test_training_stages_default_is_one_pooled_stage_over_every_tier():
-    assert training_stages(None, 60, 1e-3) == [ResolvedStage(TIERS, 60, 1e-3, False)]
+    assert training_stages(None, 60, 1e-3) == [ResolvedStage(TIERS, None, 60, 1e-3, False)]
 
 
 def test_a_stage_reuses_the_models_epochs_and_lr_when_unset():
-    config = TrainingConfig(stages=[Stage(tiers=("challenge_direct",))])
+    config = TrainingConfig(stages=[Stage(tiers=("challenge",))])
     resolved = training_stages(config, 40, 0.05)
     assert resolved[0].epochs == 40 and resolved[0].lr == pytest.approx(0.05)
 
 
-def test_active_stages_drop_tiers_with_no_rows_this_run():
-    observations = build_observations(
-        pd.DataFrame(
-            {
-                "Molecule_Name": ["OCNT-0"],
-                "SMILES": ["CCO"],
-                "CYP1A2_pIC50_direct_inhibition": [5.0],
-            }
-        )
-    )
+def test_rows_for_stage_filters_on_both_facets():
+    observations = _observations()
+    challenge_drc = ResolvedStage(("challenge",), ("direct_inhibition_drc",), 1, 1e-3, False)
+    mask = rows_for_stage(observations, challenge_drc)
+    assert (observations.loc[mask, "tier"] == "challenge").all()
+    # the aux rows share the assay but not the tier, so the facet pair excludes them
+    aux_drc = ResolvedStage(("distant_aux",), ("direct_inhibition_drc",), 1, 1e-3, False)
+    assert rows_for_stage(observations, aux_drc).sum() == 12
+
+
+def test_active_stages_drop_facets_with_no_rows_this_run():
+    observations = _challenge()  # challenge tier only, direct_inhibition_drc only
     stages = training_stages(_two_stage(), 5, 1e-3)
     kept = active_stages(observations, stages)
-    assert [s.tiers for s in kept] == [("challenge_indirect", "challenge_direct")]
+    assert [s.tiers for s in kept] == [("challenge",)]
 
 
-def test_active_stages_fall_back_to_pooled_when_every_stage_is_empty():
-    observations = build_observations(
-        pd.DataFrame(
-            {
-                "Molecule_Name": ["OCNT-0"],
-                "SMILES": ["CCO"],
-                "CYP1A2_pIC50_direct_inhibition": [5.0],
-            }
-        )
+def test_active_stages_drop_an_absent_assay_facet():
+    observations = _challenge()  # no TDI rows
+    tdi_only = training_stages(
+        TrainingConfig(stages=[Stage(tiers=("challenge",), assays=("tdi_drc",))]), 5, 1e-3
     )
-    only_absent = training_stages(TrainingConfig(stages=[Stage(tiers=("distant_aux",))]), 5, 1e-3)
-    assert active_stages(observations, only_absent)[0].tiers == TIERS
+    # every stage empty -> fall back to one pooled stage over all tiers
+    assert active_stages(observations, tdi_only)[0].assays is None
 
 
 def test_unknown_tier_is_rejected_by_validation():
     config = ExperimentConfig()
     config.training = TrainingConfig(stages=[Stage(tiers=("no_such_tier",))])
+    with pytest.raises(ValueError, match="unknown"):
+        config.validate()
+
+
+def test_unknown_assay_is_rejected_by_validation():
+    config = ExperimentConfig()
+    config.training = TrainingConfig(stages=[Stage(assays=("no_such_assay",))])
     with pytest.raises(ValueError, match="unknown"):
         config.validate()
 
@@ -117,5 +135,4 @@ def test_curriculum_changes_the_neural_fit_and_restores_gradients():
     a = pooled.predict(SMILES[:6]).mean
     b = staged.predict(SMILES[:6]).mean
     assert not np.allclose(a, b)
-    # the frozen stage must leave every parameter trainable again
     assert all(parameter.requires_grad for parameter in staged._model.parameters())
