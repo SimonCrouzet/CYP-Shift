@@ -42,6 +42,21 @@
     "scale": 1.0,
     "target_weight": 1.0
   },
+  "training": {
+    "stages": [
+      {
+        "tiers": [
+          "distant_aux",
+          "near_aux",
+          "challenge_indirect",
+          "challenge_direct"
+        ],
+        "epochs": null,
+        "lr": null,
+        "freeze_trunk": false
+      }
+    ]
+  },
   "model": {
     "kind": "boosted",
     "objective": "soft_threshold",

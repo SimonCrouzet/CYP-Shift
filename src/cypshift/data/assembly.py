@@ -30,6 +30,20 @@ logger = logging.getLogger(__name__)
 #: experiments on the same protein, not noisy copies of one another.
 ASSAYS = ("direct_inhibition_drc", "direct_inhibition_screen", "tdi_drc")
 
+#: Data tiers, ordered from farthest to the scored endpoint to the endpoint itself. A
+#: training curriculum groups these into ordered stages; the tier is model-agnostic and
+#: is stamped on every row when it is built. ``distant_aux`` is relatives and the noisier
+#: outside datasets, ``near_aux`` the scored enzymes' own outside rows, ``challenge_*``
+#: the challenge's own measurements (its screen and TDI arm, then its dose-response).
+TIERS = ("distant_aux", "near_aux", "challenge_indirect", "challenge_direct")
+
+#: The challenge assay a row comes from decides its challenge tier.
+_TIER_BY_ASSAY = {
+    "direct_inhibition_drc": "challenge_direct",
+    "direct_inhibition_screen": "challenge_indirect",
+    "tdi_drc": "challenge_indirect",
+}
+
 OBSERVATION_COLUMNS = (
     "Molecule_Name",
     "SMILES",
@@ -40,6 +54,10 @@ OBSERVATION_COLUMNS = (
     "conf_high",
     "weight",
     "is_censored",
+    # Which data tier the row belongs to (see TIERS). The training curriculum groups
+    # tiers into ordered stages; challenge rows are tiered by assay, auxiliary rows by
+    # binding-site distance.
+    "tier",
 )
 
 
@@ -95,6 +113,7 @@ def _from_wide(
         block["is_censored"] = (
             frame.loc[present, flag].to_numpy(bool) if flag and flag in frame else False
         )
+        block["tier"] = _TIER_BY_ASSAY[assay]  # a challenge measurement
         rows.append(block)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=OBSERVATION_COLUMNS)
 

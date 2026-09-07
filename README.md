@@ -193,8 +193,11 @@ These are the *where the data comes from* switches; all enter as extra pIC50 row
 | `veith` | ~1.3–4.1k / isoform | qHTS AC50 (luminescent ranking signal) | same 2009 campaign as ChEMBL's AC50 block |
 
 …and **one knob picks which enzymes' rows** to admit from the sources above, on a single
-binding-site **distance axis** (`auxiliary.max_distance`): a scored enzyme sits at
-distance 0 from itself, a relative further out.
+binding-site **distance axis** (`auxiliary.max_distance`). Two moves live on that axis:
+pulling a **scored enzyme's own rows** from an outside source (distance 0 — the same
+target, a different assay) and pulling a **relative's** rows (distance > 0 — a different
+but similar pocket). They are the same operation at different distances, so one knob
+covers both: a scored enzyme sits at distance 0 from itself, a relative further out.
 
 | `max_distance` | admits | weighting |
 |:--:|---|---|
@@ -223,6 +226,44 @@ affinity for the complex, and **(B)** the pose — how close the inhibitor's coo
 nitrogen sits to the heme iron. On a validation cofold, imidazole's nitrogen landed
 **2.19 Å** from the iron: textbook type-II coordination, and exactly the mechanism the
 fingerprint model is measurably worst on.
+
+### Training in stages, not one pooled heap
+
+Pooling every source into one weighted table and fitting once lets a noisy Veith
+luminescence row and a clean challenge dose-response label differ only by a scalar. The
+alternative is a **curriculum**: learn general structure→potency on the distant, noisier
+data first, then adapt to the challenge's own measurements.
+
+The stages are **model-agnostic and defined by the data**. Every observation is stamped
+with a `tier`, ordered from farthest to the scored endpoint to the endpoint itself:
+
+| tier | rows |
+|---|---|
+| `distant_aux` | relatives (distance > 0); the noisier outside datasets |
+| `near_aux` | the scored enzymes' own outside rows (distance 0); SAIR |
+| `challenge_indirect` | the challenge's single-concentration screen + TDI arm |
+| `challenge_direct` | the challenge dose-response — the scored endpoint |
+
+`training.stages` is an ordered list, each stage naming the tiers it trains on and its
+**swappable strategy** — `epochs`, `lr`, and `freeze_trunk`. The stages (which data, in
+what order) are set deliberately; what varies between runs is a stage's strategy. The
+default is a single stage over every tier — the pooled baseline.
+
+```jsonc
+"training": { "stages": [
+  { "tiers": ["distant_aux", "near_aux"] },                          // pretrain
+  { "tiers": ["challenge_indirect", "challenge_direct"],
+    "epochs": 30, "lr": 0.0003, "freeze_trunk": true }               // fine-tune, head only
+]}
+```
+
+**The stage sequence is shared; the transition mechanism is per model.** A neural or curve
+model carries its weights forward and, with `freeze_trunk`, holds the shared trunk fixed
+so only the conditioning heads adapt (a headless conditioning like `factorised` has
+nothing to freeze, so that stage is skipped). The boosted tree has no trunk, so a later
+stage **continues boosting** from the previous stage's trees (`init_model`). A stage whose
+tier is absent this run is skipped, and a run never trains on nothing. See
+[configs/curriculum_example.json](configs/curriculum_example.json).
 
 ### Describing an enzyme instead of indexing it
 

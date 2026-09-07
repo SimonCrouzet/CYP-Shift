@@ -35,7 +35,12 @@ from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS, TDI_SHIFT_THRESHOLD
 from cypshift.data.conditioning import describe_all
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
-from cypshift.models.base import PredictiveDistribution
+from cypshift.models.base import (
+    PredictiveDistribution,
+    active_stages,
+    rows_for_tiers,
+    training_stages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +254,7 @@ class CurveModel:
         conditioning: str = "heads",
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
+        training: object | None = None,
     ) -> None:
         self.conditioning = conditioning
         #: Which sources build the per-enzyme vector when conditioning is
@@ -274,6 +280,9 @@ class CurveModel:
         self.learning_rate = learning_rate
         self.n_forward_passes = n_forward_passes
         self.seed = seed
+        #: Training curriculum (an object exposing ``.stages``), or None for one pooled
+        #: stage over every tier.
+        self.training = training
         self._model: CurveNetwork | None = None
         self._scaler: BlockScaler | None = None
 
@@ -341,31 +350,61 @@ class CurveModel:
             conditioning=self.conditioning,
             descriptors=descriptors,
         )
-        optimiser = torch.optim.Adam(self._model.parameters(), lr=self.learning_rate)
-        n = len(usable)
         logger.info(
             "training curves on %d observations, %d of them screen readings",
-            n,
+            len(usable),
             int(is_screen.sum()),
         )
 
-        for epoch in range(self.epochs):
-            order = torch.randperm(n)
-            total = 0.0
-            for start in range(0, n, self.batch_size):
-                batch = order[start : start + self.batch_size]
-                optimiser.zero_grad()
-                predicted = self._model(features[molecule_index[batch]])
-                rows = torch.arange(len(batch))
-                parameters = predicted[rows, target_index[batch], arm_index[batch]]
-                loss = curve_loss(
-                    parameters, kind[batch], lower_t[batch], upper_t[batch], weight_t[batch]
-                )
-                loss.backward()
-                optimiser.step()
-                total += loss.detach().item() * len(batch)
-            if epoch % 20 == 0 or epoch == self.epochs - 1:
-                logger.info("  epoch %2d  loss %.4f", epoch, total / n)
+        def optimise(stage_rows: torch.Tensor, epochs: int, lr: float, freeze_trunk: bool) -> None:
+            """Train the current curve network on a subset of rows, carrying weights forward."""
+            if len(stage_rows) == 0:
+                return
+            if freeze_trunk:
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(False)
+            trainable = [p for p in self._model.parameters() if p.requires_grad]
+            if not trainable:
+                logger.info("stage frozen with no trainable head; skipping")
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(True)
+                return
+            optimiser = torch.optim.Adam(trainable, lr=lr)
+            m = len(stage_rows)
+            for epoch in range(epochs):
+                order = stage_rows[torch.randperm(m)]
+                total = 0.0
+                for start in range(0, m, self.batch_size):
+                    batch = order[start : start + self.batch_size]
+                    optimiser.zero_grad()
+                    predicted = self._model(features[molecule_index[batch]])
+                    rows = torch.arange(len(batch))
+                    parameters = predicted[rows, target_index[batch], arm_index[batch]]
+                    loss = curve_loss(
+                        parameters, kind[batch], lower_t[batch], upper_t[batch], weight_t[batch]
+                    )
+                    loss.backward()
+                    optimiser.step()
+                    total += loss.detach().item() * len(batch)
+                if epoch % 20 == 0 or epoch == epochs - 1:
+                    logger.info("  epoch %2d  loss %.4f", epoch, total / m)
+            if freeze_trunk:
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(True)
+
+        all_rows = torch.arange(len(usable))
+        stages = training_stages(self.training, self.epochs, self.learning_rate)
+        for stage in active_stages(usable, stages):
+            mask = rows_for_tiers(usable, stage.tiers)
+            logger.info(
+                "stage %s: %d rows, %d epochs, lr %.1e%s",
+                stage.tiers,
+                int(mask.sum()),
+                stage.epochs,
+                stage.lr,
+                " (trunk frozen)" if stage.freeze_trunk else "",
+            )
+            optimise(all_rows[torch.tensor(mask)], stage.epochs, stage.lr, stage.freeze_trunk)
         return self
 
     def _curves(self, smiles: list[str]) -> NDArray[np.float64]:

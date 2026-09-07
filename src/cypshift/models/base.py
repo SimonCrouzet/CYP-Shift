@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from cypshift.data.assembly import TIERS
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,6 +112,64 @@ class PredictiveDistribution:
             None if self.aleatoric_variance is None else self.aleatoric_variance[:, :, [index]]
         )
         return PredictiveDistribution(self.samples[:, :, [index]], (name,), variance)
+
+
+@dataclass(frozen=True)
+class ResolvedStage:
+    """One training stage with its data tiers and concrete (filled-in) strategy."""
+
+    tiers: tuple[str, ...]
+    epochs: int
+    lr: float
+    freeze_trunk: bool
+
+
+def training_stages(
+    training: object | None, default_epochs: int, default_lr: float
+) -> list[ResolvedStage]:
+    """The curriculum as concrete stages, ``None`` epochs/lr filled from the model.
+
+    A model with no training config, or an empty curriculum, trains one pooled stage
+    over every tier -- the baseline single fit. Otherwise each configured stage keeps its
+    data tiers and its swappable strategy, reusing the model's own epochs and learning
+    rate wherever the stage left them unset.
+    """
+    stages = getattr(training, "stages", None)
+    if not stages:
+        return [ResolvedStage(TIERS, default_epochs, default_lr, False)]
+    return [
+        ResolvedStage(
+            tuple(stage.tiers),
+            default_epochs if stage.epochs is None else stage.epochs,
+            default_lr if stage.lr is None else stage.lr,
+            bool(stage.freeze_trunk),
+        )
+        for stage in stages
+    ]
+
+
+def rows_for_tiers(observations: pd.DataFrame, tiers: tuple[str, ...]) -> NDArray[np.bool_]:
+    """Boolean mask over rows whose tier is in this stage. All rows if the column is absent."""
+    if "tier" not in observations:
+        return np.ones(len(observations), dtype=bool)
+    return observations["tier"].isin(tiers).to_numpy()
+
+
+def active_stages(
+    observations: pd.DataFrame, stages: list[ResolvedStage]
+) -> list[ResolvedStage]:
+    """Drop stages with no rows this run; fall back to one pooled stage if all are empty.
+
+    A curriculum can name a tier that a given run does not populate -- ``distant_aux``
+    when no auxiliary source is on, say. Such stages are skipped rather than training on
+    nothing, and if every stage is empty the model still trains once over whatever is
+    present, so a run never produces an unfitted model.
+    """
+    present = [stage for stage in stages if rows_for_tiers(observations, stage.tiers).any()]
+    if present:
+        return present
+    first = stages[0]
+    return [ResolvedStage(TIERS, first.epochs, first.lr, False)]
 
 
 @runtime_checkable

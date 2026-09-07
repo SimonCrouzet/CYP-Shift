@@ -46,7 +46,12 @@ from cypshift.data.assembly import ASSAYS, condition_index, encode_conditions, n
 from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
-from cypshift.models.base import PredictiveDistribution
+from cypshift.models.base import (
+    PredictiveDistribution,
+    active_stages,
+    rows_for_tiers,
+    training_stages,
+)
 from cypshift.models.shared import SCORED_ASSAY
 
 logger = logging.getLogger(__name__)
@@ -247,6 +252,7 @@ class NeuralNetwork:
         embedding_dim: int = 8,
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
+        training: object | None = None,
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
@@ -275,6 +281,9 @@ class NeuralNetwork:
         #: Pocket-descriptor sources for the "descriptor" and "film" strategies.
         self.descriptor_sources = descriptor_sources
         self.seed = seed
+        #: The training curriculum (an object exposing ``.stages``), or None for one
+        #: pooled stage over every tier -- the baseline.
+        self.training = training
         self._model: nn.Module | None = None
         self._scaler: BlockScaler | None = None
 
@@ -363,35 +372,67 @@ class NeuralNetwork:
             self._model = FilmMLP(n_features, condition.shape[1], self.hidden, self.dropout)
         else:
             self._model = ConditionedMLP(n_features, self.hidden, self.dropout)
-        optimiser = torch.optim.Adam(self._model.parameters(), lr=self.learning_rate)
-        n = len(usable)
-        logger.info("training %s loss on %d observations", self.loss, n)
+        def optimise(rows: torch.Tensor, epochs: int, lr: float, freeze_trunk: bool) -> None:
+            """Train the current model on a subset of rows, carrying its weights forward."""
+            if len(rows) == 0:
+                return
+            if freeze_trunk:
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(False)
+            trainable = [p for p in self._model.parameters() if p.requires_grad]
+            if not trainable:
+                # A headless conditioning (factorised/metadata) is all trunk, so freezing
+                # it leaves nothing to fine-tune. Skip rather than crash; the pretrained
+                # weights stand.
+                logger.info("stage frozen with no trainable head; skipping")
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(True)
+                return
+            optimiser = torch.optim.Adam(trainable, lr=lr)
+            m = len(rows)
+            for epoch in range(epochs):
+                order = rows[torch.randperm(m)]
+                total = 0.0
+                for start in range(0, m, self.batch_size):
+                    index = order[start : start + self.batch_size]
+                    optimiser.zero_grad()
+                    batch = features[index]
+                    predicted = (
+                        self._model(batch, condition[index])
+                        if condition is not None
+                        else self._model(batch)
+                    )
+                    batch_loss = _objective(
+                        self.loss,
+                        predicted,
+                        value_t[index],
+                        lower_t[index],
+                        upper_t[index],
+                        weight_t[index],
+                    )
+                    batch_loss.backward()
+                    optimiser.step()
+                    total += batch_loss.detach().item() * len(index)
+                if epoch % 20 == 0 or epoch == epochs - 1:
+                    logger.info("  epoch %2d  loss %.4f", epoch, total / m)
+            if freeze_trunk:
+                for parameter in self._model.trunk.parameters():
+                    parameter.requires_grad_(True)
 
-        for epoch in range(self.epochs):
-            order = torch.randperm(n)
-            total = 0.0
-            for start in range(0, n, self.batch_size):
-                index = order[start : start + self.batch_size]
-                optimiser.zero_grad()
-                batch = features[index]
-                predicted = (
-                    self._model(batch, condition[index])
-                    if condition is not None
-                    else self._model(batch)
-                )
-                batch_loss = _objective(
-                    self.loss,
-                    predicted,
-                    value_t[index],
-                    lower_t[index],
-                    upper_t[index],
-                    weight_t[index],
-                )
-                batch_loss.backward()
-                optimiser.step()
-                total += batch_loss.detach().item() * len(index)
-            if epoch % 20 == 0 or epoch == self.epochs - 1:
-                logger.info("  epoch %2d  loss %.4f", epoch, total / n)
+        all_rows = torch.arange(len(usable))
+        stages = training_stages(self.training, self.epochs, self.learning_rate)
+        for stage in active_stages(usable, stages):
+            mask = rows_for_tiers(usable, stage.tiers)
+            rows = all_rows[torch.tensor(mask)]
+            logger.info(
+                "stage %s: %d rows, %d epochs, lr %.1e%s",
+                stage.tiers,
+                int(mask.sum()),
+                stage.epochs,
+                stage.lr,
+                " (trunk frozen)" if stage.freeze_trunk else "",
+            )
+            optimise(rows, stage.epochs, stage.lr, stage.freeze_trunk)
         return self
 
     def predict(self, smiles: list[str]) -> PredictiveDistribution:

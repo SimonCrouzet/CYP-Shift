@@ -12,8 +12,9 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
+from cypshift.data.assembly import TIERS
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 
@@ -248,6 +249,39 @@ class ModelConfig:
 
 
 @dataclass
+class Stage:
+    """One stage of the training curriculum: which data, and how to train on it.
+
+    ``tiers`` names the data this stage sees (a subset of :data:`cypshift.data.assembly.TIERS`)
+    and is fixed by the curriculum. The rest are the *swappable strategy* for the stage:
+    ``epochs`` and ``lr`` (``None`` reuses the model's own), and ``freeze_trunk``, which
+    holds the trunk fixed so only the conditioning heads adapt (neural/curve; the boosted
+    tree has no trunk and instead continues boosting from the previous stage). The same
+    stage can be run frozen or fully fine-tuned without changing which data it trains on.
+    """
+
+    tiers: tuple[str, ...] = TIERS
+    epochs: int | None = None
+    lr: float | None = None
+    freeze_trunk: bool = False
+
+
+@dataclass
+class TrainingConfig:
+    """The training curriculum: an ordered list of stages, trained farthest tier first.
+
+    The default is a single stage over every tier -- the pooled baseline, one fit over
+    the whole weighted table. Give more stages to pretrain on distant, noisier data
+    before adapting to the challenge's own dose-response. The stages (which data, in what
+    order) are set deliberately, not swept; what a sweep varies is each stage's strategy
+    (``freeze_trunk``, ``lr``, ``epochs``). Every model runs the same stage sequence, each
+    with its own transition mechanism.
+    """
+
+    stages: list[Stage] = field(default_factory=lambda: [Stage()])
+
+
+@dataclass
 class TrackingConfig:
     enabled: bool = False
     project: str = "cyp-shift"
@@ -265,6 +299,7 @@ class ExperimentConfig:
     conditioning: ConditioningConfig = field(default_factory=ConditioningConfig)
     multifidelity: MultifidelityConfig = field(default_factory=MultifidelityConfig)
     auxiliary: AuxiliaryConfig = field(default_factory=AuxiliaryConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
 
@@ -293,6 +328,14 @@ class ExperimentConfig:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
         if self.model.n_members < 1:
             raise ValueError("model.n_members must be at least 1")
+        if not self.training.stages:
+            raise ValueError("training.stages must list at least one stage")
+        for index, stage in enumerate(self.training.stages):
+            unknown = set(stage.tiers) - set(TIERS)
+            if unknown:
+                raise ValueError(f"training.stages[{index}].tiers has unknown {sorted(unknown)}")
+            if not stage.tiers:
+                raise ValueError(f"training.stages[{index}].tiers is empty")
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -320,11 +363,17 @@ class ExperimentConfig:
                 if item.name not in source:
                     continue
                 given = source[item.name]
-                kwargs[item.name] = (
-                    build(item.type, given)
-                    if is_dataclass(item.type) and isinstance(given, dict)
-                    else given
-                )
+                if is_dataclass(item.type) and isinstance(given, dict):
+                    kwargs[item.name] = build(item.type, given)
+                elif get_origin(item.type) is list and isinstance(given, list):
+                    (element,) = get_args(item.type)
+                    kwargs[item.name] = (
+                        [build(element, one) for one in given]
+                        if is_dataclass(element)
+                        else given
+                    )
+                else:
+                    kwargs[item.name] = given
             return target(**kwargs)
 
         return build(cls, values).validate()

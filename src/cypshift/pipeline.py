@@ -53,6 +53,7 @@ def build_model(
         targets=targets,
         seed=config.data.seed,
         surrogate=surrogate,
+        training=config.training,
     )
     if kind == "boosted":
         from cypshift.models.boosted import BoostedTrees
@@ -117,6 +118,7 @@ def build_model(
             descriptor_sources=tuple(config.model.curve.descriptor_sources),
             seed=config.data.seed,
             surrogate=surrogate,
+            training=config.training,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
 
@@ -315,6 +317,9 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
 
     frames = []
     for enzyme, weight in to_pull:
+        # A scored enzyme's own outside rows sit one tier from the endpoint; a relative's
+        # further out. The curriculum trains distant tiers before near ones.
+        tier = "near_aux" if enzyme in scored else "distant_aux"
         # Pool the chosen datasets for this enzyme, deduplicating shared compounds by
         # median so chembl and sair can be used together without double-counting.
         gathered = []
@@ -347,6 +352,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                     "conf_high": high,
                     "weight": weight,
                     "is_censored": False,
+                    "tier": tier,
                 }
             )
         )

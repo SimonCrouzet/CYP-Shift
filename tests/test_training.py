@@ -1,0 +1,121 @@
+"""The staged training curriculum shared across the model families."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from cypshift.config import ISOFORMS
+from cypshift.data.assembly import TIERS, build_observations
+from cypshift.experiment import ExperimentConfig, Stage, TrainingConfig
+from cypshift.models.base import ResolvedStage, active_stages, training_stages
+from cypshift.models.boosted import BoostedTrees
+from cypshift.models.neural import NeuralNetwork
+
+SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
+SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
+
+
+def _observations(seed=0):
+    """Challenge dose-response rows plus a block of distant-auxiliary rows."""
+    rng = np.random.default_rng(seed)
+    frame = {"Molecule_Name": [f"OCNT-{i:04d}" for i in range(len(SMILES))], "SMILES": SMILES}
+    for isoform in ISOFORMS:
+        y = rng.uniform(3.0, 7.0, len(SMILES))
+        frame[f"{isoform}_pIC50_direct_inhibition"] = y
+        frame[f"{isoform}_pIC50_direct_inhibition_conf_low"] = y - 0.2
+        frame[f"{isoform}_pIC50_direct_inhibition_conf_high"] = y + 0.2
+    challenge = build_observations(pd.DataFrame(frame))
+    aux = challenge.head(12).copy()
+    aux["tier"] = "distant_aux"
+    aux["weight"] = 0.4
+    return pd.concat([challenge, aux], ignore_index=True)
+
+
+def _two_stage():
+    return TrainingConfig(
+        stages=[
+            Stage(tiers=("distant_aux", "near_aux"), epochs=2),
+            Stage(tiers=("challenge_indirect", "challenge_direct"), epochs=2, freeze_trunk=True),
+        ]
+    )
+
+
+def test_training_stages_default_is_one_pooled_stage_over_every_tier():
+    assert training_stages(None, 60, 1e-3) == [ResolvedStage(TIERS, 60, 1e-3, False)]
+
+
+def test_a_stage_reuses_the_models_epochs_and_lr_when_unset():
+    config = TrainingConfig(stages=[Stage(tiers=("challenge_direct",))])
+    resolved = training_stages(config, 40, 0.05)
+    assert resolved[0].epochs == 40 and resolved[0].lr == pytest.approx(0.05)
+
+
+def test_active_stages_drop_tiers_with_no_rows_this_run():
+    observations = build_observations(
+        pd.DataFrame(
+            {
+                "Molecule_Name": ["OCNT-0"],
+                "SMILES": ["CCO"],
+                "CYP1A2_pIC50_direct_inhibition": [5.0],
+            }
+        )
+    )
+    stages = training_stages(_two_stage(), 5, 1e-3)
+    kept = active_stages(observations, stages)
+    assert [s.tiers for s in kept] == [("challenge_indirect", "challenge_direct")]
+
+
+def test_active_stages_fall_back_to_pooled_when_every_stage_is_empty():
+    observations = build_observations(
+        pd.DataFrame(
+            {
+                "Molecule_Name": ["OCNT-0"],
+                "SMILES": ["CCO"],
+                "CYP1A2_pIC50_direct_inhibition": [5.0],
+            }
+        )
+    )
+    only_absent = training_stages(TrainingConfig(stages=[Stage(tiers=("distant_aux",))]), 5, 1e-3)
+    assert active_stages(observations, only_absent)[0].tiers == TIERS
+
+
+def test_unknown_tier_is_rejected_by_validation():
+    config = ExperimentConfig()
+    config.training = TrainingConfig(stages=[Stage(tiers=("no_such_tier",))])
+    with pytest.raises(ValueError, match="unknown"):
+        config.validate()
+
+
+def test_boosted_runs_a_two_stage_curriculum_and_predicts():
+    # A built-in objective on the tiny per-stage data: the soft-threshold custom
+    # objective needs more rows than a toy stage carries (a LightGBM constraint, not ours).
+    model = BoostedTrees(
+        n_bits=128,
+        n_estimators=8,
+        n_members=2,
+        num_leaves=7,
+        loss="absolute",
+        training=_two_stage(),
+    )
+    model.fit(_observations())
+    prediction = model.predict(SMILES[:4])
+    assert prediction.mean.shape == (4, len(model.endpoints))
+    assert np.isfinite(prediction.mean).all()
+
+
+def test_curriculum_changes_the_neural_fit_and_restores_gradients():
+    """The staged path is wired (a different result from pooled) and leaves the trunk
+    trainable again after a frozen stage. Uses a head-bearing conditioning so the frozen
+    stage has something to train."""
+    pooled = NeuralNetwork(n_bits=128, hidden=16, epochs=3, seed=0, conditioning="heads")
+    pooled.fit(_observations())
+    staged = NeuralNetwork(
+        n_bits=128, hidden=16, epochs=3, seed=0, conditioning="heads", training=_two_stage()
+    )
+    staged.fit(_observations())
+
+    a = pooled.predict(SMILES[:6]).mean
+    b = staged.predict(SMILES[:6]).mean
+    assert not np.allclose(a, b)
+    # the frozen stage must leave every parameter trainable again
+    assert all(parameter.requires_grad for parameter in staged._model.parameters())

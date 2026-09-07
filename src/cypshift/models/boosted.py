@@ -32,7 +32,12 @@ from cypshift.config import (
 )
 from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.molecular import featurise
-from cypshift.models.base import PredictiveDistribution
+from cypshift.models.base import (
+    PredictiveDistribution,
+    active_stages,
+    rows_for_tiers,
+    training_stages,
+)
 from cypshift.models.shared import SCORED_ASSAY
 
 logger = logging.getLogger(__name__)
@@ -92,6 +97,7 @@ class BoostedTrees:
         n_members: int = 5,
         loss: str = "soft_threshold",
         seed: int = 0,
+        training: object | None = None,
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
@@ -119,6 +125,10 @@ class BoostedTrees:
         self.n_members = n_members
         self.loss = loss
         self.seed = seed
+        #: Training curriculum (an object exposing ``.stages``), or None for one pooled
+        #: stage. The tree has no trunk, so a multi-stage curriculum continues boosting
+        #: from the previous stage's members rather than freezing anything.
+        self.training = training
         self._members: list[lgb.LGBMRegressor] = []
         self._offset = 0.0
 
@@ -175,31 +185,46 @@ class BoostedTrees:
             self.loss,
         )
 
+        # A curriculum trains the stages in order; the tree has no trunk to freeze, so a
+        # later stage continues boosting from the previous stage's trees (init_model). One
+        # pooled stage over every tier reduces to a single fit, the previous behaviour.
+        stages = active_stages(
+            usable, training_stages(self.training, self.n_estimators, self.learning_rate)
+        )
         self._members = []
         for member in range(self.n_members):
-            parameters = dict(
-                n_estimators=self.n_estimators,
-                learning_rate=self.learning_rate,
-                num_leaves=self.num_leaves,
-                min_child_samples=self.min_child_samples,
-                subsample=0.8,
-                subsample_freq=1,
-                colsample_bytree=0.6,
-                random_state=self.seed + member,
-                verbose=-1,
-            )
-            if self.loss == "soft_threshold":
-                parameters["objective"] = soft_threshold_gradient(
-                    lower - self._offset, upper - self._offset
+            booster = None
+            for stage in stages:
+                mask = rows_for_tiers(usable, stage.tiers)
+                parameters = dict(
+                    n_estimators=self.n_estimators,
+                    learning_rate=self.learning_rate,
+                    num_leaves=self.num_leaves,
+                    min_child_samples=self.min_child_samples,
+                    subsample=0.8,
+                    subsample_freq=1,
+                    colsample_bytree=0.6,
+                    random_state=self.seed + member,
+                    verbose=-1,
                 )
-            elif self.loss in ("squared", "absolute"):
-                parameters["objective"] = (
-                    "regression" if self.loss == "squared" else "regression_l1"
+                if self.loss == "soft_threshold":
+                    parameters["objective"] = soft_threshold_gradient(
+                        lower[mask] - self._offset, upper[mask] - self._offset
+                    )
+                elif self.loss in ("squared", "absolute"):
+                    parameters["objective"] = (
+                        "regression" if self.loss == "squared" else "regression_l1"
+                    )
+                else:
+                    raise ValueError(f"unknown objective {self.loss!r}")
+                model = lgb.LGBMRegressor(**parameters)
+                model.fit(
+                    features[mask],
+                    value[mask] - self._offset,
+                    sample_weight=weight[mask],
+                    init_model=booster,
                 )
-            else:
-                raise ValueError(f"unknown objective {self.loss!r}")
-            model = lgb.LGBMRegressor(**parameters)
-            model.fit(features, value - self._offset, sample_weight=weight)
+                booster = model.booster_
             self._members.append(model)
         return self
 
