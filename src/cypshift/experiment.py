@@ -137,6 +137,9 @@ class SourcesConfig:
     #: Octant/OpenADMET CYP3A4 potencies -- the challenge's own assay platform, with
     #: real credible intervals (needs data/external/octant/inhibition.tsv).
     octant: bool = False
+    #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
+    #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
+    veith: bool = False
     #: When chembl/sair are on, add non-scored relative enzymes selected by binding-site
     #: distance.
     relatives: bool = True

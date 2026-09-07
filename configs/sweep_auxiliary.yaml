@@ -28,12 +28,14 @@ parameters:
     values: [false, true]
   sources.octant:
     values: [false, true]
+  sources.veith:
+    values: [false, true]
   sources.relatives:
     values: [true, false]
   sources.scored:
     values: [false, true]
   auxiliary.max_distance:
-    values: [0.0, 1.5, 3.0]
+    values: [1.5, 3.0]
   auxiliary.scored_weight:
     values: [0.3, 0.6, 1.0]
 

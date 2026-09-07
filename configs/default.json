@@ -19,6 +19,7 @@
     "chembl": false,
     "sair": false,
     "octant": false,
+    "veith": false,
     "relatives": true,
     "scored": false,
     "structure": false

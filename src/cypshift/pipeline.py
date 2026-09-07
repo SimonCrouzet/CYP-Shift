@@ -264,7 +264,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     never fails for lack of an auxiliary source.
     """
     from cypshift.config import ISOFORMS
-    from cypshift.data import chembl, octant, sair
+    from cypshift.data import chembl, octant, sair, veith
     from cypshift.data.auxiliary import select_auxiliaries, site_distances
     from cypshift.data.sequences import ACCESSIONS, sequence_for
 
@@ -272,6 +272,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         "chembl": chembl.load_auxiliary,
         "sair": sair.load_auxiliary,
         "octant": octant.load_auxiliary,
+        "veith": veith.load_auxiliary,
     }
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
