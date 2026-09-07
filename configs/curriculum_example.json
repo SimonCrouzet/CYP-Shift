@@ -20,6 +20,8 @@
     "sair": true,
     "octant": false,
     "veith": false,
+    "tox21": true,
+    "novartis": true,
     "structure": false
   },
   "conditioning": {
@@ -59,10 +61,22 @@
           "challenge"
         ],
         "assays": [
+          "direct_inhibition_screen",
           "direct_inhibition_drc"
         ],
-        "epochs": 30,
-        "lr": 0.0003,
+        "epochs": null,
+        "lr": 0.0005,
+        "freeze_trunk": false
+      },
+      {
+        "tiers": [
+          "challenge"
+        ],
+        "assays": [
+          "direct_inhibition_drc"
+        ],
+        "epochs": 25,
+        "lr": 0.0002,
         "freeze_trunk": true
       }
     ]

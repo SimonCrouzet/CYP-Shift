@@ -253,9 +253,11 @@ The default is a single stage over everything — the pooled baseline.
 
 ```jsonc
 "training": { "stages": [
-  { "tiers": ["distant_aux", "near_aux"] },                          // pretrain on outside data
-  { "tiers": ["challenge"], "assays": ["direct_inhibition_drc"],     // fine-tune on the scored
-    "epochs": 30, "lr": 0.0003, "freeze_trunk": true }               //   dose-response, head only
+  { "tiers": ["distant_aux", "near_aux"] },                                  // 1. pretrain on outside data
+  { "tiers": ["challenge"], "assays": ["direct_inhibition_screen",
+    "direct_inhibition_drc"], "lr": 0.0005 },                               // 2. adapt to the challenge
+  { "tiers": ["challenge"], "assays": ["direct_inhibition_drc"],            // 3. sharpen on the scored
+    "epochs": 25, "lr": 0.0002, "freeze_trunk": true }                      //    dose-response, head only
 ]}
 ```
 
@@ -263,9 +265,17 @@ The default is a single stage over everything — the pooled baseline.
 model carries its weights forward and, with `freeze_trunk`, holds the shared trunk fixed
 so only the conditioning heads adapt (a headless conditioning like `factorised` has
 nothing to freeze, so that stage is skipped). The boosted tree has no trunk, so a later
-stage **continues boosting** from the previous stage's trees (`init_model`). A stage whose
-tier is absent this run is skipped, and a run never trains on nothing. See
-[configs/curriculum_example.json](configs/curriculum_example.json).
+stage **continues boosting** from the previous stage's trees (`init_model`) — the same
+config file runs on any family, `freeze_trunk` simply idle for the tree. A stage whose
+facet is absent this run is skipped, and a run never trains on nothing.
+
+Three ready curricula, all opt-in over the pooled default:
+
+| config | shape |
+|---|---|
+| [`curriculum_example.json`](configs/curriculum_example.json) | the 3-stage main above — coarse → fine |
+| [`curriculum_assay_first.json`](configs/curriculum_assay_first.json) | the single-concentration screen as its own stage before the dose-response |
+| [`curriculum_progressive.json`](configs/curriculum_progressive.json) | the main, then a short **unfrozen** polish at a very low `lr` (progressive unfreezing) |
 
 ### Describing an enzyme instead of indexing it
 
