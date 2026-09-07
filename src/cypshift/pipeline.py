@@ -278,6 +278,17 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         "tox21": tox21.load_auxiliary,
         "novartis": novartis.load_auxiliary,
     }
+    # Each source's detection chemistry decides its assay context, so a luminescent AC50 is
+    # never pooled onto a fluorogenic IC50. Sources sharing a chemistry share a context and
+    # are pooled within it (veith+tox21, chembl+sair).
+    assay_by_source = {
+        "chembl": "literature_ic50",
+        "sair": "literature_ic50",
+        "octant": "fluorogenic_pic50",
+        "veith": "luminescent_ac50",
+        "tox21": "luminescent_ac50",
+        "novartis": "reversible_pic50",
+    }
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
@@ -322,42 +333,46 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         # A scored enzyme's own outside rows sit one tier from the endpoint; a relative's
         # further out. The curriculum trains distant tiers before near ones.
         tier = "near_aux" if enzyme in scored else "distant_aux"
-        # Pool the chosen datasets for this enzyme, deduplicating shared compounds by
-        # median so chembl and sair can be used together without double-counting.
-        gathered = []
+        # Group the enabled datasets by their assay context, so sources of one detection
+        # chemistry (veith+tox21, chembl+sair) pool together while different chemistries
+        # stay distinct rows the calibration can offset apart.
+        by_assay: dict[str, list[pd.DataFrame]] = {}
         for name in datasets:
             try:
-                gathered.append(all_loaders[name](enzyme, challenge))
+                loaded = all_loaders[name](enzyme, challenge)
             except Exception as error:  # noqa: BLE001
                 logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
-        gathered = [g for g in gathered if not g.empty]
-        if not gathered:
-            continue
-        data = pd.concat(gathered, ignore_index=True)
-        if len(datasets) > 1:
-            # Pooling drops per-source intervals; collapse to the point on the median.
-            data = data.groupby("SMILES", as_index=False)["value"].median()
-        value = data["value"].to_numpy(float)
-        # Keep a real credible interval where the source ships one (Octant does),
-        # otherwise the bounds collapse to the point -- no invented tolerance.
-        low = data["conf_low"].to_numpy(float) if "conf_low" in data.columns else value
-        high = data["conf_high"].to_numpy(float) if "conf_high" in data.columns else value
-        frames.append(
-            pd.DataFrame(
-                {
-                    "Molecule_Name": [f"{enzyme}:{i}" for i in range(len(data))],
-                    "SMILES": data["SMILES"].to_numpy(),
-                    "target": enzyme,
-                    "assay": "direct_inhibition_drc",
-                    "value": value,
-                    "conf_low": low,
-                    "conf_high": high,
-                    "weight": weight,
-                    "is_censored": False,
-                    "tier": tier,
-                }
+                continue
+            if not loaded.empty:
+                by_assay.setdefault(assay_by_source[name], []).append(loaded)
+
+        for assay, gathered in by_assay.items():
+            data = pd.concat(gathered, ignore_index=True)
+            if len(gathered) > 1:
+                # Two sources of the same chemistry: pool shared compounds by median,
+                # which drops per-source intervals, so bounds collapse to the point.
+                data = data.groupby("SMILES", as_index=False)["value"].median()
+            value = data["value"].to_numpy(float)
+            # Keep a real credible interval where the source ships one (Octant does),
+            # otherwise the bounds collapse to the point -- no invented tolerance.
+            low = data["conf_low"].to_numpy(float) if "conf_low" in data.columns else value
+            high = data["conf_high"].to_numpy(float) if "conf_high" in data.columns else value
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "Molecule_Name": [f"{enzyme}:{assay}:{i}" for i in range(len(data))],
+                        "SMILES": data["SMILES"].to_numpy(),
+                        "target": enzyme,
+                        "assay": assay,
+                        "value": value,
+                        "conf_low": low,
+                        "conf_high": high,
+                        "weight": weight,
+                        "is_censored": False,
+                        "tier": tier,
+                    }
+                )
             )
-        )
     if not frames:
         return empty
     out = pd.concat(frames, ignore_index=True)

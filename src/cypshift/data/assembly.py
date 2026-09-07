@@ -27,8 +27,24 @@ from cypshift.config import ISOFORMS
 logger = logging.getLogger(__name__)
 
 #: The assay conditions a measurement can come from. These are genuinely different
-#: experiments on the same protein, not noisy copies of one another.
-ASSAYS = ("direct_inhibition_drc", "direct_inhibition_screen", "tdi_drc")
+#: experiments on the same protein, not noisy copies of one another -- grouped by the
+#: detection chemistry that separates them at the bench, since a luminescent AC50 is not
+#: on the same scale as a fluorogenic IC50. The first is the reference the calibration is
+#: identified against (:data:`REFERENCE_ASSAY`); the challenge's own three come first, the
+#: auxiliary detection-chemistry contexts after.
+ASSAYS = (
+    "direct_inhibition_drc",
+    "direct_inhibition_screen",
+    "tdi_drc",
+    "fluorogenic_pic50",  # Octant Supersome, the challenge's own platform
+    "luminescent_ac50",  # Veith / Tox21 P450-Glo bioluminescence
+    "literature_ic50",  # ChEMBL / SAIR aggregated IC50 / Ki
+    "reversible_pic50",  # Novartis internal reversible assay
+)
+
+#: The assay the shared potency is expressed in, and the one predictions are made at. Its
+#: per-assay calibration is pinned to identity so the latent potency stays on this scale.
+REFERENCE_ASSAY = "direct_inhibition_drc"
 
 #: Proximity tiers, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
@@ -174,10 +190,17 @@ def build_observations(
 #: function of ``dose_response`` and could not tell a model anything that column did not
 #: already say.
 ASSAY_METADATA = {
-    #                          preincubated  dose_response
+    #                            preincubated  dose_response
     "direct_inhibition_drc": (0.0, 1.0),
     "tdi_drc": (1.0, 1.0),
     "direct_inhibition_screen": (0.0, 0.0),
+    # The auxiliary contexts are all reversible dose-response; what separates them is
+    # detection chemistry, which these two scalars do not capture -- the per-assay affine
+    # calibration handles that systematic offset instead.
+    "fluorogenic_pic50": (0.0, 1.0),
+    "luminescent_ac50": (0.0, 1.0),
+    "literature_ic50": (0.0, 1.0),
+    "reversible_pic50": (0.0, 1.0),
 }
 N_METADATA_COLUMNS = 2
 

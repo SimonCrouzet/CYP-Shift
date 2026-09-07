@@ -131,9 +131,13 @@ class TestAssayMetadata:
                     "it cannot tell a model anything that column does not already say"
                 )
 
-    def test_the_assays_are_distinguishable(self):
-        """Two assays sharing a row would be indistinguishable under this encoding."""
-        assert len(set(ASSAY_METADATA.values())) == len(ASSAY_METADATA)
+    def test_the_challenge_assays_are_distinguishable(self):
+        """The three challenge conditions must stay distinct under this encoding. The
+        auxiliary contexts may share it -- what separates a luminescent AC50 from a
+        fluorogenic IC50 is detection chemistry, which the per-assay affine calibration
+        handles, not these two scalars."""
+        challenge = {a: ASSAY_METADATA[a] for a in ASSAYS[:3]}
+        assert len(set(challenge.values())) == len(challenge)
 
     def test_only_the_tdi_arm_preincubates(self):
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
