@@ -202,22 +202,29 @@ def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):
     config.sources.chembl = True
     config.auxiliary.target_weight = 1.0
     rows = pipe.auxiliary_observations(config, _retained())
-    assert set(rows["target"]) == {"CYP2C19"}
     import numpy as np
 
-    assert np.allclose(rows["weight"], 0.6)
+    # The relative is admitted and down-weighted; the scored enzymes come in at distance 0.
+    assert "CYP2C19" in set(rows["target"])
+    relative = rows[rows["target"] == "CYP2C19"]
+    assert np.allclose(relative["weight"], 0.6)
     # no invented interval: bounds collapse to the point
-    assert (rows["conf_low"] == rows["value"]).all()
+    assert (relative["conf_low"] == relative["value"]).all()
 
 
 def test_auxiliary_is_absent_when_the_source_is_unreachable(monkeypatch):
-    """A run must not fail for lack of an auxiliary source (no network, no cache)."""
+    """A run must not fail for lack of an auxiliary source (no network, no cache).
+
+    Both paths are made to fail: relative selection (sequence_for) and the loader that
+    pulls the scored enzymes' own distance-0 rows.
+    """
     import cypshift.pipeline as pipe
 
     def boom(name, *a, **k):
         raise RuntimeError("no network")
 
     monkeypatch.setattr("cypshift.data.sequences.sequence_for", boom)
+    monkeypatch.setattr("cypshift.data.chembl.load_auxiliary", boom)
     config = ExperimentConfig()
     config.sources.chembl = True
     assert pipe.auxiliary_observations(config, _retained()).empty
@@ -302,8 +309,7 @@ def test_include_scored_adds_rows_for_the_scored_enzymes(monkeypatch):
     )
     config = ExperimentConfig()
     config.sources.chembl = True
-    config.auxiliary.max_distance = 0.0  # admit no relatives; only scored augmentation
-    config.sources.scored = True
+    config.auxiliary.max_distance = 0.0  # distance 0 only: the scored enzymes' own rows
     config.auxiliary.scored_weight = 0.5
     rows = pipe.auxiliary_observations(config, _retained())
     assert set(rows["target"]) == {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"}
@@ -325,7 +331,6 @@ def test_auxiliary_dedups_against_the_whole_challenge_not_just_retained(monkeypa
     config = ExperimentConfig()
     config.sources.chembl = True
     config.auxiliary.max_distance = 0.0
-    config.sources.scored = True
     pipe.auxiliary_observations(config, _retained(n=5))
     # the dedup set is the full challenge (train + test), far larger than the 5 retained
     assert captured["n_dedup_smiles"] > 100

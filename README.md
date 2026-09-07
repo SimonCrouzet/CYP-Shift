@@ -192,17 +192,19 @@ These are the *where the data comes from* switches; all enter as extra pIC50 row
 | `octant` | ~1,018 (CYP3A4) | **credible intervals kept** | 1 / 750 test → deduped |
 | `veith` | ~1.3–4.1k / isoform | qHTS AC50 (luminescent ranking signal) | same 2009 campaign as ChEMBL's AC50 block |
 
-…and a **separate axis picks which enzymes' rows** to admit from the sources above (this
-is the selector, not a source of its own):
+…and **one knob picks which enzymes' rows** to admit from the sources above, on a single
+binding-site **distance axis** (`auxiliary.max_distance`): a scored enzyme sits at
+distance 0 from itself, a relative further out.
 
-| `sources.*` | which enzymes | weighting |
-|---|---|---|
-| `relatives` *(on)* | the **non-scored** CYPs, admitted if their binding site is within `max_distance` of a scored one | by binding-site distance (`weighting` · `scale`) |
-| `scored` *(off)* | the **four scored enzymes themselves** — real CYP1A2·2C9·2D6·3A4 rows straight onto the graded endpoints | flat `auxiliary.scored_weight` |
+| `max_distance` | admits | weighting |
+|:--:|---|---|
+| `0.0` | the **four scored enzymes' own** rows only (real CYP1A2·2C9·2D6·3A4 straight onto the graded endpoints) | flat `auxiliary.scored_weight` |
+| `1.5` *(default)* | the above **+ ~7 near relatives** (non-scored CYPs) | + distance decay (`weighting` · `scale`) |
+| `3.0` | the above **+ ~17 relatives**, out to half the unrelated-site distance | + distance decay |
 
-Because Octant only carries CYP3A4 (a scored enzyme), it contributes only when `scored`
-is on. `scored` is the **CYP2D6 lever**: SAIR/ChEMBL hold independent CYP2D6
-measurements, and that is the one scored enzyme with no other data.
+The scored enzymes' own rows are the **CYP2D6 lever**: SAIR/ChEMBL/Veith hold independent
+CYP2D6 measurements, and that is the one scored enzyme with no near relative. To use no
+auxiliary enzymes at all, leave the source datasets off.
 
 **🧊 Structure** — the cofold, as features:
 
@@ -210,9 +212,9 @@ measurements, and that is the one scored enzyme with no other data.
 |---|--:|---|---|
 | `structure` | per (compound, enzyme) | Boltz-2 affinity **+** heme-coordination pose, from the cofold cache | poses predicted |
 
-`chembl`, `sair` and `octant` compose (shared compounds are median-pooled).
-**Nothing here is a default beyond the screen and `relatives`** — a plain run trains on
-the challenge data alone. Two honest gaps: **Emax is a curve parameter but is never fed
+`chembl`, `sair`, `octant` and `veith` compose (shared compounds are median-pooled).
+**No auxiliary source is on by default** — with every dataset off, the distance knob has
+nothing to pull, so a plain run trains on the challenge data alone. Two honest gaps: **Emax is a curve parameter but is never fed
 as an observation**, and **CYP2D6 has no independent public data lever** beyond the
 `scored` SAIR/ChEMBL rows.
 

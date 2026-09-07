@@ -42,16 +42,13 @@ parameters:
       - [curated, srs]
       - [ctd]
 
-  # 1.5 admits seven human CYPs, 3.0 admits seventeen at up to half the distance two
-  # unrelated binding sites score. CYP2D6 has no relative at either and trains alone.
-  # Whether to train on auxiliary-enzyme data at all, then how far to reach and how
-  # to weight it. Off is the honest baseline: does auxiliary data help here?
+  # 0.0 pulls the scored enzymes' own rows alone, 1.5 adds seven human CYPs, 3.0 adds
+  # seventeen at up to half the distance two unrelated binding sites score. Off (sair
+  # false) is the honest baseline: does auxiliary data help here at all?
   sources.sair:
     values: [false, true]
-  sources.relatives:
-    values: [true, false]
   auxiliary.max_distance:
-    values: [1.5, 3.0]
+    values: [0.0, 1.5, 3.0]
 
   # uniform is the null hypothesis: distance weighting does nothing. Only the sharper
   # of the two decay schemes is swept against it, since inverse and exponential

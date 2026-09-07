@@ -87,30 +87,32 @@ class FeatureConfig:
 
 @dataclass
 class AuxiliaryConfig:
-    """Which enzymes outside the scored four to train on, and how much to trust them.
+    """Which enzymes to draw auxiliary rows for, and how much to trust each.
 
-    Distance is a mean Z-scale difference per aligned binding-site position, on a scale
-    where two unrelated sites score 5.27 and a conservative Leu-to-Ile swap scores 0.62.
-    See :mod:`cypshift.data.auxiliary`.
+    Enzymes sit on a single binding-site distance axis: a scored enzyme is at distance 0
+    from itself (its own rows from an outside source), a relative further out. Distance
+    is a mean Z-scale difference per aligned position, on a scale where two unrelated
+    sites score 5.27 and a conservative Leu-to-Ile swap scores 0.62. See
+    :mod:`cypshift.data.auxiliary`. Auxiliary rows appear only when a source dataset
+    (chembl/sair/octant/veith) is on -- a default run trains on the challenge data alone.
     """
 
-    #: Off by default. Pulling auxiliary data needs a network fetch (ChEMBL) or a warm
-    #: cache and pulls thousands of extra rows, so it is opt-in and the sweep turns it
-    #: on -- a default run trains on the challenge data alone.
-    #: Weight on the scored-enzyme augmentation rows (sources.scored). Separate from
-    #: target_weight because the source is a different, noisier assay mix.
-    scored_weight: float = 1.0
-    #: Admit a candidate whose binding site is within this of a scored enzyme. The
-    #: default admits seven human CYPs; 3.0 admits seventeen, most of them past halfway
-    #: to the distance two unrelated sites score.
+    #: The one enzyme-admission knob. Every enzyme within this binding-site distance of a
+    #: scored one is drawn from the active source datasets. ``0.0`` admits only the scored
+    #: enzymes' own rows (distance 0, the CYP2D6 lever); ``1.5`` adds seven human CYPs;
+    #: ``3.0`` adds seventeen, most of them past halfway to the unrelated-site distance.
     max_distance: float = 1.5
-    #: How weight falls off with distance; see :data:`AUXILIARY_WEIGHTING`.
+    #: Weight on the scored enzymes' own (distance-0) rows. Kept separate from the
+    #: distance weighting because these are the same target measured by a different,
+    #: noisier assay -- worth down-weighting even though the distance is zero.
+    scored_weight: float = 1.0
+    #: How a relative's weight falls off with distance; see :data:`AUXILIARY_WEIGHTING`.
     weighting: str = "exponential"
     #: Distance at which "inverse" halves and "exponential" falls to 1/e.
     scale: float = 1.0
-    #: Weight given to a scored enzyme's own rows. Raise it when auxiliary volume
-    #: swamps the target: CYP2C19 alone brings about 17,000 Veith rows against roughly
-    #: 6,000 dose-response labels across all four scored enzymes.
+    #: Multiplies a relative's distance weight. Lower it when auxiliary volume swamps the
+    #: target: CYP2C19 alone brings about 17,000 Veith rows against roughly 6,000
+    #: dose-response labels across all four scored enzymes.
     target_weight: float = 1.0
 
 
@@ -140,12 +142,6 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
-    #: When chembl/sair are on, add non-scored relative enzymes selected by binding-site
-    #: distance.
-    relatives: bool = True
-    #: When chembl/sair are on, add the scored enzymes' own rows directly (the CYP2D6
-    #: lever).
-    scored: bool = False
     #: Boltz-2 cofold features (affinity + heme-coordination pose), from the cache.
     structure: bool = False
 

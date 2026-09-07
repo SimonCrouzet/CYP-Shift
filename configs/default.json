@@ -20,8 +20,6 @@
     "sair": false,
     "octant": false,
     "veith": false,
-    "relatives": true,
-    "scored": false,
     "structure": false
   },
   "conditioning": {
@@ -38,8 +36,8 @@
     "surrogate_hidden": 16
   },
   "auxiliary": {
-    "scored_weight": 1.0,
     "max_distance": 1.5,
+    "scored_weight": 1.0,
     "weighting": "exponential",
     "scale": 1.0,
     "target_weight": 1.0

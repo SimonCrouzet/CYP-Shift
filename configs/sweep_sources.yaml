@@ -4,8 +4,8 @@
 #
 # Sources are independent yes/no switches (sources.*); the screen's *how* is the one
 # strategy knob that belongs with them. Fixed to the boosted tree; re-point model.kind
-# if another family wins stage one. Auxiliary data (chembl/sair/relatives/scored) has
-# its own stage in configs/sweep_auxiliary.yaml.
+# if another family wins stage one. Auxiliary data (chembl/sair/octant/veith, on one
+# distance axis) has its own stage in configs/sweep_auxiliary.yaml.
 program: scripts/run_experiment.py
 method: bayes
 metric:

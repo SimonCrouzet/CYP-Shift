@@ -9,8 +9,9 @@
 # SAIR is SandboxAQ's cofolded IC50 repository: ~10k real pIC50 rows for the four scored
 # CYPs, deduplicated against the whole challenge (only 4 of 750 test compounds overlap).
 # The labels are real experimental measurements; only the 3D poses are predicted, and
-# those are not used on this path. include_scored adds the scored enzymes' own rows (the
-# lever for CYP2D6, which has no near relative); scored_weight trades that noisier assay
+# those are not used on this path. Enzymes sit on one distance axis: max_distance = 0
+# pulls the scored enzymes' own rows alone (the CYP2D6 lever, at scored_weight), 1.5 adds
+# near relatives, 3.0 far ones -- so scored_weight trades that noisier same-target assay
 # mix against the challenge's own dose-response.
 program: scripts/run_experiment.py
 method: bayes
@@ -30,12 +31,8 @@ parameters:
     values: [false, true]
   sources.veith:
     values: [false, true]
-  sources.relatives:
-    values: [true, false]
-  sources.scored:
-    values: [false, true]
   auxiliary.max_distance:
-    values: [1.5, 3.0]
+    values: [0.0, 1.5, 3.0]
   auxiliary.scored_weight:
     values: [0.3, 0.6, 1.0]
 
