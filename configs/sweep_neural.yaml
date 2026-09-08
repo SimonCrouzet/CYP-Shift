@@ -22,7 +22,7 @@ parameters:
   # a learned table (embedding), the pocket vector (descriptor), per-condition output
   # heads (heads), and descriptor-driven trunk modulation (film).
   conditioning.strategy:
-    values: [factorised, metadata, embedding, descriptor, heads, film]
+    values: [factorised, metadata, embedding, descriptor, heads, film, calibration]
   # Only read when conditioning.strategy is embedding: the width of that table.
   conditioning.embedding_dim:
     values: [4, 8, 16]
@@ -36,7 +36,7 @@ parameters:
   model.neural.hidden:
     values: [128, 256, 512]
   model.neural.dropout:
-    values: [0.1, 0.2, 0.3]
+    values: [0.1, 0.3]
   model.neural.learning_rate:
     distribution: log_uniform_values
     min: 0.0003

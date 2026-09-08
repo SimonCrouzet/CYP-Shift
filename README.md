@@ -150,6 +150,15 @@ model:
 | `descriptor` | append the **pocket descriptor** vector | — | ✅ | — | ✅ |
 | `heads` | one output **head per condition** | ⇢* | ✅ | — | ✅ |
 | `film` | the descriptor **scales/shifts the trunk** | — | ✅ | — | ✅ |
+| `calibration` | shared potency conditioned on the **enzyme**, + a learned **per-assay offset** | — | ✅ | — | — |
+
+`calibration` is the principled fix for pooling different platforms. The trunk predicts
+one latent potency `f(molecule, enzyme)` on the reference assay's scale (the challenge
+dose-response), and each assay carries a learned bias, recentred so the reference is zero.
+A luminescent AC50's systematic offset from a fluorogenic IC50 is absorbed into its bias
+and shapes `f` without dragging its scale; predictions are made at the reference, so they
+come back on the challenge scale rather than the pooled average. It needs the
+detection-chemistry assay split to have distinct assays to offset apart.
 
 `factorised` and `metadata` are genuinely different, not one inside the other:
 factorised gives the assay its own identity column, metadata describes it by its

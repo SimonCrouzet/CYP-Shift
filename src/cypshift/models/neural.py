@@ -42,7 +42,13 @@ from cypshift.config import (
     REGRESSION_ENDPOINTS,
     TDI_SHIFT_THRESHOLD,
 )
-from cypshift.data.assembly import ASSAYS, condition_index, encode_conditions, n_conditions
+from cypshift.data.assembly import (
+    ASSAYS,
+    REFERENCE_ASSAY,
+    condition_index,
+    encode_conditions,
+    n_conditions,
+)
 from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
@@ -226,6 +232,50 @@ class FilmMLP(nn.Module):
         return self.head(modulated).squeeze(-1)
 
 
+class CalibratedMLP(nn.Module):
+    """A shared potency conditioned on the enzyme, plus a per-assay affine calibration.
+
+    The trunk sees the molecule and the *target* one-hot -- not the assay -- and predicts
+    one latent potency ``f(molecule, enzyme)`` on the reference assay's scale. A learned
+    per-assay bias is then added, recentred every forward pass so the reference assay's
+    bias is exactly zero. Because predictions are made at the reference assay, the
+    systematic offset of each auxiliary assay (a luminescent AC50 sitting below a
+    fluorogenic IC50, say) is absorbed into that assay's bias and shapes ``f`` without
+    dragging its scale -- the proteochemometric fix for pooling measurements from
+    different platforms. A slope is deliberately omitted: the offset is the dominant
+    systematic effect and a bias-only calibration stays identifiable.
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        n_assays: int,
+        reference_index: int,
+        hidden: int = 256,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.reference_index = reference_index
+        self.trunk = nn.Sequential(
+            nn.Linear(n_features, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 2, 1),
+        )
+        self.bias = nn.Embedding(n_assays, 1)
+        nn.init.zeros_(self.bias.weight)
+
+    def forward(self, x: torch.Tensor, assay_index: torch.Tensor) -> torch.Tensor:
+        shared = self.trunk(x).squeeze(-1)
+        # Recentre so the reference assay's bias is zero, keeping the shared potency on
+        # the reference scale regardless of what the other assays' offsets drift to.
+        bias = (self.bias.weight - self.bias.weight[self.reference_index]).squeeze(-1)
+        return shared + bias[assay_index]
+
+
 class NeuralNetwork:
     """Structure-free model trained on the challenge's own loss."""
 
@@ -312,6 +362,18 @@ class NeuralNetwork:
         block -- it is looked up in a learned table inside the model instead of being
         one-hot columns fed through the scaler.
         """
+        if self.conditioning == "calibration":
+            # The trunk conditions on the enzyme (target one-hot in the features); the
+            # assay is not an input but an index into the per-assay calibration bias.
+            target_hot = np.array(
+                [[t == name for name in self.targets] for t in frame["target"]],
+                dtype=np.float32,
+            )
+            features = self._scale_blocks(self._features(smiles, target_hot), fit=fit)
+            assay_index = torch.tensor(
+                [self.assays.index(a) for a in frame["assay"]], dtype=torch.long
+            )
+            return features, assay_index
         if self.conditioning in ("embedding", "heads"):
             features = self._scale_blocks(self._features(smiles), fit=fit)
             index = torch.tensor(
@@ -370,6 +432,11 @@ class NeuralNetwork:
             self._model = HeadsMLP(n_features, n_cond, self.hidden, self.dropout)
         elif self.conditioning == "film":
             self._model = FilmMLP(n_features, condition.shape[1], self.hidden, self.dropout)
+        elif self.conditioning == "calibration":
+            self._model = CalibratedMLP(
+                n_features, len(self.assays), self.assays.index(REFERENCE_ASSAY),
+                self.hidden, self.dropout,
+            )
         else:
             self._model = ConditionedMLP(n_features, self.hidden, self.dropout)
         def optimise(rows: torch.Tensor, epochs: int, lr: float, freeze_trunk: bool) -> None:

@@ -142,6 +142,37 @@ def test_boosted_runs_a_two_stage_curriculum_and_predicts():
     assert np.isfinite(prediction.mean).all()
 
 
+def test_calibration_recovers_a_known_per_assay_offset():
+    """A shared potency plus a per-assay bias: the reference is pinned to zero and an
+    auxiliary assay measured a fixed offset above it learns that offset, so predictions
+    come back on the reference scale rather than the pooled average."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for i, smiles in enumerate(SMILES):
+        y = rng.uniform(4.0, 7.0)
+        rows.append(
+            dict(Molecule_Name=f"m{i}", SMILES=smiles, target="CYP3A4",
+                 assay="direct_inhibition_drc", value=y, conf_low=y, conf_high=y,
+                 weight=1.0, is_censored=False, tier="challenge")
+        )
+        rows.append(
+            dict(Molecule_Name=f"a{i}", SMILES=smiles, target="CYP3A4",
+                 assay="luminescent_ac50", value=y + 1.5, conf_low=y + 1.5, conf_high=y + 1.5,
+                 weight=1.0, is_censored=False, tier="near_aux")
+        )
+    model = NeuralNetwork(
+        n_bits=256, hidden=32, epochs=400, learning_rate=3e-3,
+        conditioning="calibration", seed=0, loss="absolute",
+    )
+    model.fit(pd.DataFrame(rows))
+    bias = (
+        model._model.bias.weight - model._model.bias.weight[model._model.reference_index]
+    ).detach().squeeze(-1)
+    assert float(bias[model._model.reference_index]) == pytest.approx(0.0)
+    assert float(bias[model.assays.index("luminescent_ac50")]) > 0.8  # heading to 1.5
+    assert model.predict(SMILES[:4]).mean.shape == (4, len(model.endpoints))
+
+
 def test_curriculum_changes_the_neural_fit_and_restores_gradients():
     """The staged path is wired (a different result from pooled) and leaves the trunk
     trainable again after a frozen stage. Uses a head-bearing conditioning so the frozen
