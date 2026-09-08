@@ -53,20 +53,23 @@ def test_descriptor_width_matches_the_declared_names():
 
 
 def test_a_structural_source_without_a_structure_fails_loudly():
-    """Zero-filling would place the enzyme at a real point rather than a missing one."""
-    missing = next(name for name in enzymes.ENZYMES if name not in STRUCTURES)
+    """Zero-filling would place the enzyme at a real point rather than a missing one. Every
+    registered enzyme now has a structure, so test an accession-only enzyme (CYP2J2)."""
+    assert "CYP2J2" not in STRUCTURES
     with pytest.raises(ValueError, match="no registered structure"):
-        enzyme_descriptor(missing, ("srs",))
+        enzyme_descriptor("CYP2J2", ("srs",))
 
 
-def test_structural_sources_cover_only_the_enzymes_with_structures():
+def test_structural_sources_cover_every_registered_structure():
     for source in STRUCTURAL_SOURCES:
-        assert covered_enzymes((source,)) == set(STRUCTURES)
+        assert covered_enzymes((source,)) == set(STRUCTURES) & set(enzymes.ENZYMES)
 
 
-def test_sequence_sources_reach_further_than_structural_ones():
-    """Pretraining on auxiliaries is the point, and they have no co-crystal here."""
-    assert len(covered_enzymes(("ctd",))) > len(covered_enzymes(("srs",)))
+def test_sequence_sources_reach_at_least_as_far_as_structural_ones():
+    """Sequence descriptors need only an accession, so they can never cover fewer enzymes
+    than the structural sources; now that every registered relative has a (real or proxy)
+    holo structure, the two coincide."""
+    assert covered_enzymes(("ctd",)) >= covered_enzymes(("srs",))
 
 
 def test_coverage_of_a_selection_is_the_intersection():

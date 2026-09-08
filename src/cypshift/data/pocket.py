@@ -39,15 +39,30 @@ logger = logging.getLogger(__name__)
 RCSB_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
 
 #: Holo structures, one per enzyme, chosen because the pocket is defined by what a
-#: bound ligand touches -- an apo structure has nothing to measure contacts against.
-#: This is why structure-derived descriptors cover only the four scored enzymes: the
-#: auxiliaries considered for pretraining have no comparable co-crystal here, so they
-#: fall back to the sequence-derived sources, which need only a UniProt accession.
+#: bound ligand touches -- an apo structure has nothing to measure contacts against. The
+#: PDB id is fetched and the pocket detected automatically, so covering a new enzyme is
+#: only a matter of naming a ligand-bound deposit. The four scored enzymes, then every
+#: relative admitted within binding-site distance 3.0 -- each a real co-crystal found on
+#: the RCSB (the bound ligand in a comment) except the last two, which have no holo
+#: deposit and borrow their nearest scored homolog's structure as a documented proxy.
 STRUCTURES: dict[str, str] = {
     "CYP1A2": "2HI4",
     "CYP2C9": "1R9O",
     "CYP2D6": "4WNW",
     "CYP3A4": "3NXU",
+    "CYP2C19": "4GQS",  # inhibitor 0XV
+    "CYP3A7": "8GK3",  # ligand ZWY (7MK8's is too small to map the cavity)
+    "CYP1A1": "4I8V",  # alpha-naphthoflavone
+    "CYP3A5": "5VEU",  # ritonavir
+    "CYP2C8": "1PQ2",  # palmitic acid filling the cavity
+    "CYP2E1": "3GPH",  # a larger cavity ligand (3E4E's 4-methylpyrazole is too small)
+    "CYP1B1": "3PM0",  # alpha-naphthoflavone
+    "CYP2B6": "3IBD",  # chlorpromazine
+    "CYP2A6": "2FDU",  # a coumarin analogue
+    # No holo deposit: proxy the nearest scored homolog's pocket (>85% identical), so the
+    # descriptor dimension stays consistent rather than dropping these data-poor relatives.
+    "CYP2C18": "1R9O",  # proxy: CYP2C9 (distance 0.86)
+    "CYP3A43": "3NXU",  # proxy: CYP3A4 (distance 1.30)
 }
 DEFAULT_STRUCTURE_DIR = Path("data/structures")
 

@@ -118,6 +118,14 @@ register(Enzyme("CYP2B6", 1600, False, False, False, True, 2, "Gay 2010, plastic
 # distance 0.94, against 0.72 for CYP3A7 and 1.30 for CYP3A43, which have five and two
 # ChEMBL IC50/Ki records between them.
 register(Enzyme("CYP3A5", 1386, False, False, False, True, 3, "84% identical to CYP3A4; PDB 5VEU"))
+# The remaining relatives admitted within binding-site distance 3.0. Volumes are ordinal
+# and follow the well-established biochemistry: the 3A family is large and promiscuous,
+# 2C acid-preferring, and CYP2E1/2A6 among the smallest, tightest CYP pockets.
+register(Enzyme("CYP3A7", 1386, False, False, False, True, 3, "fetal 3A; PDB 8GK3"))
+register(Enzyme("CYP2C18", 470, False, True, False, False, 2, "2C subfamily; no holo, proxy 1R9O"))
+register(Enzyme("CYP3A43", 1386, False, False, False, True, 3, "3A subfamily; no holo, proxy 3NXU"))
+register(Enzyme("CYP2E1", 190, False, False, False, False, 2, "small hydrophobic pocket; PDB 3GPH"))
+register(Enzyme("CYP2A6", 260, False, False, False, False, 2, "small pocket, coumarin; PDB 2FDU"))
 
 
 def descriptor(name: str, families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> NDArray[np.float32]:
