@@ -5,7 +5,7 @@ import json
 import pandas as pd
 import pytest
 
-from cypshift.data.assembly import encode_conditions, n_condition_columns
+from cypshift.data.assembly import N_METADATA_COLUMNS, encode_conditions, n_condition_columns
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
     CURVE_CONDITIONING,
@@ -104,10 +104,10 @@ def test_factorised_conditioning_shares_a_condition_across_targets():
 
 
 def test_metadata_conditioning_describes_the_experiment():
-    # metadata is the target one-hot followed by two assay scalars: preincubated, then
-    # dose_response. The last two columns, not an assay one-hot.
+    # metadata is the target one-hot followed by the assay property scalars, of which
+    # preincubated is the first -- not an assay one-hot.
     encoded = encode_conditions(OBSERVATIONS, "metadata")
-    preincubated = encoded[:, -2]
+    preincubated = encoded[:, -N_METADATA_COLUMNS]
     assert preincubated[0] == 0.0 and preincubated[1] == 1.0
 
 

@@ -179,30 +179,33 @@ def build_observations(
 #: shared across every enzyme, instead of treating each (enzyme, condition) pair as an
 #: unrelated column.
 #:
-#: Both values are definitional: whether the assay preincubates with NADPH before the
-#: substrate, and whether it reads a dose-response curve or a single concentration.
+#: Four definitional properties: whether the assay preincubates with NADPH, whether it
+#: reads a dose-response curve or a single concentration, whether the readout is a coupled
+#: luminescent one (Veith/Tox21 P450-Glo) rather than the reference's fluorogenic probe,
+#: and whether the values are a multi-lab literature aggregate (ChEMBL/SAIR) rather than a
+#: single platform. The last two describe the auxiliary contexts so ``metadata`` is not
+#: blind to detection chemistry; the residual systematic offset each still carries is the
+#: per-assay calibration's job, not this vector's.
 #:
-#: A third column held log10 of the top concentration and has been removed. Its screen
-#: value was measured -- ``concentration_M`` is 4.95049505e-05 throughout that table --
-#: but the dose-response arms carry no concentration column at all, and the -4.0 used
-#: for them was invented rather than sourced. It was also redundant: with -4.0 for every
-#: dose-response row and -4.305 for every screen row, the column was a deterministic
-#: function of ``dose_response`` and could not tell a model anything that column did not
-#: already say.
+#: A concentration column was tried and removed: the screen value was measured
+#: (``concentration_M`` is 4.95049505e-05 throughout that table) but the dose-response
+#: arms carry no concentration column, so the -4.0 used for them was invented, and it was
+#: a deterministic function of ``dose_response`` anyway.
 ASSAY_METADATA = {
-    #                            preincubated  dose_response
-    "direct_inhibition_drc": (0.0, 1.0),
-    "tdi_drc": (1.0, 1.0),
-    "direct_inhibition_screen": (0.0, 0.0),
-    # The auxiliary contexts are all reversible dose-response; what separates them is
-    # detection chemistry, which these two scalars do not capture -- the per-assay affine
-    # calibration handles that systematic offset instead.
-    "fluorogenic_pic50": (0.0, 1.0),
-    "luminescent_ac50": (0.0, 1.0),
-    "literature_ic50": (0.0, 1.0),
-    "reversible_pic50": (0.0, 1.0),
+    #                          preincubated  dose_response  luminescent  aggregate
+    "direct_inhibition_drc": (0.0, 1.0, 0.0, 0.0),  # fluorogenic, single lab (reference)
+    "tdi_drc": (1.0, 1.0, 0.0, 0.0),
+    "direct_inhibition_screen": (0.0, 0.0, 0.0, 0.0),
+    # Auxiliary contexts described by what separates them at the bench: a coupled
+    # luminescent readout (Veith/Tox21) and multi-lab literature aggregation (ChEMBL/SAIR)
+    # are the real distinctions; Octant and Novartis share the reference's fluorogenic
+    # single-lab profile, and the per-assay calibration carries whatever offset remains.
+    "fluorogenic_pic50": (0.0, 1.0, 0.0, 0.0),
+    "luminescent_ac50": (0.0, 1.0, 1.0, 0.0),
+    "literature_ic50": (0.0, 1.0, 0.0, 1.0),
+    "reversible_pic50": (0.0, 1.0, 0.0, 0.0),
 }
-N_METADATA_COLUMNS = 2
+N_METADATA_COLUMNS = 4
 
 
 def encode_conditions(
