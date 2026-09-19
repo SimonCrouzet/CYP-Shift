@@ -16,15 +16,21 @@ endpoint.
 
 Adding an enzyme is :func:`register`, not a change to any model.
 
-**Provenance.** Pocket volumes are literature values obtained by different cavity
-detection methods and are dependable as an *ordering*, not to three significant
-figures. Recognition motifs come from the crystallographic descriptions cited per
-entry. Family assignment is definitional. Nothing here is inferred from the challenge
-data, so a descriptor cannot leak a label.
+**Provenance.** No descriptor value is hand-typed. The two cavity volumes and the pocket
+composition are computed from each enzyme's holo crystal structure by
+``scripts/build_enzyme_descriptors.py`` (fpocket and pyKVFinder for the volumes, the real
+co-crystal contacts for the composition) and cached in ``enzyme_descriptors.json`` beside
+this module. Two detectors are kept because neither reproduces the literature cavity
+*ordering* on its own -- CYP pockets are conformation- and method-dependent -- so each is
+an independent computed signal, dependable as an ordering rather than to three figures.
+Only the CYP family number (from the gene name) is definitional. Nothing is inferred from
+the challenge data, so a descriptor cannot leak a label.
 """
 
+import json
 import logging
 from dataclasses import dataclass, fields
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
@@ -57,26 +63,33 @@ class Enzyme:
     """
 
     name: str
-    pocket_volume_angstrom3: float
-    has_acidic_anchor: bool
-    has_basic_anchor: bool
-    is_narrow_planar: bool
-    binds_multiple_ligands: bool
     family: int
+    #: Two cavity volumes, one per detector (fpocket, pyKVFinder), computed from the holo
+    #: structure by scripts/build_enzyme_descriptors.py. Neither reproduces the literature
+    #: ordering alone -- CYP cavities are conformation- and method-dependent -- so both are
+    #: kept and the model uses whatever signal each carries. Ordinal, not exact.
+    fpocket_volume: float
+    pykvfinder_volume: float
+    #: Whether an acidic / basic / aromatic residue lines the ligand-contact pocket,
+    #: computed from the real co-crystal contacts. (Aromatic is present in every CYP
+    #: pocket, so that column is effectively constant -- kept for a uniform, computed
+    #: vector rather than a hand-picked one.)
+    has_acidic: bool
+    has_basic: bool
+    has_aromatic: bool
     reference: str = ""
 
     def shape(self) -> list[float]:
-        """Geometry: log volume, so a 4x range does not dominate the binary flags."""
-        return [float(np.log10(self.pocket_volume_angstrom3))]
+        """Geometry: the log of each detector's cavity volume, so a wide range does not
+        dominate the binary flags."""
+        return [
+            float(np.log10(self.fpocket_volume)),
+            float(np.log10(self.pykvfinder_volume + 1.0)),
+        ]
 
     def motif(self) -> list[float]:
-        """Recognition chemistry: what the pocket is set up to bind."""
-        return [
-            float(self.has_acidic_anchor),
-            float(self.has_basic_anchor),
-            float(self.is_narrow_planar),
-            float(self.binds_multiple_ligands),
-        ]
+        """Recognition chemistry lining the pocket, computed from the structure."""
+        return [float(self.has_acidic), float(self.has_basic), float(self.has_aromatic)]
 
     def biochemical(self, families: tuple[int, ...] = (1, 2, 3)) -> list[float]:
         """Sequence family, one-hot with an 'other' slot for anything outside it."""
@@ -84,7 +97,19 @@ class Enzyme:
         return [*encoding, float(self.family not in families)]
 
 
-#: The four scored enzymes plus auxiliaries with enough public data to pretrain on.
+#: The only definitional facts, kept by hand: CYP family number (from the gene name) and
+#: how far each relative sits from a scored enzyme. Everything numeric -- the two cavity
+#: volumes and the pocket composition -- is computed from the holo structure by
+#: scripts/build_enzyme_descriptors.py and loaded from the cache below, so no descriptor
+#: value is hand-typed.
+_FAMILY: dict[str, int] = {
+    "CYP1A2": 1, "CYP2C9": 2, "CYP2D6": 2, "CYP3A4": 3,  # scored
+    "CYP2C19": 2, "CYP1A1": 1, "CYP1B1": 1, "CYP2C8": 2, "CYP2B6": 2, "CYP3A5": 3,
+    "CYP3A7": 3, "CYP2C18": 2, "CYP3A43": 3, "CYP2E1": 2, "CYP2A6": 2,  # relatives (<=3.0)
+}
+_DESCRIPTOR_CACHE = Path(__file__).with_name("enzyme_descriptors.json")
+
+#: The four scored enzymes plus auxiliaries within binding-site distance 3.0.
 ENZYMES: dict[str, Enzyme] = {}
 
 
@@ -94,38 +119,31 @@ def register(enzyme: Enzyme) -> Enzyme:
     return enzyme
 
 
-register(
-    Enzyme("CYP1A2", 375, False, False, True, False, 1, "Sansen 2007, JBC 282:14348, PDB 2HI4")
-)
-register(
-    Enzyme("CYP2C9", 470, False, True, False, True, 2, "Williams 2003, Nature 424:464, PDB 1OG5")
-)
-register(Enzyme("CYP2D6", 540, True, False, False, True, 2, "Rowland 2006, JBC 281:7614, PDB 2F9Q"))
-register(
-    Enzyme(
-        "CYP3A4", 1386, False, False, False, True, 3, "Yano 2004, JBC; Ekroos 2006, PNAS 103:13682"
-    )
-)
+def _load_registry() -> None:
+    """Build ENZYMES from the committed, structure-derived descriptor cache."""
+    computed = json.loads(_DESCRIPTOR_CACHE.read_text())
+    for name, family in _FAMILY.items():
+        if name not in computed:
+            raise KeyError(
+                f"{name} missing from {_DESCRIPTOR_CACHE.name}; "
+                "run scripts/build_enzyme_descriptors.py"
+            )
+        row = computed[name]
+        register(
+            Enzyme(
+                name=name,
+                family=family,
+                fpocket_volume=row["fpocket_volume"],
+                pykvfinder_volume=row["pykvfinder_volume"],
+                has_acidic=row["has_acidic"],
+                has_basic=row["has_basic"],
+                has_aromatic=row["has_aromatic"],
+                reference=f"computed from PDB {row['pdb']}",
+            )
+        )
 
-# Auxiliaries. CYP2C19 matters most: about 91% identical to CYP2C9, same family and
-# the same anion-recognising architecture, with more public data than CYP2C9 itself.
-register(Enzyme("CYP2C19", 470, False, True, False, True, 2, "same subfamily as CYP2C9"))
-register(Enzyme("CYP1A1", 375, False, False, True, False, 1, "family 1 planar slot"))
-register(Enzyme("CYP1B1", 375, False, False, True, False, 1, "family 1 planar slot"))
-register(Enzyme("CYP2C8", 1438, False, True, False, True, 2, "Schoch 2004, JBC 279:9497, PDB 1PQ2"))
-register(Enzyme("CYP2B6", 1600, False, False, False, True, 2, "Gay 2010, plastic cavity"))
-# CYP3A4's nearest relative that has any measured inhibition at all: binding-site
-# distance 0.94, against 0.72 for CYP3A7 and 1.30 for CYP3A43, which have five and two
-# ChEMBL IC50/Ki records between them.
-register(Enzyme("CYP3A5", 1386, False, False, False, True, 3, "84% identical to CYP3A4; PDB 5VEU"))
-# The remaining relatives admitted within binding-site distance 3.0. Volumes are ordinal
-# and follow the well-established biochemistry: the 3A family is large and promiscuous,
-# 2C acid-preferring, and CYP2E1/2A6 among the smallest, tightest CYP pockets.
-register(Enzyme("CYP3A7", 1386, False, False, False, True, 3, "fetal 3A; PDB 8GK3"))
-register(Enzyme("CYP2C18", 470, False, True, False, False, 2, "2C subfamily; no holo, proxy 1R9O"))
-register(Enzyme("CYP3A43", 1386, False, False, False, True, 3, "3A subfamily; no holo, proxy 3NXU"))
-register(Enzyme("CYP2E1", 190, False, False, False, False, 2, "small hydrophobic pocket; PDB 3GPH"))
-register(Enzyme("CYP2A6", 260, False, False, False, False, 2, "small pocket, coumarin; PDB 2FDU"))
+
+_load_registry()
 
 
 def descriptor(name: str, families: tuple[str, ...] = DESCRIPTOR_FAMILIES) -> NDArray[np.float32]:
