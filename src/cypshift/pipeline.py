@@ -54,6 +54,7 @@ def build_model(
         seed=config.data.seed,
         surrogate=surrogate,
         training=config.training,
+        molecular_embedding=config.features.molecular_embedding,
     )
     if kind == "boosted":
         from cypshift.models.boosted import BoostedTrees
@@ -119,6 +120,7 @@ def build_model(
             seed=config.data.seed,
             surrogate=surrogate,
             training=config.training,
+            molecular_embedding=config.features.molecular_embedding,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
 

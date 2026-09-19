@@ -33,6 +33,7 @@ from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS, TDI_SHIFT_THRESHOLD
 from cypshift.data.conditioning import describe_all
+from cypshift.features.embeddings import block_for
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
@@ -255,6 +256,7 @@ class CurveModel:
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
         training: object | None = None,
+        molecular_embedding: str = "none",
     ) -> None:
         self.conditioning = conditioning
         #: Which sources build the per-enzyme vector when conditioning is
@@ -283,6 +285,8 @@ class CurveModel:
         #: Training curriculum (an object exposing ``.stages``), or None for one pooled
         #: stage over every tier.
         self.training = training
+        #: Which cached foundation-model embedding to append, or "none".
+        self.molecular_embedding = molecular_embedding
         self._model: CurveNetwork | None = None
         self._scaler: BlockScaler | None = None
 
@@ -294,6 +298,7 @@ class CurveModel:
             physchem=self.physchem,
             mechanism=self.mechanism,
             extra=self.surrogate,
+            embedding=block_for(self.molecular_embedding),
         ).astype(np.float32)
         if fit:
             n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0

@@ -31,6 +31,7 @@ from cypshift.config import (
     TDI_SHIFT_THRESHOLD,
 )
 from cypshift.data.assembly import ASSAYS, encode_conditions
+from cypshift.features.embeddings import block_for
 from cypshift.features.molecular import featurise
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -98,6 +99,7 @@ class BoostedTrees:
         loss: str = "soft_threshold",
         seed: int = 0,
         training: object | None = None,
+        molecular_embedding: str = "none",
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
@@ -129,6 +131,8 @@ class BoostedTrees:
         #: stage. The tree has no trunk, so a multi-stage curriculum continues boosting
         #: from the previous stage's members rather than freezing anything.
         self.training = training
+        #: Which cached foundation-model embedding to append, or "none".
+        self.molecular_embedding = molecular_embedding
         self._members: list[lgb.LGBMRegressor] = []
         self._offset = 0.0
 
@@ -142,6 +146,7 @@ class BoostedTrees:
                     physchem=self.physchem,
                     mechanism=self.mechanism,
                     extra=self.surrogate,
+                    embedding=block_for(self.molecular_embedding),
                 ),
                 encoding,
             ]

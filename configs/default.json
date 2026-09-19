@@ -11,7 +11,8 @@
     "fingerprint_radius": 2,
     "use_physicochemical": true,
     "use_mechanistic": true,
-    "structure_cache": "data/structure"
+    "structure_cache": "data/structure",
+    "molecular_embedding": "none"
   },
   "sources": {
     "screen": true,

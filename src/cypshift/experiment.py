@@ -64,6 +64,10 @@ AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
 
 SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding")
 
+#: Molecular foundation-model embeddings that can be appended as a feature block. Each
+#: (but ``none``) needs a precomputed cache from scripts/compute_embeddings.py.
+EMBEDDING_SOURCES = ("none", "mammal")
+
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
 OBJECTIVES = ("squared", "absolute", "soft_threshold")
 
@@ -92,6 +96,12 @@ class FeatureConfig:
     #: ``sources.structure``; this is only where the cofold cache lives. See
     #: :mod:`cypshift.structure`.
     structure_cache: str = "data/structure"
+    #: Append a molecular foundation-model embedding as a feature block. ``none`` uses
+    #: only the fingerprint/descriptor features; ``mammal`` appends cached MAMMAL
+    #: embeddings (see EMBEDDING_SOURCES). The vectors are precomputed offline by
+    #: scripts/compute_embeddings.py into data/external/embeddings and only read here,
+    #: so the main environment never depends on the embedding model.
+    molecular_embedding: str = "none"
 
 
 @dataclass
@@ -378,6 +388,7 @@ class ExperimentConfig:
             ),
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),
+            (self.features.molecular_embedding, EMBEDDING_SOURCES, "features.molecular_embedding"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:

@@ -227,6 +227,7 @@ def featurise(
     n_bits: int = 2048,
     radius: int = 2,
     extra: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
+    embedding: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
 ) -> NDArray[np.float32]:
     """Assemble the requested blocks into one dense matrix.
 
@@ -236,9 +237,11 @@ def featurise(
         physchem: Include bulk physicochemical descriptors.
         mechanism: Include the mechanistic substructure counts.
         n_bits: Fingerprint length.
-        extra: Optional block appended last, called with the same compounds. This is
-            how a multi-fidelity surrogate enters -- as an input feature rather than
-            as extra training rows. See :mod:`cypshift.data.surrogate`.
+        extra: Optional block appended before the embedding, called with the same
+            compounds. This is how a multi-fidelity surrogate enters -- as an input
+            feature rather than as extra training rows. See :mod:`cypshift.data.surrogate`.
+        embedding: Optional foundation-model embedding block appended last. See
+            :mod:`cypshift.features.embeddings`.
 
     Returns:
         Shape ``(n_compounds, n_features)``.
@@ -250,11 +253,13 @@ def featurise(
         blocks.append(physicochemical(smiles).to_numpy(dtype=np.float32))
     if mechanism:
         blocks.append(mechanistic(smiles).to_numpy(dtype=np.float32))
-    if extra is not None:
-        appended = np.asarray(extra(smiles), dtype=np.float32)
+    for name, hook in (("extra", extra), ("embedding", embedding)):
+        if hook is None:
+            continue
+        appended = np.asarray(hook(smiles), dtype=np.float32)
         if len(appended) != len(smiles):
             raise ValueError(
-                f"extra block returned {len(appended)} rows for {len(smiles)} compounds"
+                f"{name} block returned {len(appended)} rows for {len(smiles)} compounds"
             )
         blocks.append(appended.reshape(len(smiles), -1))
     if not blocks:
