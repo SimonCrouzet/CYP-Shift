@@ -37,7 +37,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 
 ---
 
-## 📏 The metric is not squared error
+## 📏 The soft-threshold metric
 
 The regression track ranks on a **dead-zone L1 loss**. Per isoform:
 
@@ -70,14 +70,8 @@ Three properties drive every design decision in this repository:
 | Denominator is submission-independent | the objective is a **plain sum of dead-zone L1 errors** |
 | Band width varies ~10× with activity | inactives are nearly free, actives carry the score |
 
-**Band width, measured on the training set:**
-
-| activity regime | median band width | share of the score |
-|---|---|---|
-| pIC50 ≥ 4, active | 0.27 – 0.53 log units | almost all of it |
-| pIC50 < 4, inactive | 1.21 – 2.59 log units | almost none |
-
-Lower is better. **1.0 means no better than predicting the mean.**
+Band width is ~0.3–0.5 log units for actives (pIC50 ≥ 4) against ~1.2–2.6 for inactives,
+so the actives carry almost all the score. Lower ST-RAE is better; **1.0 = predicting the mean.**
 
 ---
 
@@ -136,7 +130,7 @@ where the experiment sampled it. Preincubation is a **second curve**, not an off
 the first: it measures enzyme destroyed by turnover, not enzyme occupied, and time
 dependence is whatever the two curves say through the organisers' own rule.
 
-### Conditioning — one vocabulary, gated per model
+### Conditioning
 
 How a model is told *which enzyme and assay* a row came from. Six strategies, and which
 a family can use is gated by `supported_conditioning`, because not every one suits every
@@ -238,17 +232,16 @@ nitrogen sits to the heme iron. On a validation cofold, imidazole's nitrogen lan
 **2.19 Å** from the iron: textbook type-II coordination, and exactly the mechanism the
 fingerprint model is measurably worst on.
 
-### Training in stages, not one pooled heap
+### Training in stages
 
 Pooling every source into one weighted table and fitting once lets a noisy Veith
-luminescence row and a clean challenge dose-response label differ only by a scalar. The
-alternative is a **curriculum**: learn general structure→potency on the distant, noisier
-data first, then adapt to the challenge's own measurements.
+luminescence row and a clean challenge dose-response label differ only by a scalar weight.
+A curriculum instead learns general structure→potency on the distant, noisier data first,
+then adapts to the challenge's own measurements.
 
-The stages are **model-agnostic and defined by the data**, on two orthogonal facets —
-the same separation a proteochemometric corpus draws between how related the *protein* is
-and what *assay* produced a number. Every observation carries a proximity `tier` and an
-`assay`:
+The stages are model-agnostic and defined by the data, on two facets — the same separation
+a proteochemometric corpus draws between how related the protein is and what assay produced
+a number. Every observation carries a proximity `tier` and an `assay`:
 
 | facet | values |
 |---|---|
@@ -290,151 +283,38 @@ fine-tuning*, not different data:
 | `assay_first` | the single-concentration screen as its own stage before the dose-response |
 | `progressive` | `coarse_to_fine`, then a short **unfrozen** polish at a very low `lr` |
 
-### Describing an enzyme instead of indexing it
+### Describing the enzyme
 
-| enzyme | pocket | recognises | volume Å³ |
-|---|---|---|---|
-| CYP1A2 | narrow planar slot | flat rigid aromatics | 375 |
-| CYP2C9 | **Arg108** | anions — acids | 470 |
-| CYP2D6 | **Asp301, Glu216** | cations — basic amines | 540 |
-| CYP3A4 | expands >80% on binding | size and greasiness, promiscuously | 1386 |
+A one-hot says CYP2C9 and CYP2D6 are two symbols. A *descriptor* says they recognise
+**opposite charges** — CYP2C9 an anion anchor (acids help), CYP2D6 a cation anchor (basic
+amines help) — so a rule learned on one transfers by chemistry, not by name. That is what
+lets CYP2C19's ~14k compounds pool into CYP2C9 (they are ~91% identical). Adding an enzyme
+is a `register()` call, and — since the [descriptors are computed](#-evaluation), not
+hand-set — a matter of naming its structure.
 
-A one-hot says these are four different symbols. A descriptor says two of them
-recognise *opposite* charges, which is why an acid helps at CYP2C9 and hurts at CYP2D6.
-That is what transfers: CYP2C9 and CYP2C19 are ~91% identical, so their descriptors
-nearly coincide and 14,492 auxiliary compounds pool into a scored endpoint. Adding an
-enzyme is a `register()` call, not an architecture change.
+Descriptors come from several sources, swept via `conditioning.descriptor_sources`:
 
-Descriptors come from six sources, all recorded and selectable (swept via
-`conditioning.descriptor_sources`).
-
-| source | dims | what it encodes |
+| source | from | what it encodes |
 |---|---|---|
-| `cypshift.data.enzymes` | 9 | curated table, crystallographic paper cited per entry |
-| `cypshift.data.pocket` | 8 | residue counts and fractions, computed from a PDB entry |
-| `cypshift.data.zscales` | 6 | Z-scales of those residues — chemistry, not class counts |
-| `cypshift.data.srs` | 21 | the same Z-scales, **per recognition site** |
-| `cypshift.data.site` | 21 | the same, from sequence alone — covers all nine enzymes |
-| `cypshift.data.ctd` | 42 | the published CYP PCM descriptors, from sequence alone |
+| `curated` | structure | two cavity volumes (fpocket + pyKVFinder) + acidic/basic/aromatic composition + family |
+| `pocket` · `zscales` | structure | ligand-contact residue counts/fractions, and their Z-scale chemistry |
+| `srs` | structure | the Z-scales **per recognition site** |
+| `site` · `ctd` | **sequence** | the same, and the published CYP PCM descriptors — cover every enzyme |
 
-The pocket is defined by **what a bound ligand touches**, not by distance from the
-heme. That distinction was measured: a 10 Å shell around the iron averages the one
-anchoring residue away among ~38 others and gets the charges backwards.
+Two design points do the work. **The pocket is what a bound ligand touches**, not a shell
+around the iron (a shell averages the one anchoring residue away and gets the charge
+backwards). And recognition is encoded **per substrate-recognition-site** (`srs`): the one
+or two residues that decide specificity would be buried in a whole-pocket mean, so the
+sites are kept separate — located by their offset from the heme loop, which is findable in
+any P450 sequence. That last point is why the **sequence** sources cover auxiliaries that
+have no co-crystal, and why `cypshift.data.site` can rank relatives by binding-site (not
+whole-chain) similarity — recovering each scored enzyme's true nearest relative.
 
-Counting residues by class discards which residue it was — Asp and Glu become the same
-symbol. **Z-scales** keep it, mapping each amino acid to three numbers from a principal
-component analysis of 26 measured properties (Sandberg 1998). Three dimensions is not
-an arbitrary truncation: van Westen benchmarked thirteen protein-descriptor sets for
-proteochemometrics and Z-scales(3) with a per-target average won, while the
-higher-dimensional sets came out worst.
-
-Conserved P450 motifs are deliberately **not** encoded. FxxGxxxCxG on the heme loop,
-ExxR in helix K and the I-helix oxygen-activation motif are invariant across the
-superfamily — which is what makes them good for recognising a P450 and useless for
-telling two apart. The variable regions are the substrate recognition sites (Gotoh
-1992), and the ligand-contact residues are largely drawn from them.
-
-Pooling every contact into one mean has a measured failure, though. The residue that
-decides recognition is one or two out of sixteen to twenty-six, so averaging buries it —
-CYP2D6's Asp/Glu pair barely moves the mean.
-
-**Encoding each recognition site separately is the fix.** Gotoh showed in 1992 that
-specificity concentrates in six hypervariable segments rather than spreading along the
-chain. His boundaries are given in a CYP2-family frame anchored on bacterial P450cam,
-so they do not transfer by residue number; `cypshift.data.srs` finds the segments from
-the structures instead. Contact residues cluster into contiguous runs, and those runs
-land at reproducible distances from the heme loop, which `cypshift.data.motifs` locates
-in any P450 sequence.
-
-| offset upstream | CYP1A2 | CYP2C9 | CYP2D6 | CYP3A4 | region |
-|---|---|---|---|---|---|
-| 316–334 | IT · STF | **R108** · VF | LF · FL | **RR**F · SI | SRS1, B′–C loop |
-| 211–228 | TFV | LNIL | AGL**E216** | LLFF · T | SRS2, helix F |
-| 191–195 | F · F | VM | QFL | F | SRS3, helix G |
-| 126–139 | NDGADT | VDGA · T | IA**D301** | IIFA · T | SRS4, helix I |
-| 62–69 | L · I | L · L | V · V | IARLE | SRS5, β1-4 |
-| ≈ −46 | LT | — | F | G | SRS6, β4 |
-
-Each of the three residues that define recognition falls in a different band, which is
-the whole argument for separating them. All contacts are assigned in all four enzymes,
-and separation rises **5.1× per dimension** over the pooled version (1.803 against
-0.351 RMS), a comparison that already controls for the added width.
-
-CYP3A4 also contacts residues 53–76, upstream of every band the others use. Not an
-artefact — Zawaira's expanded map adds SRS1a and SRS1b ahead of Gotoh's SRS1 for
-exactly this reason, and it fits CYP3A4's much larger cavity.
-
-**A structure is needed to find the bands, not to use them.** A band is an offset from
-the heme loop, and that loop is locatable in any P450 sequence — so once the offsets
-are known the binding site can be read straight off a sequence. That is what lets an
-auxiliary enzyme with no co-crystal still be described, which is the whole point of
-describing an enzyme rather than indexing it. The bands are the observed contact spans
-widened by four residues, covering **30% of the chain** against Zawaira's published
-33% — four structures measured independently landing on the published figure.
-
-### Comparing enzymes over the binding site
-
-Whole-chain identity is the wrong criterion for choosing what to pretrain on. Two P450s
-share an invariant scaffold that inflates any global similarity without saying whether
-they prefer the same ligands. `cypshift.data.site` compares only the recognition sites,
-and takes an arbitrary pattern, so a hypothesis can be checked directly rather than
-against a fixed list of signatures.
-
-Bands are fixed offsets, so sites are the same length and align by construction — but
-not quite. A single indel between the anchor and a band slides that band by one, and a
-strict comparison then calls two homologous regions unrelated. Measured on CYP1A2
-against CYP1A1: SRS4 is `VNLVNDIFGAGFDTVTTAISWS` against `IINIVLDLFGAGFDTVTTAISW`,
-plainly homologous and off by one, scored at **0.05**. Sliding each band to its best
-offset recovers it to **0.81**, and changes nothing for CYP2C9 against CYP2C19, which
-needs no shift anywhere.
-
-| target | closest | next | reads as |
-|---|---|---|---|
-| CYP1A2 | **CYP1A1** 0.87 | CYP1B1 2.36 | family 1 recovered |
-| CYP2C9 | **CYP2C19** 0.53 | CYP2C8 1.28 | subfamily 2C recovered |
-| CYP2D6 | CYP2B6 3.16 | CYP2C8 3.18 | no close relative — correct |
-| CYP3A4 | CYP2C8 3.96 | CYP2B6 4.01 | no close relative — correct |
-
-The shifts a pair needs are themselves diagnostic: consistent shifts mean one indel,
-scattered ones mean the bands are not lining up and the summary number is not safe.
-
-### Reusing the published model's descriptors
-
-`cypshift.data.ctd` reimplements what Lapins and Spjuth conditioned on: Dubchak
-composition and transition features over seven amino-acid properties, 42 values from
-the primary sequence. Reimplemented rather than called out to, since they used the
-PROFEAT web server and a descriptor that cannot be recomputed offline cannot be swept.
-
-It recovers the family structure from sequence alone — every scored enzyme's nearest
-neighbour is a relative, CYP2C9 to CYP2C19 at 0.060, the closest pair in the set and
-the two that are ~91% identical. But 42 dimensions across 8 enzymes is five times more
-numbers than things to tell apart, so it is a comparison, not a default.
-
-### Finding more enzymes to pretrain on
-
-The conserved motifs — FxxGxxxCxG, ExxR, the I-helix pair — are useless for
-conditioning, being identical across all eight. That invariance makes them right for
-the opposite question: whether an unfamiliar sequence is a P450 close enough to
-pretrain on. `scripts/find_related_enzymes.py` scans a FASTA and ranks candidates.
-
-It anchors on the heme loop and scores everything else by distance from it, because
-fold order does not work — `ExxR` matches up to six times per sequence and the earliest
-is near the N-terminus by chance. Measured: **accepts 9/9** reviewed CYPs, **rejects
-8/8** non-P450 controls including catalase, myoglobin, haemoglobin and
-myeloperoxidase (the hard cases, since they also bind heme), and accepts **1 of 1800**
-sequences shuffled from real CYP composition.
-
-### Proving a descriptor does anything
-
-With eight enzymes the model ever sees eight distinct conditioning vectors, so a
-descriptor wide enough to identify each one is a one-hot index wearing a costume —
-and no validation curve can tell the difference, because both fit.
-
-`cypshift.eval.transfer` is the test that can. Hold one enzyme out of training
-entirely: a one-hot has never seen that index and must fall back to the population
-mean, while a descriptor can do better *if and only if* it encodes something
-transferable. The gap between them is the effect. Without it, adding a pocket vector
-is unfalsifiable, which is why the descriptor set is kept narrow until it earns width.
+**Honesty check.** With so few enzymes, a descriptor wide enough to identify each is a
+one-hot in disguise, and no validation curve can tell. `cypshift.eval.transfer` holds an
+enzyme out entirely: a one-hot falls back to the mean, a real descriptor does better only
+if it encodes something transferable. The gap is the effect — so the descriptor set stays
+narrow until it earns width.
 
 ---
 
@@ -481,79 +361,13 @@ itself, ~91% identical, same pocket.
 
 ---
 
-## 📈 Measured so far
+## 📈 Evaluation
 
-Every number is the official metric on similarity-matched holdouts. Lower ST-RAE is
-better; 1.0 is the constant mean predictor. Where a result is averaged over splits the
-count is stated, because several differences here are smaller than the spread between
-splits.
-
-### Model families, head to head
-
-One split, all trained on the same observations:
-
-| model | macro ST-RAE |
-|---|---|
-| **boosted trees** | **0.6891** |
-| curve model | 0.7629 |
-| neural network | 0.8682 |
-| simple average of the three | 0.7049 |
-
-Averaging loses to the best single family — it drags a good model toward two worse ones.
-
-### What each change is worth
-
-Boosted trees, three splits, each change measured against the one above it:
-
-| configuration | macro ST-RAE | Δ |
-|---|---|---|
-| plain, no screen, 2048-bit | 0.7034 | — |
-| + pooled screen | 0.6771 | −0.0264 |
-| + 4096-bit fingerprints | 0.6661 | −0.0374 |
-| + CYP2C19 auxiliary data | 0.6748 | −0.0287 |
-| **all three, current default** | **0.6625** | **−0.0410** |
-
-Better on all three splits, and close to additive. Two things behind these numbers are
-worth stating separately.
-
-**Training on the metric is worth 0.045** — 0.6711 against 0.7164 for squared error and
-0.6908 for absolute. That gain appears only once the screen is pooled; measured without
-it the same comparison gave −0.0026 at p = 0.42. The objective's value depends on the
-training set, which was not obvious.
-
-**Hyperparameter tuning is close to exhausted.** Of leaves, tree count, learning rate
-and fingerprint width, only width helped, by 0.0032 at double the cost. Effort belongs
-elsewhere.
-
-### Per endpoint, at the current default
-
-| endpoint | ST-RAE |
-|---|---|
-| CYP3A4 | **0.409** |
-| CYP2C9 | 0.693 |
-| CYP1A2 | 0.767 |
-| CYP2D6 | 0.805 |
-| **macro** | **0.669** |
-
-CYP3A4 remains far easier than the rest; CYP2D6 remains the hardest, and has no
-auxiliary enzyme within reach to help it.
-
-### Measured so far, with one caveat
-
-These are single-configuration measurements, not verdicts. Everything here is kept and
-in scope for tuning; the numbers say where a thing stands today, not that it is finished.
-
-| idea | where it stands | still in the code |
-|---|---|---|
-| Basic-amine geometry features for CYP2D6 | +0.005 R² on the target endpoint in one CV — marginal so far | yes, in the feature block |
-| Screen as a surrogate feature | 0.717 / 0.695 against 0.689 for pooling it as rows — pooling wins for now | yes, a swept option |
-| Cross-model disagreement as uncertainty | Spearman +0.088 with error in one reduced test; kept as an epistemic-uncertainty estimate to tune | yes |
-
-Two things were removed rather than kept, both mine and unrequested: a per-compound
-**router** between model families (its apparent headroom was a statistical artefact of
-taking the minimum error over several models), and the **loss-minimising point
-estimate** (it submitted a shifted number instead of the prediction and cost 0.042).
-
+Scoring is the official macro soft-threshold RAE on a **similarity-matched holdout** that
+reproduces the blinded test set's nearest-neighbour profile (`cypshift.data.splits`), so
+local model selection is not flattered by a random split. Every knob above is a swept
+option, not a hand-set default — so no single-run numbers are quoted here; the standings
+come from the staged sweeps in `configs/`, and the leaderboard is the real read.
 
 ---
 
@@ -662,11 +476,11 @@ hf auth whoami         # verify
 | ✅ | Package skeleton · manifests · Ruff · tests · CI | provenance recorded from the first download |
 | ✅ | **Two environments: structure-free and structure** | `cypshift` (ligand stack) and `cypshift-struct` (Boltz-2 clone + package core), so the two tracks' incompatible deps coexist |
 | ✅ | Define the shared model interface | predictive distribution in, nothing else |
-| ✅ | Structure-free baseline: fingerprint and descriptor ensemble | **best current MA-ST-RAE 0.6625** (boosted tree, pooled screen, 4096-bit) |
-| ✅ | **Use the single-concentration screen** | pooled as pseudo-labels: **+0.0304 macro on 3/3 splits**, now the default |
-| ◐ | Chemprop D-MPNN | built on chemprop 2.3.1; **not yet scored** against the tree (measurement in progress) |
-| ✅ | Auxiliary data from ChEMBL, deduplicated | CYP2C19: 1,618 compounds, **+0.006 macro on 2/3 splits**; beats shuffled-label control by 0.009 |
-| ✅ | Train on the soft-threshold metric | **worth 0.045 over squared error** once the screen is pooled |
+| ✅ | Structure-free baseline: fingerprint and descriptor ensemble | boosted tree, neural MLP, D-MPNN and the curve model, one interface |
+| ✅ | **Use the single-concentration screen** | pooled as pseudo-labels or a curve point; a swept option |
+| ◐ | Chemprop D-MPNN | built on chemprop 2.3.1 |
+| ✅ | Auxiliary data (ChEMBL/SAIR/Veith/Tox21/Novartis/Octant), deduplicated | one distance axis + assay-context split; all swept toggles |
+| ✅ | Train on the soft-threshold metric | the objective matches the scoring rule |
 | ✅ | **Score the TDI track** | official metrics vendored: MCC, accuracy, precision, recall, F1; ranked by MCC |
 
 ### 🧊 Structure work, if the blocking check clears it
