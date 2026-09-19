@@ -50,7 +50,10 @@ def test_featurise_appends_the_embedding_block(tmp_path):
     cache = _stub_cache(tmp_path, smiles, dim=8)
     base = featurise(smiles, n_bits=128, physchem=False, mechanism=False)
     with_emb = featurise(
-        smiles, n_bits=128, physchem=False, mechanism=False,
+        smiles,
+        n_bits=128,
+        physchem=False,
+        mechanism=False,
         embedding=embedding_block("mammal", cache_dir=cache),
     )
     assert with_emb.shape[1] == base.shape[1] + 8

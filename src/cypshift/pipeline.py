@@ -311,9 +311,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     # distance 0 -- their own rows from the outside source, weighted by scored_weight --
     # and non-scored relatives are admitted out to auxiliary.max_distance and weighted by
     # how far their binding site is. max_distance = 0 pulls the scored enzymes alone.
-    to_pull: list[tuple[str, float]] = [
-        (name, config.auxiliary.scored_weight) for name in scored
-    ]
+    to_pull: list[tuple[str, float]] = [(name, config.auxiliary.scored_weight) for name in scored]
     try:
         candidates = {g: sequence_for(g) for g in ACCESSIONS if g not in scored}
         admitted = select_auxiliaries(
@@ -322,9 +320,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
             weighting=config.auxiliary.weighting,
             scale=config.auxiliary.scale,
         )
-        to_pull.extend(
-            (aux.name, aux.weight * config.auxiliary.target_weight) for aux in admitted
-        )
+        to_pull.extend((aux.name, aux.weight * config.auxiliary.target_weight) for aux in admitted)
     except Exception as error:  # noqa: BLE001 -- any failure means "no relatives"
         logger.info("auxiliary relative selection unavailable (%s)", error)
     if not to_pull:

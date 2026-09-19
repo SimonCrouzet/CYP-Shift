@@ -47,19 +47,18 @@ DESCRIPTOR_FAMILIES = ("shape", "motif", "biochemical")
 class Enzyme:
     """What a model needs to know about an enzyme to predict ligands for it.
 
+    Every numeric field is computed from the holo structure and loaded from the cache; only
+    ``family`` is definitional. See the module docstring for provenance.
+
     Attributes:
         name: Gene symbol.
-        pocket_volume_angstrom3: Active-site cavity volume. Ordinal, not exact.
-        has_acidic_anchor: An Asp or Glu positioned to ion-pair a protonated ligand
-            nitrogen. This is what makes an enzyme prefer basic amines.
-        has_basic_anchor: An Arg or Lys positioned to pair with a ligand anion, which
-            is what makes an enzyme prefer acids.
-        is_narrow_planar: A compact slot that accepts flat, rigid aromatics and little
-            else.
-        binds_multiple_ligands: Crystallographically observed with more than one
-            ligand bound at once, which implies a large or plastic cavity.
         family: CYP family number, 1, 2, 3 and so on.
-        reference: Where the structural claims come from.
+        fpocket_volume: Active-site cavity volume from fpocket. Ordinal, not exact.
+        pykvfinder_volume: Active-site cavity volume from pyKVFinder. Ordinal, not exact.
+        has_acidic: An acidic residue lines the ligand-contact pocket.
+        has_basic: A basic residue lines the ligand-contact pocket.
+        has_aromatic: An aromatic residue lines the ligand-contact pocket.
+        reference: The PDB the descriptors were computed from.
     """
 
     name: str
@@ -103,9 +102,21 @@ class Enzyme:
 #: scripts/build_enzyme_descriptors.py and loaded from the cache below, so no descriptor
 #: value is hand-typed.
 _FAMILY: dict[str, int] = {
-    "CYP1A2": 1, "CYP2C9": 2, "CYP2D6": 2, "CYP3A4": 3,  # scored
-    "CYP2C19": 2, "CYP1A1": 1, "CYP1B1": 1, "CYP2C8": 2, "CYP2B6": 2, "CYP3A5": 3,
-    "CYP3A7": 3, "CYP2C18": 2, "CYP3A43": 3, "CYP2E1": 2, "CYP2A6": 2,  # relatives (<=3.0)
+    "CYP1A2": 1,
+    "CYP2C9": 2,
+    "CYP2D6": 2,
+    "CYP3A4": 3,  # scored
+    "CYP2C19": 2,
+    "CYP1A1": 1,
+    "CYP1B1": 1,
+    "CYP2C8": 2,
+    "CYP2B6": 2,
+    "CYP3A5": 3,
+    "CYP3A7": 3,
+    "CYP2C18": 2,
+    "CYP3A43": 3,
+    "CYP2E1": 2,
+    "CYP2A6": 2,  # relatives (<=3.0)
 }
 _DESCRIPTOR_CACHE = Path(__file__).with_name("enzyme_descriptors.json")
 

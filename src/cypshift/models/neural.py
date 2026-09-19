@@ -439,11 +439,15 @@ class NeuralNetwork:
             self._model = FilmMLP(n_features, condition.shape[1], self.hidden, self.dropout)
         elif self.conditioning == "calibration":
             self._model = CalibratedMLP(
-                n_features, len(self.assays), self.assays.index(REFERENCE_ASSAY),
-                self.hidden, self.dropout,
+                n_features,
+                len(self.assays),
+                self.assays.index(REFERENCE_ASSAY),
+                self.hidden,
+                self.dropout,
             )
         else:
             self._model = ConditionedMLP(n_features, self.hidden, self.dropout)
+
         def optimise(rows: torch.Tensor, epochs: int, lr: float, freeze_trunk: bool) -> None:
             """Train the current model on a subset of rows, carrying its weights forward."""
             if len(rows) == 0:

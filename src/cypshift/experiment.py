@@ -450,9 +450,7 @@ class ExperimentConfig:
                 elif get_origin(item.type) is list and isinstance(given, list):
                     (element,) = get_args(item.type)
                     kwargs[item.name] = (
-                        [build(element, one) for one in given]
-                        if is_dataclass(element)
-                        else given
+                        [build(element, one) for one in given] if is_dataclass(element) else given
                     )
                 else:
                     kwargs[item.name] = given

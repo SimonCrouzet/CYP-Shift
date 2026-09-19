@@ -151,23 +151,48 @@ def test_calibration_recovers_a_known_per_assay_offset():
     for i, smiles in enumerate(SMILES):
         y = rng.uniform(4.0, 7.0)
         rows.append(
-            dict(Molecule_Name=f"m{i}", SMILES=smiles, target="CYP3A4",
-                 assay="direct_inhibition_drc", value=y, conf_low=y, conf_high=y,
-                 weight=1.0, is_censored=False, tier="challenge")
+            dict(
+                Molecule_Name=f"m{i}",
+                SMILES=smiles,
+                target="CYP3A4",
+                assay="direct_inhibition_drc",
+                value=y,
+                conf_low=y,
+                conf_high=y,
+                weight=1.0,
+                is_censored=False,
+                tier="challenge",
+            )
         )
         rows.append(
-            dict(Molecule_Name=f"a{i}", SMILES=smiles, target="CYP3A4",
-                 assay="luminescent_ac50", value=y + 1.5, conf_low=y + 1.5, conf_high=y + 1.5,
-                 weight=1.0, is_censored=False, tier="near_aux")
+            dict(
+                Molecule_Name=f"a{i}",
+                SMILES=smiles,
+                target="CYP3A4",
+                assay="luminescent_ac50",
+                value=y + 1.5,
+                conf_low=y + 1.5,
+                conf_high=y + 1.5,
+                weight=1.0,
+                is_censored=False,
+                tier="near_aux",
+            )
         )
     model = NeuralNetwork(
-        n_bits=256, hidden=32, epochs=400, learning_rate=3e-3,
-        conditioning="calibration", seed=0, loss="absolute",
+        n_bits=256,
+        hidden=32,
+        epochs=400,
+        learning_rate=3e-3,
+        conditioning="calibration",
+        seed=0,
+        loss="absolute",
     )
     model.fit(pd.DataFrame(rows))
     bias = (
-        model._model.bias.weight - model._model.bias.weight[model._model.reference_index]
-    ).detach().squeeze(-1)
+        (model._model.bias.weight - model._model.bias.weight[model._model.reference_index])
+        .detach()
+        .squeeze(-1)
+    )
     assert float(bias[model._model.reference_index]) == pytest.approx(0.0)
     assert float(bias[model.assays.index("luminescent_ac50")]) > 0.8  # heading to 1.5
     assert model.predict(SMILES[:4]).mean.shape == (4, len(model.endpoints))

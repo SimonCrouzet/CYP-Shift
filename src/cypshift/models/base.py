@@ -170,9 +170,7 @@ def rows_for_stage(observations: pd.DataFrame, stage: ResolvedStage) -> NDArray[
     return mask
 
 
-def active_stages(
-    observations: pd.DataFrame, stages: list[ResolvedStage]
-) -> list[ResolvedStage]:
+def active_stages(observations: pd.DataFrame, stages: list[ResolvedStage]) -> list[ResolvedStage]:
     """Drop stages with no rows this run; fall back to one pooled stage if all are empty.
 
     A curriculum can name a facet a given run does not populate -- ``distant_aux`` when no
