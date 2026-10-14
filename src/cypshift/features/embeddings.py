@@ -79,3 +79,9 @@ def block_for(
     if source == "none":
         return None
     return embedding_block(source, cache_dir)
+
+
+def embedding_width(source: str, cache_dir: Path = DEFAULT_CACHE_DIR) -> int:
+    """The embedding dimensionality for a source, from its cache."""
+    _, vectors = _load(source, cache_dir)
+    return int(vectors.shape[1])

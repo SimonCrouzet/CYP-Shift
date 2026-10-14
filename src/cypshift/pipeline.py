@@ -103,6 +103,7 @@ def build_model(
             n_members=config.model.n_members,
             ensemble=config.model.graph.ensemble,
             pretraining=config.model.graph.pretraining,
+            pretraining_cache=config.model.graph.pretraining_cache,
             conditioning=config.conditioning.strategy,
             targets=targets,
             seed=config.data.seed,

@@ -286,6 +286,8 @@ class GraphConfig:
     ensemble: str = "reseed"
     #: A pretrained D-MPNN encoder to initialise from; see :data:`GRAPH_PRETRAINING`. Swept.
     pretraining: str = "none"
+    #: Where the CheMeleon encoder is cached (downloaded on first use).
+    pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt"
 
 
 @dataclass

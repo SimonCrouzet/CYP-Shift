@@ -32,6 +32,7 @@ prediction time.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,7 @@ from lightning import pytorch as pl
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, encode_conditions, n_condition_columns
+from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
 
@@ -52,6 +54,36 @@ logger = logging.getLogger(__name__)
 #: Label columns: the value, then the two carrier columns holding its bounds.
 VALUE, LOWER, UPPER = 0, 1, 2
 N_LABEL_COLUMNS = 3
+
+#: CheMeleon: a D-MPNN message-passing encoder pretrained on 100M molecules, published on
+#: Zenodo. Loaded into chemprop's own BondMessagePassing and fine-tuned here, the same way
+#: chemprop's CLI consumes it. Cite DOI 10.48550/arXiv.2506.15792 when used.
+CHEMELEON_URL = "https://zenodo.org/records/15460715/files/chemeleon_mp.pt"
+
+
+def chemeleon_message_passing(cache_path: Path) -> cpnn.BondMessagePassing:
+    """The pretrained CheMeleon encoder, downloaded to ``cache_path`` on first use.
+
+    Our default atom/bond featuriser already matches CheMeleon's (d_v=72, d_e=14), so the
+    encoder drops in without a featuriser change; its weights initialise training and are
+    fine-tuned, not frozen.
+    """
+    cache_path = Path(cache_path)
+    if not cache_path.exists():
+        import requests
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("downloading CheMeleon encoder to %s", cache_path)
+        with requests.get(CHEMELEON_URL, stream=True, timeout=180) as response:
+            response.raise_for_status()
+            with cache_path.open("wb") as handle:
+                for chunk in response.iter_content(1 << 20):
+                    handle.write(chunk)
+    checkpoint = torch.load(cache_path, weights_only=True)
+    block = cpnn.BondMessagePassing(**checkpoint["hyper_parameters"])
+    block.load_state_dict(checkpoint["state_dict"])
+    logger.info("loaded CheMeleon encoder (output dim %d)", block.output_dim)
+    return block
 
 
 class SoftThresholdLoss(ChempropMetric):
@@ -93,6 +125,7 @@ class GraphNetwork:
         loss: str = "soft_threshold",
         ensemble: str = "reseed",
         pretraining: str = "none",
+        pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -110,14 +143,22 @@ class GraphNetwork:
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
         self.pretraining = pretraining
+        self.pretraining_cache = pretraining_cache
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
         self._n_conditioning = n_condition_columns(conditioning, targets, assays)
+        # "mammal" pretraining appends the cached MAMMAL embedding to the readout's
+        # conditioning slot (x_d) as fixed input features; widen the readout to fit it.
+        self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
+        if self._embedding is not None:
+            self._n_conditioning += embedding_width("mammal")
         self._centre = 0.0
         self._spread = 1.0
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
         conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
+        if self._embedding is not None:
+            conditioning = np.hstack([conditioning, self._embedding(frame["SMILES"].tolist())])
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
@@ -139,9 +180,12 @@ class GraphNetwork:
         return points
 
     def _build(self) -> cpmodels.MPNN:
-        message_passing = cpnn.BondMessagePassing(
-            d_h=self.hidden, depth=self.depth, dropout=self.dropout
-        )
+        if self.pretraining == "chemeleon":
+            message_passing = chemeleon_message_passing(Path(self.pretraining_cache))
+        else:
+            message_passing = cpnn.BondMessagePassing(
+                d_h=self.hidden, depth=self.depth, dropout=self.dropout
+            )
         criterion = (
             SoftThresholdLoss(task_weights=torch.tensor([[1.0, 0.0, 0.0]]))
             if self.loss == "soft_threshold"
