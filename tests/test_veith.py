@@ -57,3 +57,53 @@ def test_reads_cache_and_deduplicates(tmp_path):
 
 def test_aid_map_covers_the_four_scored_enzymes():
     assert {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"} <= set(AID)
+
+
+def test_detection_limit_read_from_concentration_columns():
+    """The limit is computed from the deposit's top 'Activity at <conc> uM' column."""
+    import numpy as np
+
+    from cypshift.data.veith import detection_limit_pic50
+
+    raw = pd.DataFrame(columns=["Activity at 0.457 uM", "Activity at 57.14 uM", "Potency"])
+    assert detection_limit_pic50(raw) == pytest.approx(6.0 - np.log10(57.14))
+    assert detection_limit_pic50(pd.DataFrame(columns=["Potency"])) is None
+
+
+def test_inactives_kept_as_censored_when_requested():
+    """include_inactives keeps inactives as one-sided rows below the data-derived limit."""
+    import numpy as np
+
+    raw = pd.DataFrame(
+        {
+            "PUBCHEM_ACTIVITY_OUTCOME": ["Active", "Inactive", "Inactive", "Inconclusive"],
+            "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO", "CCC", "CCCC", "CCCCC"],
+            "Potency": [1.0, None, None, None],
+            "Curve_Description": ["Complete curve; high efficacy", "", "", ""],
+            "Activity at 0.457 uM": [40, 0, 0, 0],
+            "Activity at 57.14 uM": [90, 2, 1, 0],
+        }
+    )
+    limit = 6.0 - np.log10(57.14)
+    off = _clean(raw, include_inactives=False)
+    assert set(off["SMILES"]) == {"CCO"} and not off["is_censored"].any()
+
+    on = _clean(raw, include_inactives=True).set_index("SMILES")
+    assert set(on.index) == {"CCO", "CCC", "CCCC"}  # the inconclusive compound is dropped
+    assert not on.loc["CCO", "is_censored"]
+    assert on.loc["CCC", "is_censored"]
+    assert on.loc["CCC", "value"] == pytest.approx(limit)
+    assert on.loc["CCC", "conf_high"] == pytest.approx(limit)
+
+
+def test_keeping_inactives_without_concentration_columns_raises():
+    raw = pd.DataFrame(
+        {
+            "PUBCHEM_ACTIVITY_OUTCOME": ["Active", "Inactive"],
+            "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO", "CCC"],
+            "Potency": [1.0, None],
+            "Curve_Description": ["Complete curve; high efficacy", ""],
+        }
+    )
+    with pytest.raises(KeyError, match="Activity at"):
+        _clean(raw, include_inactives=True)

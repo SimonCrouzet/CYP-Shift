@@ -133,6 +133,11 @@ class AuxiliaryConfig:
     #: target: CYP2C19 alone brings about 17,000 Veith rows against roughly 6,000
     #: dose-response labels across all four scored enzymes.
     target_weight: float = 1.0
+    #: Keep a qHTS panel's inactive compounds as censored low-potency rows (``pIC50`` below
+    #: the panel's detection limit) rather than dropping them. The Veith deposit is mostly
+    #: inactive -- 6,822 against 1,776 active on CYP2D6 -- and keeping only the actives
+    #: trains on a population biased toward hits, which the blinded test is not. Swept.
+    include_qhts_inactives: bool = True
 
 
 @dataclass

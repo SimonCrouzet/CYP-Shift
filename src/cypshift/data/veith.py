@@ -19,12 +19,14 @@ dealkylation, not the challenge's fluorogenic probe; the assay mismatch is
 structure-correlated, so treat Veith as a ranking prior, not a like-for-like potency.
 
 Unlike ChEMBL/SAIR, the deposit ships the raw per-concentration points as well as the
-fitted AC50. This loader currently emits the fitted potency as a pIC50 row (parity with
-the other auxiliary sources); the raw points are a curve-model-specific extension left
-for later.
+fitted AC50. Actives enter as a fitted pIC50 row; with ``include_inactives`` the panel's
+inactive compounds are kept as censored rows below the top screened concentration
+(read from the deposit), which corrects the active-only selection bias. Feeding the raw
+points to the curve model is a further extension left for later.
 """
 
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -44,19 +46,45 @@ AID = {"CYP1A2": 410, "CYP2C9": 883, "CYP2D6": 891, "CYP3A4": 884, "CYP2C19": 89
 #: so it is dropped rather than fed as one -- the same discipline ChEMBL censoring gets.
 _BAD_CURVE = ("single point", "poor fit", "inactive")
 
+#: The per-concentration readout columns the deposit ships, e.g. ``Activity at 57.14 uM``.
+#: The highest of these is the top screened concentration, read from the data rather than
+#: hard-coded, so the inactive detection limit follows whatever a given deposit used.
+_CONCENTRATION_COLUMN = re.compile(r"Activity at ([0-9.]+)\s*uM")
 
-def _clean(raw: pd.DataFrame) -> pd.DataFrame:
-    """Veith records into ``(SMILES, value)`` pairs on the pIC50 scale.
+
+def detection_limit_pic50(raw: pd.DataFrame) -> float | None:
+    """The pIC50 below which an inactive compound's AC50 must lie, from the deposit.
+
+    An inactive did not reach its AC50 at or below the top screened concentration, so its
+    pIC50 is below ``6 - log10(top_uM)``. The top concentration is the largest value named
+    in the ``Activity at <conc> uM`` columns. Returns ``None`` for a deposit that ships no
+    such columns, since the limit cannot then be read from the data.
+    """
+    concentrations = [
+        float(match.group(1))
+        for column in raw.columns
+        if (match := _CONCENTRATION_COLUMN.fullmatch(str(column)))
+    ]
+    return None if not concentrations else 6.0 - float(np.log10(max(concentrations)))
+
+
+def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
+    """Veith records into ``SMILES, value, conf_low, conf_high, is_censored`` on the pIC50 scale.
 
     Two deposit schemas appear across the panel: the newer ones carry ``Potency`` (AC50
     in micromolar, so ``pIC50 = 6 - log10(Potency)``) and a ``Curve_Description``; the
     older CYP1A2 deposit carries ``Log of AC50`` (log10 molar, ``pIC50 = -value``) with an
-    ``Activity Qualifier`` marking real (``=``) versus censored fits. Both keep only
-    active compounds with a usable curve -- inactives and poor fits are dropped rather
-    than turned into an invented potency at the detection limit.
+    ``Activity Qualifier`` marking real (``=``) versus censored fits. Active compounds with
+    a usable curve become point values.
+
+    With ``include_inactives``, the panel's inactive compounds are kept as censored rows:
+    their AC50 lies above the top screened concentration, so ``pIC50 < LIMIT_PIC50`` is a
+    real one-sided observation (``conf_high`` at the limit, ``is_censored`` true), not an
+    invented potency. Keeping them corrects the active-only selection bias; dropping them
+    (the default-off path) reproduces the earlier behaviour.
     """
-    frame = raw[raw["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
-    frame = frame[frame["PUBCHEM_EXT_DATASOURCE_SMILES"].notna()]
+    named = raw[raw["PUBCHEM_EXT_DATASOURCE_SMILES"].notna()]
+    frame = named[named["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
 
     if "Potency" in frame.columns:
         potency = pd.to_numeric(frame["Potency"], errors="coerce")
@@ -74,34 +102,61 @@ def _clean(raw: pd.DataFrame) -> pd.DataFrame:
 
     low, high = PIC50_RANGE
     frame = frame[(frame["value"] >= low) & (frame["value"] <= high)]
-    grouped = (
+    active = (
         frame.groupby("PUBCHEM_EXT_DATASOURCE_SMILES")["value"]
         .median()
         .reset_index()
         .rename(columns={"PUBCHEM_EXT_DATASOURCE_SMILES": "SMILES"})
     )
-    return grouped
+    active["conf_low"] = active["value"]
+    active["conf_high"] = active["value"]
+    active["is_censored"] = False
+    if not include_inactives:
+        return active
+
+    limit = detection_limit_pic50(raw)
+    if limit is None:
+        raise KeyError("cannot keep inactives: deposit has no 'Activity at <conc> uM' columns")
+    inactive_smiles = (
+        named.loc[named["PUBCHEM_ACTIVITY_OUTCOME"] == "Inactive", "PUBCHEM_EXT_DATASOURCE_SMILES"]
+        .dropna()
+        .unique()
+    )
+    fresh = [s for s in inactive_smiles if s not in set(active["SMILES"])]
+    inactive = pd.DataFrame({"SMILES": fresh})
+    inactive["value"] = limit
+    inactive["conf_low"] = limit
+    inactive["conf_high"] = limit
+    inactive["is_censored"] = True
+    return pd.concat([active, inactive], ignore_index=True)
 
 
 def load_auxiliary(
-    enzyme: str, challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE
+    enzyme: str,
+    challenge_smiles: pd.Series,
+    cache: Path = DEFAULT_CACHE,
+    include_inactives: bool = False,
 ) -> pd.DataFrame:
-    """Cleaned, challenge-deduplicated Veith pIC50 rows for one enzyme.
+    """Cleaned, challenge-deduplicated Veith rows for one enzyme.
 
-    Returns columns ``SMILES``, ``value``, ``target``. Empty for any enzyme Veith does
-    not cover, so the source contributes only where it has data. Downloads and caches on
-    first use, since the PubChem paging is slow and the answer does not change.
+    Returns columns ``SMILES``, ``value``, ``conf_low``, ``conf_high``, ``is_censored``,
+    ``target``. Empty for any enzyme Veith does not cover, so the source contributes only
+    where it has data. Downloads and caches on first use, since the PubChem paging is slow
+    and the answer does not change; the inactive-inclusive variant caches separately.
     """
+    columns = ["SMILES", "value", "conf_low", "conf_high", "is_censored", "target"]
     if enzyme not in AID:
-        return pd.DataFrame(columns=["SMILES", "value", "target"])
+        return pd.DataFrame(columns=columns)
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"veith_{enzyme}.csv"
+    path = cache / f"veith_{enzyme}{'_full' if include_inactives else ''}.csv"
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(download_assay(AID[enzyme]))
+        frame = _clean(download_assay(AID[enzyme]), include_inactives=include_inactives)
         frame.to_csv(path, index=False)
-        logger.info("Veith: cached %d %s compounds", len(frame), enzyme)
+        logger.info(
+            "Veith: cached %d %s compounds (inactives=%s)", len(frame), enzyme, include_inactives
+        )
     deduplicated = deduplicate_against(frame, challenge_smiles)
     deduplicated["target"] = enzyme
     logger.info("Veith: %d %s compounds after dedup", len(deduplicated), enzyme)

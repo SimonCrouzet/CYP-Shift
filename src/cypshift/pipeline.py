@@ -337,27 +337,45 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         # Group the enabled datasets by their assay context, so sources of one detection
         # chemistry (veith+tox21, chembl+sair) pool together while different chemistries
         # stay distinct rows the calibration can offset apart.
+        # Only the qHTS loaders take the inactive-inclusion flag; the rest ignore it.
+        extra_kwargs = {"veith": {"include_inactives": config.auxiliary.include_qhts_inactives}}
         by_assay: dict[str, list[pd.DataFrame]] = {}
         for name in datasets:
             try:
-                loaded = all_loaders[name](enzyme, challenge)
+                loaded = all_loaders[name](enzyme, challenge, **extra_kwargs.get(name, {}))
             except Exception as error:  # noqa: BLE001
                 logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
                 continue
-            if not loaded.empty:
-                by_assay.setdefault(assay_by_source[name], []).append(loaded)
+            if loaded.empty:
+                continue
+            # Give every source the same columns, so pooling and row-building are uniform:
+            # a source without intervals collapses its bounds to the point and is uncensored.
+            for column, default in (("conf_low", loaded["value"]), ("conf_high", loaded["value"])):
+                if column not in loaded.columns:
+                    loaded[column] = default
+            if "is_censored" not in loaded.columns:
+                loaded["is_censored"] = False
+            by_assay.setdefault(assay_by_source[name], []).append(loaded)
 
         for assay, gathered in by_assay.items():
             data = pd.concat(gathered, ignore_index=True)
             if len(gathered) > 1:
                 # Two sources of the same chemistry: pool shared compounds by median,
-                # which drops per-source intervals, so bounds collapse to the point.
-                data = data.groupby("SMILES", as_index=False)["value"].median()
+                # which drops per-source intervals, so bounds collapse to the point. A
+                # compound stays censored only if every pooled source censored it.
+                data = data.groupby("SMILES", as_index=False).agg(
+                    value=("value", "median"), is_censored=("is_censored", "all")
+                )
             value = data["value"].to_numpy(float)
             # Keep a real credible interval where the source ships one (Octant does),
             # otherwise the bounds collapse to the point -- no invented tolerance.
             low = data["conf_low"].to_numpy(float) if "conf_low" in data.columns else value
             high = data["conf_high"].to_numpy(float) if "conf_high" in data.columns else value
+            censored = (
+                data["is_censored"].to_numpy(bool)
+                if "is_censored" in data.columns
+                else np.zeros(len(data), dtype=bool)
+            )
             frames.append(
                 pd.DataFrame(
                     {
@@ -369,7 +387,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                         "conf_low": low,
                         "conf_high": high,
                         "weight": weight,
-                        "is_censored": False,
+                        "is_censored": censored,
                         "tier": tier,
                     }
                 )
