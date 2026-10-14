@@ -219,9 +219,12 @@ def submit(
     costs about 0.04 macro ST-RAE on the regression track at every weight tried. Since
     the tracks are scored separately there is no reason to compromise -- run this twice.
 
-    TDI columns are written only for the classification track, and only when the model
-    can produce them: the label compares the preincubated arm's midpoint against the
-    direct arm's, so a model emitting one pIC50 has nothing to compare.
+    Each track writes exactly the columns its leaderboard wants, always led by
+    ``SMILES`` and ``Molecule_Name``: the four pIC50 columns for regression, the two
+    ``is_TDI`` booleans for classification. The classification track therefore needs a
+    model that can produce TDI calls -- the label compares the preincubated arm's
+    midpoint against the direct arm's, so a model emitting one pIC50 has nothing to
+    compare and the command refuses rather than write an invalid file.
     """
     _configure_logging(verbose)
     if track not in ("regression", "classification"):
@@ -245,22 +248,27 @@ def submit(
     model = build_model(config, surrogate, targets=tuple(scored + sorted(extra)))
     model.fit(observations)
 
-    prediction = model.predict(test["SMILES"].tolist())
-    submission = test[["Molecule_Name"]].copy()
-    for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
-        submission[endpoint] = prediction.mean[:, column]
-
-    if track == "classification" and hasattr(model, "predict_is_time_dependent"):
+    # The leaderboard keys on Molecule_Name but requires the SMILES column too, and
+    # validates the exact column set per track, so each track writes only its own.
+    submission = test[["SMILES", "Molecule_Name"]].copy()
+    if track == "regression":
+        prediction = model.predict(test["SMILES"].tolist())
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            submission[endpoint] = prediction.mean[:, column]
+        required = list(REGRESSION_ENDPOINTS)
+    else:
+        if not hasattr(model, "predict_is_time_dependent"):
+            raise typer.BadParameter(
+                f"{model.name} cannot predict TDI; the classification track needs a model that can"
+            )
         flags = model.predict_is_time_dependent(test["SMILES"].tolist())
         for endpoint in CLASSIFICATION_ENDPOINTS:
             submission[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
-        logger.info("included the TDI columns")
-    elif track == "classification":
-        logger.info("%s cannot predict TDI; writing the regression columns only", model.name)
+        required = list(CLASSIFICATION_ENDPOINTS)
 
-    missing = submission[list(REGRESSION_ENDPOINTS)].isna().any(axis=1).sum()
-    if missing:
-        raise typer.BadParameter(f"{missing} compounds have a missing prediction")
+    values = submission[required].to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise typer.BadParameter("predictions contain NaN or inf, which the leaderboard rejects")
     if len(submission) != len(test):
         raise typer.BadParameter(f"expected {len(test)} rows, built {len(submission)}")
 
