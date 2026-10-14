@@ -352,3 +352,33 @@ def test_macro_balance_equalises_scored_endpoint_weight():
     totals = scored.groupby("target")["weight"].sum()
     assert totals.max() - totals.min() < 1e-9
     assert (out.loc[out["target"] == "CYP2C19", "weight"] == 1.0).all()
+
+
+def test_pool_same_assay_never_fabricates_a_measurement():
+    """A real measurement supersedes a censored bound; the two are never averaged (F2)."""
+    from cypshift.pipeline import pool_same_assay
+
+    mixed = pd.DataFrame(
+        {
+            "SMILES": ["CCO", "OCC"],  # same compound, two spellings
+            "value": [4.0, 8.0],
+            "conf_low": [4.0, 8.0],
+            "conf_high": [4.0, 8.0],
+            "is_censored": [True, False],
+        }
+    )
+    out = pool_same_assay(mixed)
+    assert len(out) == 1  # canonical grouping merges CCO/OCC
+    assert out["value"].iloc[0] == 8.0 and not out["is_censored"].iloc[0]
+
+    censored = pd.DataFrame(
+        {
+            "SMILES": ["CCC", "CCC"],
+            "value": [4.2, 4.0],
+            "conf_low": [4.2, 4.0],
+            "conf_high": [4.2, 4.0],
+            "is_censored": [True, True],
+        }
+    )
+    pooled = pool_same_assay(censored)
+    assert pooled["value"].iloc[0] == 4.0 and pooled["is_censored"].iloc[0]

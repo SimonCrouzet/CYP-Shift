@@ -296,6 +296,39 @@ def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:
     return observations
 
 
+def pool_same_assay(data: pd.DataFrame) -> pd.DataFrame:
+    """Pool one assay's rows across sources by canonical structure, preserving censoring.
+
+    A real (uncensored) measurement supersedes a censored detection-limit bound rather than
+    being median-pooled with it: a group with any uncensored row becomes the median of the
+    uncensored values, a wholly censored group keeps its tightest bound (the lowest value).
+    A censored bound and an uncensored point are never averaged into a value neither source
+    measured. Grouping is on canonical SMILES, so ``CCO`` and ``OCC`` are one compound.
+    """
+    from cypshift.data.chembl import canonical
+
+    work = data.copy()
+    work["_canonical"] = canonical(work["SMILES"]).to_numpy()
+    work = work.dropna(subset=["_canonical"])
+    rows = []
+    for _, group in work.groupby("_canonical"):
+        uncensored = group[~group["is_censored"].astype(bool)]
+        if not uncensored.empty:
+            value, censored = float(uncensored["value"].median()), False
+        else:
+            value, censored = float(group["value"].min()), True
+        rows.append(
+            {
+                "SMILES": group["SMILES"].iloc[0],
+                "value": value,
+                "conf_low": value,
+                "conf_high": value,
+                "is_censored": censored,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> pd.DataFrame:
     """Weighted training rows from auxiliary enzymes, per the auxiliary config.
 
@@ -409,12 +442,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         for assay, gathered in by_assay.items():
             data = pd.concat(gathered, ignore_index=True)
             if len(gathered) > 1:
-                # Two sources of the same chemistry: pool shared compounds by median,
-                # which drops per-source intervals, so bounds collapse to the point. A
-                # compound stays censored only if every pooled source censored it.
-                data = data.groupby("SMILES", as_index=False).agg(
-                    value=("value", "median"), is_censored=("is_censored", "all")
-                )
+                data = pool_same_assay(data)
             value = data["value"].to_numpy(float)
             # Keep a real credible interval where the source ships one (Octant does),
             # otherwise the bounds collapse to the point -- no invented tolerance.
