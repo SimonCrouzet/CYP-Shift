@@ -131,13 +131,16 @@ def _retained_with_tdi(n: int = 40) -> pd.DataFrame:
     return pd.DataFrame(frame)
 
 
-def test_an_empty_preincubated_intersection_is_treated_as_absent():
-    """Synthetic compounds share no name with the preincubated file. An empty frame
-    left nothing to concatenate; absent is what an empty intersection means."""
+def test_the_preincubated_arm_is_absent_when_all_its_compounds_are_excluded():
+    """Excluding every TDI compound (as a holdout/test set would, in the limit) leaves no
+    arm, and an empty frame is treated as the source being absent."""
+    from cypshift.data.challenge import load
+
+    all_tdi = set(load("tdi")["Molecule_Name"].dropna())
     config = ExperimentConfig()
     config.override("model.kind", "curve")
     config.sources.tdi_arm = True
-    observations, _ = assemble_training_data(config, _retained())
+    observations, _ = assemble_training_data(config, _retained_with_tdi(), exclude_names=all_tdi)
     assert "tdi_drc" not in set(observations["assay"])
 
 
@@ -168,15 +171,23 @@ def test_the_preincubated_arm_can_be_switched_off():
     assert "tdi_drc" not in set(observations["assay"])
 
 
-def test_the_preincubated_arm_is_restricted_to_retained_compounds():
-    """A holdout compound's preincubated measurement must not enter training."""
-    retained = _retained_with_tdi()
+def test_the_preincubated_arm_excludes_named_compounds_but_keeps_the_cohort():
+    """Held-out and test compounds stay out of the TDI arm (no leakage), but the rest of the
+    cohort stays in -- including compounds with a preincubated arm but no direct curve, which
+    the old intersection with the direct set dropped."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
     config.sources.tdi_arm = True
-    observations, _ = assemble_training_data(config, retained)
-    arm = observations[observations["assay"] == "tdi_drc"]
-    assert set(arm["Molecule_Name"]) <= set(retained["Molecule_Name"])
+    # The synthetic direct set shares no name with the TDI file, yet the arm is still present:
+    # the cohort is kept rather than intersected away.
+    full, _ = assemble_training_data(config, _retained())
+    arm = full[full["assay"] == "tdi_drc"]
+    assert not arm.empty
+    victim = arm["Molecule_Name"].iloc[0]
+    pruned, _ = assemble_training_data(config, _retained(), exclude_names={victim})
+    pruned_arm = pruned[pruned["assay"] == "tdi_drc"]
+    assert victim not in set(pruned_arm["Molecule_Name"])
+    assert len(pruned_arm) < len(arm)
 
 
 def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):

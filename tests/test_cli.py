@@ -102,7 +102,8 @@ class TestSubmit:
             "cypshift.cli.build_model", lambda config, surrogate=None, targets=None: FakeModel()
         )
         monkeypatch.setattr(
-            "cypshift.cli.assemble_training_data", lambda config, frame: (pd.DataFrame(), None)
+            "cypshift.cli.assemble_training_data",
+            lambda config, frame, exclude_names=None: (pd.DataFrame(), None),
         )
 
         output = tmp_path / "submission.csv"

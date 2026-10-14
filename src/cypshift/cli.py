@@ -246,7 +246,10 @@ def submit(
     test = load("test", directory)
     logger.info("training on all %d compounds, predicting %d", len(train), len(test))
 
-    observations, surrogate = assemble_training_data(config, train)
+    # Full-data fit: only the blinded-test compounds are kept out of the TDI arm.
+    observations, surrogate = assemble_training_data(
+        config, train, exclude_names=set(test["Molecule_Name"])
+    )
     scored = list(ISOFORMS)
     present = observations.get("target", [])
     extra = [t for t in dict.fromkeys(present) if t not in scored]

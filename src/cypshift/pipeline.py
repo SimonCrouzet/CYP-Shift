@@ -195,9 +195,16 @@ def supported_screen_strategy(kind: str) -> tuple[str, ...]:
 
 
 def assemble_training_data(
-    config: ExperimentConfig, retained: pd.DataFrame
+    config: ExperimentConfig,
+    retained: pd.DataFrame,
+    exclude_names: set[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray] | None]:
     """Build the observation table the configured multi-fidelity strategy calls for.
+
+    ``exclude_names`` are compounds kept out of the preincubated (TDI) arm -- the holdout
+    and blinded-test compounds, so their TDI measurement cannot leak. Excluding by name
+    rather than intersecting with the direct-labelled set keeps the TDI-only cohort (around
+    1,238 CYP3A4 negatives have a preincubated arm but no direct curve) in training.
 
     Returns the observations and, where the strategy produces one, a per-compound
     surrogate feature derived from the screen rather than extra training rows.
@@ -225,12 +232,13 @@ def assemble_training_data(
     # so it belongs in the table whatever the model does with it.
     tdi = load("tdi", Path(config.data.directory)) if config.sources.tdi_arm else None
     if tdi is not None:
-        tdi = tdi[tdi["Molecule_Name"].isin(retained["Molecule_Name"])]
+        # Keep every TDI-cohort compound except the held-out and test ones; intersecting
+        # with the direct-labelled set instead would drop the ~1,238 compounds that carry a
+        # preincubated arm but were never promoted to a direct curve.
+        if exclude_names:
+            tdi = tdi[~tdi["Molecule_Name"].isin(exclude_names)]
         if tdi.empty:
-            # No overlap with the retained compounds. Passing an empty frame through
-            # leaves nothing to concatenate; None says "this source is absent", which
-            # is what an empty intersection means.
-            logger.info("no retained compound has a preincubated measurement")
+            logger.info("no preincubated measurement survives the exclusions")
             tdi = None
     surrogate = None
     if not config.sources.screen:
@@ -496,7 +504,10 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
         seed=config.data.seed,
     )
     retained, evaluation = train.loc[~mask], train.loc[mask]
-    observations, surrogate = assemble_training_data(config, retained)
+    # Keep the held-out and blinded-test compounds out of the TDI arm so their preincubated
+    # measurement cannot leak into training.
+    exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
+    observations, surrogate = assemble_training_data(config, retained, exclude_names=exclude)
     scored = list(ISOFORMS)
     extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]
     targets = tuple(scored + sorted(extra))
@@ -518,11 +529,15 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
     scores = score_submission(submission, evaluation)
     _log_r2_decomposition(submission, evaluation)
 
-    tdi = score_tdi(model, evaluation, directory)
-    if tdi is not None:
-        logger.info(
-            "TDI track (ranked by MCC):\n%s", tdi[["MCC_mean", "Accuracy_mean"]].to_string()
-        )
+    # Only score TDI when the preincubated arm was actually trained; a model that merely
+    # owns a predict_is_time_dependent method would otherwise report a meaningless MCC from
+    # an untrained second arm.
+    if config.sources.tdi_arm:
+        tdi = score_tdi(model, evaluation, directory)
+        if tdi is not None:
+            logger.info(
+                "TDI track (ranked by MCC):\n%s", tdi[["MCC_mean", "Accuracy_mean"]].to_string()
+            )
     return scores, prediction
 
 
