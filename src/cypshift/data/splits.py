@@ -109,16 +109,23 @@ def _select_by_bins(
             continue
         mask[rng.choice(in_bin, size=min(wanted, len(in_bin)), replace=False)] = True
 
-    shortfall = n_holdout - int(mask.sum())
-    if shortfall > 0:
+    selected = int(mask.sum())
+    if selected < n_holdout:
         remaining = np.flatnonzero(~mask)
-        closest = remaining[np.argsort(np.abs(scores[remaining] - target_centre))][:shortfall]
-        mask[closest] = True
+        order = np.argsort(np.abs(scores[remaining] - target_centre))
+        mask[remaining[order][: n_holdout - selected]] = True
         logger.warning(
             "similarity bins were %d compounds short of %d; topped up from the pool centre",
-            shortfall,
+            n_holdout - selected,
             n_holdout,
         )
+    elif selected > n_holdout:
+        # Independent per-bin rounding can sum past the requested count; trim the excess,
+        # dropping the compounds farthest from the target centre (the mirror of the fill).
+        chosen = np.flatnonzero(mask)
+        drop = chosen[np.argsort(-np.abs(scores[chosen] - target_centre))][: selected - n_holdout]
+        mask[drop] = False
+        logger.info("similarity bins overshot %d by %d; trimmed", n_holdout, selected - n_holdout)
     return mask
 
 

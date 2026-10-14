@@ -90,3 +90,18 @@ def test_profile_gap_is_signed():
     low, high = np.linspace(0.1, 0.4, 50), np.linspace(0.5, 0.8, 50)
     assert similarity_profile_gap(low, high)["q50_gap"] < 0
     assert similarity_profile_gap(high, low)["q50_gap"] > 0
+
+
+def test_bin_selection_hits_the_exact_count_even_when_rounding_overshoots():
+    """Independent per-bin rounding can sum past (or short of) the target; the result must
+    still hold out exactly n_holdout compounds."""
+    from cypshift.data.splits import _select_by_bins
+
+    rng = np.random.default_rng(0)
+    scores = rng.uniform(0, 1, 200)
+    edges = np.array([-np.inf, 0.2, 0.4, 0.6, 0.8, np.inf])
+    # Shares that each round up (0.17 * 97 ~= 16.5) so the naive sum overshoots.
+    target_share = np.full(5, 0.2)
+    for n_holdout in (97, 50, 3):
+        mask = _select_by_bins(scores, edges, target_share, n_holdout, 0.5, rng)
+        assert int(mask.sum()) == n_holdout
