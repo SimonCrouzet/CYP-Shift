@@ -11,7 +11,12 @@ import numpy as np
 import pandas as pd
 
 from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import OBSERVATION_COLUMNS, SourceWeights, build_observations
+from cypshift.data.assembly import (
+    OBSERVATION_COLUMNS,
+    RESPONSE_ASSAY,
+    SourceWeights,
+    build_observations,
+)
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
@@ -104,6 +109,7 @@ def build_model(
             ensemble=config.model.graph.ensemble,
             pretraining=config.model.graph.pretraining,
             pretraining_cache=config.model.graph.pretraining_cache,
+            auxiliary_response=config.model.graph.auxiliary_response,
             conditioning=config.conditioning.strategy,
             targets=targets,
             seed=config.data.seed,
@@ -301,6 +307,11 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         "tox21": "luminescent_ac50",
         "novartis": "reversible_pic50",
     }
+    # The graph's auxiliary response head wants Veith as a 0-1 max-response on its own
+    # assay, not a pooled pIC50; only that model requests it, so other models are untouched.
+    response_mode = config.model.kind == "graph" and config.model.graph.auxiliary_response
+    if response_mode:
+        assay_by_source["veith"] = RESPONSE_ASSAY
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
@@ -344,8 +355,13 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         # Group the enabled datasets by their assay context, so sources of one detection
         # chemistry (veith+tox21, chembl+sair) pool together while different chemistries
         # stay distinct rows the calibration can offset apart.
-        # Only the qHTS loaders take the inactive-inclusion flag; the rest ignore it.
-        extra_kwargs = {"veith": {"include_inactives": config.auxiliary.include_qhts_inactives}}
+        # Veith takes the representation/inactive flags; the other loaders ignore them.
+        veith_kwargs = (
+            {"representation": "max_response"}
+            if response_mode
+            else {"include_inactives": config.auxiliary.include_qhts_inactives}
+        )
+        extra_kwargs = {"veith": veith_kwargs}
         by_assay: dict[str, list[pd.DataFrame]] = {}
         for name in datasets:
             try:

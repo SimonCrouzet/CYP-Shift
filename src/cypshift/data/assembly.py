@@ -46,6 +46,11 @@ ASSAYS = (
 #: per-assay calibration is pinned to identity so the latent potency stays on this scale.
 REFERENCE_ASSAY = "direct_inhibition_drc"
 
+#: A qHTS max-response row (a 0-1 response magnitude, not a pIC50). Kept out of ``ASSAYS``
+#: because it is routed to the graph model's dedicated response head rather than pooled
+#: onto the potency scale; only that model sees it.
+RESPONSE_ASSAY = "luminescent_max_response"
+
 #: Proximity tiers, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
 #: relative or noisy outside dataset (``distant_aux``), a scored enzyme's own outside rows

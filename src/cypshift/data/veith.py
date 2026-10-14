@@ -68,7 +68,35 @@ def detection_limit_pic50(raw: pd.DataFrame) -> float | None:
     return None if not concentrations else 6.0 - float(np.log10(max(concentrations)))
 
 
-def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
+def _max_response(named: pd.DataFrame) -> pd.DataFrame:
+    """All screened compounds as a 0-1 max-response magnitude (not a pIC50).
+
+    The maximal curve response keeps the inactives as real low-response measurements, and
+    is the signal the graph model's auxiliary response head is trained on. A different
+    quantity from potency, so it never shares the pIC50 scale.
+    """
+    if "Max_Response" not in named.columns:
+        raise KeyError("cannot use max_response: deposit has no 'Max_Response' column")
+    screened = named[named["PUBCHEM_ACTIVITY_OUTCOME"].isin(["Active", "Inactive"])].copy()
+    screened["value"] = (pd.to_numeric(screened["Max_Response"], errors="coerce") / 100.0).clip(
+        0, 1
+    )
+    screened = screened.dropna(subset=["value"])
+    grouped = (
+        screened.groupby("PUBCHEM_EXT_DATASOURCE_SMILES")["value"]
+        .median()
+        .reset_index()
+        .rename(columns={"PUBCHEM_EXT_DATASOURCE_SMILES": "SMILES"})
+    )
+    grouped["conf_low"] = grouped["value"]
+    grouped["conf_high"] = grouped["value"]
+    grouped["is_censored"] = False
+    return grouped
+
+
+def _clean(
+    raw: pd.DataFrame, include_inactives: bool = False, representation: str = "pic50"
+) -> pd.DataFrame:
     """Veith records into ``SMILES, value, conf_low, conf_high, is_censored`` on the pIC50 scale.
 
     Two deposit schemas appear across the panel: the newer ones carry ``Potency`` (AC50
@@ -84,6 +112,8 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
     (the default-off path) reproduces the earlier behaviour.
     """
     named = raw[raw["PUBCHEM_EXT_DATASOURCE_SMILES"].notna()]
+    if representation == "max_response":
+        return _max_response(named)
     frame = named[named["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
 
     if "Potency" in frame.columns:
@@ -136,23 +166,32 @@ def load_auxiliary(
     challenge_smiles: pd.Series,
     cache: Path = DEFAULT_CACHE,
     include_inactives: bool = False,
+    representation: str = "pic50",
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Veith rows for one enzyme.
 
     Returns columns ``SMILES``, ``value``, ``conf_low``, ``conf_high``, ``is_censored``,
-    ``target``. Empty for any enzyme Veith does not cover, so the source contributes only
-    where it has data. Downloads and caches on first use, since the PubChem paging is slow
-    and the answer does not change; the inactive-inclusive variant caches separately.
+    ``target``. ``representation`` chooses the quantity: ``pic50`` (fitted potency, with
+    ``include_inactives`` adding censored rows) or ``max_response`` (a 0-1 response for the
+    graph's auxiliary head). Empty for any enzyme Veith does not cover. Downloads and caches
+    on first use; each representation caches separately.
     """
     columns = ["SMILES", "value", "conf_low", "conf_high", "is_censored", "target"]
     if enzyme not in AID:
         return pd.DataFrame(columns=columns)
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"veith_{enzyme}{'_full' if include_inactives else ''}.csv"
+    suffix = (
+        "_response" if representation == "max_response" else ("_full" if include_inactives else "")
+    )
+    path = cache / f"veith_{enzyme}{suffix}.csv"
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(download_assay(AID[enzyme]), include_inactives=include_inactives)
+        frame = _clean(
+            download_assay(AID[enzyme]),
+            include_inactives=include_inactives,
+            representation=representation,
+        )
         frame.to_csv(path, index=False)
         logger.info(
             "Veith: cached %d %s compounds (inactives=%s)", len(frame), enzyme, include_inactives

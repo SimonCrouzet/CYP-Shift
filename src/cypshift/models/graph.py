@@ -44,15 +44,18 @@ from chemprop.nn.metrics import ChempropMetric
 from lightning import pytorch as pl
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, encode_conditions, n_condition_columns
+from cypshift.data.assembly import ASSAYS, RESPONSE_ASSAY, encode_conditions, n_condition_columns
 from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
 
 logger = logging.getLogger(__name__)
 
-#: Label columns: the value, then the two carrier columns holding its bounds.
-VALUE, LOWER, UPPER = 0, 1, 2
+#: Label columns: the value, then the two carrier columns holding its bounds, and an
+#: optional fourth column for the qHTS max-response auxiliary head. Per-row routing is by
+#: NaN: a pIC50 row leaves RESPONSE NaN, a response row leaves VALUE/LOWER/UPPER NaN, and
+#: chemprop's finiteness mask zeroes the irrelevant task, so the two scales never mix.
+VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
 
 #: CheMeleon: a D-MPNN message-passing encoder pretrained on 100M molecules, published on
@@ -87,7 +90,12 @@ def chemeleon_message_passing(cache_path: Path) -> cpnn.BondMessagePassing:
 
 
 class SoftThresholdLoss(ChempropMetric):
-    """Soft-threshold absolute error, reading its bounds from carrier label columns."""
+    """Soft-threshold absolute error on the value task, reading its bounds from carriers.
+
+    With a fourth (RESPONSE) task present, it also returns a squared error there -- the
+    qHTS max-response auxiliary head. Each row carries only one of the two (the other is
+    NaN upstream, so chemprop's finiteness mask zeroes it), so the losses never mix.
+    """
 
     def _calc_unreduced_loss(
         self,
@@ -102,6 +110,8 @@ class SoftThresholdLoss(ChempropMetric):
         below = torch.clamp(targets[:, LOWER] - prediction, min=0.0)
         loss = torch.zeros_like(targets)
         loss[:, VALUE] = above + below
+        if targets.shape[1] > RESPONSE:
+            loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
         return loss
 
 
@@ -126,11 +136,16 @@ class GraphNetwork:
         ensemble: str = "reseed",
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
+        auxiliary_response: bool = False,
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
-        self.assays = assays
+        # The response head is trained on its own assay, so it joins the conditioning
+        # vocabulary when it is on (and the label matrix grows a fourth column for it).
+        self.auxiliary_response = auxiliary_response
+        self.assays = (*assays, RESPONSE_ASSAY) if auxiliary_response else assays
+        self._n_label = N_LABEL_COLUMNS + 1 if auxiliary_response else N_LABEL_COLUMNS
         self.conditioning = conditioning
         self.hidden = hidden
         self.depth = depth
@@ -146,7 +161,7 @@ class GraphNetwork:
         self.pretraining_cache = pretraining_cache
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
-        self._n_conditioning = n_condition_columns(conditioning, targets, assays)
+        self._n_conditioning = n_condition_columns(conditioning, targets, self.assays)
         # "mammal" pretraining appends the cached MAMMAL embedding to the readout's
         # conditioning slot (x_d) as fixed input features; widen the readout to fit it.
         self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
@@ -154,6 +169,10 @@ class GraphNetwork:
             self._n_conditioning += embedding_width("mammal")
         self._centre = 0.0
         self._spread = 1.0
+        #: Separate standardisation for the response task, so its 0-1 scale is not forced
+        #: onto the pIC50 centre/spread.
+        self._resp_centre = 0.0
+        self._resp_spread = 1.0
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
         conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
@@ -162,15 +181,24 @@ class GraphNetwork:
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
-                value = float(record["value"])
-                lower = float(record["conf_low"]) if np.isfinite(record["conf_low"]) else value
-                upper = float(record["conf_high"]) if np.isfinite(record["conf_high"]) else value
-                if bool(record.get("is_censored", False)):
-                    lower = -1e4
-                y = (np.array([value, lower, upper], dtype=float) - self._centre) / self._spread
+                y = np.full(self._n_label, np.nan)
+                if self.auxiliary_response and record["assay"] == RESPONSE_ASSAY:
+                    # A response row: fill only the response task, leave pIC50 tasks NaN.
+                    y[RESPONSE] = (float(record["value"]) - self._resp_centre) / self._resp_spread
+                else:
+                    value = float(record["value"])
+                    lower = float(record["conf_low"]) if np.isfinite(record["conf_low"]) else value
+                    upper = (
+                        float(record["conf_high"]) if np.isfinite(record["conf_high"]) else value
+                    )
+                    if bool(record.get("is_censored", False)):
+                        lower = -1e4
+                    y[VALUE : UPPER + 1] = (
+                        np.array([value, lower, upper], dtype=float) - self._centre
+                    ) / self._spread
                 weight = float(record["weight"])
             else:
-                y = np.zeros(N_LABEL_COLUMNS)
+                y = np.zeros(self._n_label)
                 weight = 1.0
             points.append(
                 cpdata.MoleculeDatapoint.from_smi(
@@ -186,13 +214,15 @@ class GraphNetwork:
             message_passing = cpnn.BondMessagePassing(
                 d_h=self.hidden, depth=self.depth, dropout=self.dropout
             )
+        # Value task on, carriers off; the response task (when present) on.
+        task_weights = [1.0, 0.0, 0.0] + ([1.0] if self.auxiliary_response else [])
         criterion = (
-            SoftThresholdLoss(task_weights=torch.tensor([[1.0, 0.0, 0.0]]))
+            SoftThresholdLoss(task_weights=torch.tensor([task_weights]))
             if self.loss == "soft_threshold"
             else None
         )
         predictor = cpnn.RegressionFFN(
-            n_tasks=N_LABEL_COLUMNS,
+            n_tasks=self._n_label,
             input_dim=message_passing.output_dim + self._n_conditioning,
             criterion=criterion,
             dropout=self.dropout,
@@ -204,14 +234,24 @@ class GraphNetwork:
         usable = observations[np.isfinite(observations["value"])].reset_index(drop=True)
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
-        # One centre and spread for all three label columns, so a value and its bounds
-        # stay on the same scale.
-        value = usable["value"].to_numpy(float)
-        self._centre = float(value.mean())
-        self._spread = float(value.std()) or 1.0
+        # The pIC50 rows set one centre/spread for the value and its two bound columns;
+        # the response rows (a different 0-1 scale) are standardised separately.
+        is_response = (
+            usable["assay"] == RESPONSE_ASSAY
+            if self.auxiliary_response
+            else np.zeros(len(usable), dtype=bool)
+        )
+        pic50 = usable.loc[~is_response, "value"].to_numpy(float)
+        self._centre = float(pic50.mean())
+        self._spread = float(pic50.std()) or 1.0
+        if is_response.any():
+            response = usable.loc[is_response, "value"].to_numpy(float)
+            self._resp_centre = float(response.mean())
+            self._resp_spread = float(response.std()) or 1.0
         logger.info(
-            "building %d datapoints, standardised by centre %.2f spread %.2f",
+            "building %d datapoints (%d response), pIC50 centre %.2f spread %.2f",
             len(usable),
+            int(is_response.sum()),
             self._centre,
             self._spread,
         )

@@ -288,6 +288,10 @@ class GraphConfig:
     pretraining: str = "none"
     #: Where the CheMeleon encoder is cached (downloaded on first use).
     pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt"
+    #: Train an auxiliary head on the Veith qHTS max-response (a 0-1 magnitude keeping the
+    #: inactives), sharing the encoder, to enrich the representation. Needs sources.veith.
+    #: Swept, off by default.
+    auxiliary_response: bool = False
 
 
 @dataclass
