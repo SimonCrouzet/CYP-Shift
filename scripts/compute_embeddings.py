@@ -18,6 +18,7 @@ error at feature time, not a zero-fill.
 """
 
 import argparse
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -121,6 +122,18 @@ def main() -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{args.source}.parquet"
     frame.to_parquet(path)
+    # A provenance manifest: which model and prompt produced these vectors, and the RDKit
+    # canonicalisation the reader keys on, so a cache from a different model is identifiable.
+    manifest = {
+        "source": args.source,
+        "model": MAMMAL_MODEL,
+        "prompt": SMILES_PROMPT,
+        "max_len": args.maxlen,
+        "width": int(vectors.shape[1]),
+        "n_compounds": len(frame),
+        "canonicalisation": "rdkit MolToSmiles",
+    }
+    path.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     logger.info("wrote %d embeddings of width %d to %s", len(frame), vectors.shape[1], path)
 
 
