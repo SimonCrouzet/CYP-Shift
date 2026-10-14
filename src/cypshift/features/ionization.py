@@ -22,6 +22,7 @@ parquet and computed once. The block is a swept ``featurise`` hook, off unless r
 
 import contextlib
 import logging
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -101,7 +102,11 @@ def _ensure_cache(canonical_smiles: list[str], cache_path: Path) -> pd.DataFrame
     if missing:
         rows = [(s, *_compute_one(s)) for s in missing]
         table = pd.concat([table, pd.DataFrame(rows, columns=columns)], ignore_index=True)
-        table.to_parquet(cache_path, index=False)
+        # Publish atomically: a crash or a concurrent sweep agent mid-write must never leave
+        # a truncated parquet that later reads as an apparently valid (but corrupt) cache.
+        temporary = cache_path.with_suffix(f".{os.getpid()}.tmp")
+        table.to_parquet(temporary, index=False)
+        os.replace(temporary, cache_path)
         logger.info("ionization: computed %d new compounds (%d cached)", len(missing), len(table))
     return table.set_index("SMILES")
 
