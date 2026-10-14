@@ -142,3 +142,31 @@ def test_only_the_neural_model_gets_the_full_conditioning_vocabulary():
 
 def test_all_multifidelity_strategies_are_named():
     assert set(SCREEN_STRATEGIES) == {"extra_rows", "predicted_label", "embedding"}
+
+
+class TestCapabilityContract:
+    """Settings a run would accept then silently ignore must be rejected up front (F8)."""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"auxiliary.scored_weight": -1.0},
+            {"sources.structure": True, "model.kind": "neural"},
+            {"model.kind": "graph", "features.molecular_embedding": "mammal"},
+            {"model.kind": "graph", "training.preset": "coarse_to_fine"},
+            {"model.kind": "curve", "model.objective": "absolute"},
+        ],
+    )
+    def test_silently_ignored_combinations_are_rejected(self, overrides):
+        config = ExperimentConfig.load()
+        for key, value in overrides.items():
+            config.override(key, value)
+        with pytest.raises(ValueError):
+            config.validate()
+
+    def test_supported_combinations_still_validate(self):
+        for overrides in ({"model.kind": "graph"}, {"sources.structure": True}):
+            config = ExperimentConfig.load()
+            for key, value in overrides.items():
+                config.override(key, value)
+            config.validate()  # no raise

@@ -458,7 +458,36 @@ class ExperimentConfig:
                 raise ValueError(
                     f"training.stages[{index}].assays has unknown {sorted(unknown_assays)}"
                 )
+        self._reject_silently_ignored()
         return self
+
+    def _reject_silently_ignored(self) -> None:
+        """Reject settings a run would accept then ignore, so a sweep cannot credit a
+        configuration with testing something it never applied."""
+        for name, weight in (
+            ("auxiliary.scored_weight", self.auxiliary.scored_weight),
+            ("auxiliary.target_weight", self.auxiliary.target_weight),
+            ("multifidelity.screen_weight", self.multifidelity.screen_weight),
+        ):
+            if weight < 0:
+                raise ValueError(f"{name} must be >= 0, got {weight!r}")
+        if self.sources.structure and self.model.kind != "boosted":
+            raise ValueError(
+                f"sources.structure is wired only into the boosted model, not {self.model.kind!r}"
+            )
+        if self.model.kind == "graph":
+            if self.features.molecular_embedding != "none":
+                raise ValueError(
+                    "the graph model reads embeddings through model.graph.pretraining='mammal', "
+                    "not features.molecular_embedding"
+                )
+            if len(self.training.effective_stages()) > 1:
+                raise ValueError("the graph model does not run a multi-stage training curriculum")
+        if self.model.kind == "curve" and self.model.objective != "soft_threshold":
+            raise ValueError(
+                "the curve model uses its own dose-response loss; model.objective="
+                f"{self.model.objective!r} would be ignored"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
