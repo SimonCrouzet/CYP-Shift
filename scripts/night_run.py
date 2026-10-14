@@ -57,7 +57,8 @@ ALL_AUX = {
     "sources.veith": True,
 }
 
-#: The sweep's leaders plus the untried combination of its two marginal winners.
+#: The source comparison, re-run under the corrected weight/pooling semantics, plus the
+#: macro-balanced weighting that only became functional after the boosted weight fix.
 PHASE_A: dict[str, dict] = {
     "baseline": {},
     "octant": OCT,
@@ -65,6 +66,8 @@ PHASE_A: dict[str, dict] = {
     "octant_tox21": {**OCT, **TOX},
     "octant_tox21_curriculum": {**OCT, **TOX, "training.preset": "coarse_to_fine"},
     "all_curriculum": {**ALL_AUX, "training.preset": "coarse_to_fine"},
+    "baseline_macrobalance": {"training.macro_balance": True},
+    "octant_tox21_macrobalance": {**OCT, **TOX, "training.macro_balance": True},
 }
 PHASE_A_SEEDS = [0, 1, 2, 3, 4]
 
