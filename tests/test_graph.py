@@ -28,3 +28,12 @@ def test_mammal_pretraining_needs_its_cache():
     """Without the MAMMAL embedding cache, construction fails loudly, never silently."""
     with pytest.raises(FileNotFoundError):
         GraphNetwork(pretraining="mammal")
+
+
+def test_descriptor_blocks_widen_the_conditioning():
+    """Computed descriptors the graph cannot learn are appended to its conditioning slot."""
+    base = GraphNetwork(targets=("CYP2D6",))._n_conditioning
+    wide = GraphNetwork(
+        targets=("CYP2D6",), physchem=True, mechanism=True, ionization_geometry=True
+    )._n_conditioning
+    assert wide > base

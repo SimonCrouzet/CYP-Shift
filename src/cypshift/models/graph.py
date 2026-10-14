@@ -46,6 +46,8 @@ from lightning import pytorch as pl
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, RESPONSE_ASSAY, encode_conditions, n_condition_columns
 from cypshift.features.embeddings import embedding_block, embedding_width
+from cypshift.features.ionization import block_for as ionization_block_for
+from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
 
@@ -137,6 +139,10 @@ class GraphNetwork:
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
         auxiliary_response: bool = False,
+        physchem: bool = False,
+        mechanism: bool = False,
+        ionization_geometry: bool = False,
+        ionization_cache: str = "data/external/ionization/features.parquet",
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -167,6 +173,24 @@ class GraphNetwork:
         self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
         if self._embedding is not None:
             self._n_conditioning += embedding_width("mammal")
+        # Computed descriptor blocks (physchem / mechanistic / ionization geometry) the
+        # learned graph cannot derive, appended to the readout's conditioning slot. The
+        # graph's own fingerprint is left off -- the message passing replaces it.
+        self._descriptor = None
+        if physchem or mechanism or ionization_geometry:
+            ionization = ionization_block_for(ionization_geometry, Path(ionization_cache))
+
+            def descriptor_block(smiles: list[str]) -> np.ndarray:
+                return featurise(
+                    smiles,
+                    fingerprint=False,
+                    physchem=physchem,
+                    mechanism=mechanism,
+                    ionization=ionization,
+                )
+
+            self._descriptor = descriptor_block
+            self._n_conditioning += descriptor_block(["CCO"]).shape[1]
         self._centre = 0.0
         self._spread = 1.0
         #: Separate standardisation for the response task, so its 0-1 scale is not forced
@@ -176,8 +200,11 @@ class GraphNetwork:
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
         conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
+        smiles = frame["SMILES"].tolist()
         if self._embedding is not None:
-            conditioning = np.hstack([conditioning, self._embedding(frame["SMILES"].tolist())])
+            conditioning = np.hstack([conditioning, self._embedding(smiles)])
+        if self._descriptor is not None:
+            conditioning = np.hstack([conditioning, self._descriptor(smiles)])
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
