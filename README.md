@@ -19,7 +19,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 | 🎯 **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
 | 📈 **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
 | 🔀 **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
-| 🧊 **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
+| 🧊 **Structure track** | pose prediction, 20 CYP3A4 complexes, opens mid-challenge |
 | 🔬 **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
 | 📏 **Ranked on** | macro-averaged soft-threshold relative absolute error |
 | 🔁 **Submission limit** | 1 per 12 h, latest counts |
@@ -176,7 +176,7 @@ Turning several on composes. The table below is the whole menu.
 
 | source | data points | what it is |
 |---|--:|---|
-| challenge dose-response | **6,325** labels · 4,905 compounds | the 12-point curves we are scored on — direct pIC50 per compound × enzyme |
+| challenge dose-response | **6,525** labels · 4,905 compounds | the 12-point curves we are scored on — direct pIC50 per compound × enzyme |
 
 **🎯 Challenge evidence** — more of the *same* experiment, in other shapes:
 
@@ -322,7 +322,7 @@ narrow until it earns width.
 
 | source | scale | role |
 |---|---|---|
-| Dose-response pIC50 | 4,905 compounds · 6,325 labels | primary supervised target |
+| Dose-response pIC50 | 4,905 compounds · 6,525 labels | primary supervised target |
 | **Single-concentration screen** | **4,376 × 4 = 17,504** | **censored bounds, bias correction** |
 | Time-dependent inhibition arm | 6,145 compounds | classification track |
 | Emax | 6,145 compounds | — |
