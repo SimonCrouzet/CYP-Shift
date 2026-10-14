@@ -20,7 +20,7 @@ from cypshift.data.assembly import (
 )
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
-from cypshift.data.splits import similarity_matched_holdout
+from cypshift.data.splits import similarity_matched_holdout, stratified_scaffold_folds
 from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
 from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
@@ -601,6 +601,71 @@ def run(
     if bundle_path is not None:
         save_run_bundle(bundle_path, config, evaluation, submission, scores)
     return scores, prediction
+
+
+def run_cv(
+    config: ExperimentConfig,
+    n_folds: int = 5,
+    bundle_path: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fit and score the configured model by stratified, scaffold-grouped cross-validation.
+
+    Where :func:`run` scores a single similarity-matched holdout, this predicts every
+    training compound exactly once, out of fold. The training set is partitioned into
+    ``n_folds`` folds that keep each Bemis-Murcko scaffold whole -- so an analog series never
+    straddles the train/validation boundary -- and balance endpoint coverage across folds;
+    each fold is then predicted by a model trained on the others. The pooled out-of-fold
+    predictions are the clean table blending and calibration need: one prediction per
+    compound, none of them in-sample.
+
+    With ``bundle_path`` set, the pooled predictions, config and scores are written there.
+
+    Returns:
+        The score table over the pooled out-of-fold predictions, and those predictions.
+    """
+    config.validate()
+    directory = Path(config.data.directory)
+    train = load("inhibition", directory)
+    test = load("test", directory)
+
+    strata = train[list(REGRESSION_ENDPOINTS)].notna().sum(axis=1).to_numpy()
+    folds = stratified_scaffold_folds(
+        train["SMILES"].tolist(), strata, n_folds=n_folds, seed=config.data.seed
+    )
+
+    out_of_fold = []
+    for fold in range(n_folds):
+        held_out = folds == fold
+        retained, evaluation = train.loc[~held_out], train.loc[held_out]
+        # Keep this fold's compounds and the blinded test out of the TDI arm, so a
+        # preincubated measurement of a validation compound cannot leak into training.
+        exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
+        observations, surrogate = assemble_training_data(config, retained, exclude_names=exclude)
+        scored = list(ISOFORMS)
+        extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]
+        targets = tuple(scored + sorted(extra))
+        logger.info(
+            "fold %d/%d | %d train, %d held out",
+            fold + 1,
+            n_folds,
+            len(retained),
+            int(held_out.sum()),
+        )
+
+        model = build_model(config, surrogate, targets=targets)
+        model.fit(observations)
+        prediction = model.predict(evaluation["SMILES"].tolist())
+        fold_predictions = evaluation[["Molecule_Name"]].copy()
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            fold_predictions[endpoint] = prediction.mean[:, column]
+        out_of_fold.append(fold_predictions)
+
+    submission = pd.concat(out_of_fold, ignore_index=True)
+    scores = score_submission(submission, train)
+    _log_r2_decomposition(submission, train)
+    if bundle_path is not None:
+        save_run_bundle(bundle_path, config, train, submission, scores)
+    return scores, submission
 
 
 def _log_r2_decomposition(submission: pd.DataFrame, evaluation: pd.DataFrame) -> None:

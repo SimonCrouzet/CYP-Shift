@@ -8,8 +8,10 @@ from cypshift.data.splits import (
     max_similarity_against_retained,
     max_similarity_to,
     morgan_fingerprints,
+    murcko_scaffold,
     similarity_matched_holdout,
     similarity_profile_gap,
+    stratified_scaffold_folds,
 )
 
 # A short congeneric series plus unrelated scaffolds, so similarities are not degenerate.
@@ -105,3 +107,32 @@ def test_bin_selection_hits_the_exact_count_even_when_rounding_overshoots():
     for n_holdout in (97, 50, 3):
         mask = _select_by_bins(scores, edges, target_share, n_holdout, 0.5, rng)
         assert int(mask.sum()) == n_holdout
+
+
+def test_scaffold_folds_are_a_partition():
+    """Every compound lands in exactly one fold, and all folds are used."""
+    folds = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    assert len(folds) == len(SMILES)
+    assert set(folds.tolist()) == {0, 1, 2}
+
+
+def test_a_scaffold_never_spans_two_folds():
+    """Compounds sharing a Bemis-Murcko scaffold must stay together, so an analog series
+    cannot straddle the train/validation boundary."""
+    folds = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    scaffolds = np.array([murcko_scaffold(s) for s in SMILES])
+    for scaffold in np.unique(scaffolds):
+        assert len(set(folds[scaffolds == scaffold])) == 1
+
+
+def test_scaffold_folds_are_reproducible():
+    one = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    two = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    assert np.array_equal(one, two)
+
+
+def test_acyclic_compound_is_its_own_scaffold_group():
+    """An acyclic compound has an empty Murcko scaffold; it falls back to its own SMILES so
+    acyclic compounds do not all collapse into one group."""
+    assert murcko_scaffold("CCCCCCCC") == "CCCCCCCC"
+    assert murcko_scaffold("CCOc1ccccc1") == "c1ccccc1"

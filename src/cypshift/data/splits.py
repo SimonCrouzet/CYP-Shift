@@ -33,12 +33,64 @@ import numpy as np
 from numpy.typing import NDArray
 from rdkit import Chem, DataStructs, RDLogger
 from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from sklearn.model_selection import StratifiedGroupKFold
 
 logger = logging.getLogger(__name__)
 RDLogger.DisableLog("rdApp.*")
 
 DEFAULT_RADIUS = 2
 DEFAULT_N_BITS = 2048
+
+
+def murcko_scaffold(smiles: str) -> str:
+    """The Bemis-Murcko scaffold SMILES, or the compound itself when it has no ring system.
+
+    Grouping a cross-validation by this keeps an analog series within a single fold, so a
+    model is never scored on a near-duplicate of something it trained on. An acyclic
+    compound has an empty scaffold; it falls back to its own SMILES so it forms its own
+    group rather than all acyclic compounds collapsing into one.
+    """
+    molecule = Chem.MolFromSmiles(smiles)
+    if molecule is None:
+        raise ValueError(f"could not parse SMILES: {smiles!r}")
+    scaffold = Chem.MolToSmiles(MurckoScaffold.GetScaffoldForMol(molecule))
+    return scaffold or Chem.MolToSmiles(molecule)
+
+
+def stratified_scaffold_folds(
+    smiles: Sequence[str],
+    strata: Sequence[int],
+    n_folds: int = 5,
+    seed: int = 0,
+) -> NDArray[np.int_]:
+    """Assign each compound to one of ``n_folds`` folds for cross-validation.
+
+    The split is a partition -- every compound lands in exactly one fold, so running all
+    folds predicts each compound once, out of fold. Two disciplines shape it:
+
+    * **scaffold-grouped**: compounds sharing a Bemis-Murcko scaffold go to the same fold,
+      so an analog series never straddles the train/validation boundary and the estimate is
+      not flattered by near-duplicate leakage;
+    * **stratified**: folds are balanced on ``strata`` (e.g. how many endpoints a compound
+      has measured), so no fold is starved of the sparser endpoints.
+
+    Args:
+        smiles: Training compounds, one per row.
+        strata: Per-compound integer stratum to balance across folds.
+        n_folds: Number of folds.
+        seed: Fixes the assignment.
+
+    Returns:
+        Integer fold index in ``[0, n_folds)`` for each compound, in input order.
+    """
+    scaffolds = [murcko_scaffold(s) for s in smiles]
+    splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    folds = np.empty(len(scaffolds), dtype=int)
+    placeholder = np.zeros(len(scaffolds))
+    for fold, (_, held_out) in enumerate(splitter.split(placeholder, strata, scaffolds)):
+        folds[held_out] = fold
+    return folds
 
 
 def morgan_fingerprints(
