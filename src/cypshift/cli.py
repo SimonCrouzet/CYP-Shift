@@ -230,11 +230,16 @@ def submit(
     if track not in ("regression", "classification"):
         raise typer.BadParameter('track must be "regression" or "classification"')
     config = ExperimentConfig.load(config_path) if config_path else ExperimentConfig.load()
-    # The preincubated arm is what makes the classification track work -- without it a
-    # curve model answers "no" for every compound -- and it costs about 0.04 macro
-    # ST-RAE on the regression track at every weight tried. The tracks are scored on
-    # separate leaderboards, so each gets the model that suits it.
-    config.sources.tdi_arm = track == "classification"
+    # Resolve a single data root: assemble_training_data reads the screen/TDI/exclusion
+    # data from config.data.directory, so it must match the train/test directory or a run
+    # can silently combine unrelated inputs.
+    config.data.directory = str(directory)
+    # The classification track needs the preincubated arm, so require it rather than
+    # silently flipping the regression track's off: the submitted recipe stays the one that
+    # was validated, and a config that deliberately kept the arm on for regression is honoured.
+    if track == "classification" and not config.sources.tdi_arm:
+        logger.info("classification track needs the preincubated arm; enabling sources.tdi_arm")
+        config.sources.tdi_arm = True
     config.validate()
 
     train = load("inhibition", directory)
@@ -246,7 +251,14 @@ def submit(
     present = observations.get("target", [])
     extra = [t for t in dict.fromkeys(present) if t not in scored]
     model = build_model(config, surrogate, targets=tuple(scored + sorted(extra)))
+    # Check the model can serve the track before the expensive fit, not after.
+    if track == "classification" and not hasattr(model, "predict_is_time_dependent"):
+        raise typer.BadParameter(
+            f"{model.name} cannot predict TDI; the classification track needs a model that can"
+        )
     model.fit(observations)
+    # Persist the exact recipe that produced the file, next to it.
+    config.save(output.parent / f"{output.stem}.config.json")
 
     # The leaderboard keys on Molecule_Name but requires the SMILES column too, and
     # validates the exact column set per track, so each track writes only its own.
@@ -257,10 +269,6 @@ def submit(
             submission[endpoint] = prediction.mean[:, column]
         required = list(REGRESSION_ENDPOINTS)
     else:
-        if not hasattr(model, "predict_is_time_dependent"):
-            raise typer.BadParameter(
-                f"{model.name} cannot predict TDI; the classification track needs a model that can"
-            )
         flags = model.predict_is_time_dependent(test["SMILES"].tolist())
         for endpoint in CLASSIFICATION_ENDPOINTS:
             submission[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
