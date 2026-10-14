@@ -34,9 +34,10 @@ from pathlib import Path
 import pandas as pd
 
 from cypshift.cli import submit
+from cypshift.config import CLASSIFICATION_ENDPOINTS
 from cypshift.eval.scoring import MACRO_LABEL
 from cypshift.experiment import ExperimentConfig
-from cypshift.pipeline import run
+from cypshift.pipeline import run_cv
 
 logger = logging.getLogger("night")
 
@@ -45,6 +46,8 @@ BEST_CONFIG = Path("configs/night_best.json")
 SUBMISSION = Path("submissions/night_submission_regression.csv")
 #: Per-run out-of-fold bundles, namespaced by revision, for later blending/calibration.
 BUNDLE_DIR = Path("data/run_bundles")
+#: Folds for the stratified, scaffold-grouped cross-validation each config is scored on.
+N_FOLDS = 5
 
 OCT = {"sources.octant": True}
 TOX = {"sources.tox21": True}
@@ -69,7 +72,9 @@ PHASE_A: dict[str, dict] = {
     "baseline_macrobalance": {"training.macro_balance": True},
     "octant_tox21_macrobalance": {**OCT, **TOX, "training.macro_balance": True},
 }
-PHASE_A_SEEDS = [0, 1, 2, 3, 4]
+#: Cross-validation repeats (each is a full N_FOLDS run); fewer than before, since one CV
+#: already predicts every compound once, so a repeat only resamples folds and model seeds.
+PHASE_A_SEEDS = [0, 1, 2]
 
 #: Boosted hyperparameters, swept around the Phase A winner (tag -> overrides).
 HYPERPARAMETERS: dict[str, dict] = {
@@ -93,6 +98,7 @@ PHASE_B_SEEDS = [0, 1, 2]
 RESULT_COLUMNS = [
     "rev", "phase", "name", "seed", "status", "macro_ST_RAE", "minutes",
     "CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4",
+    "macro_MCC", "CYP2D6_MCC", "CYP3A4_MCC",
 ]  # fmt: skip
 
 
@@ -138,7 +144,9 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
     config.validate()
     started = time.time()
     bundle = BUNDLE_DIR / REV / f"{phase}_{name}_seed{seed}".replace(":", "_")
-    scores, _ = run(config, bundle_path=bundle)
+    # Each seed is a full stratified scaffold cross-validation (every compound predicted once
+    # out of fold); the seed drives both the fold partition and the model's own randomness.
+    scores, _, tdi = run_cv(config, n_folds=N_FOLDS, bundle_path=bundle)
     macro = float(scores.loc[MACRO_LABEL, "ST-RAE_mean"])
     row = {
         "rev": REV,
@@ -152,9 +160,28 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
     for endpoint, data in scores.iterrows():
         if endpoint != MACRO_LABEL:
             row[endpoint.split("_")[0]] = round(float(data["ST-RAE_mean"]), 4)
+    # The TDI track, present only for a dose-response curve model. Macro MCC is the mean of
+    # the two scored isoforms, matching the leaderboard's MA-MCC.
+    if tdi is not None:
+        mccs = {
+            endpoint.split("_")[0]: round(float(data["MCC_mean"]), 4)
+            for endpoint, data in tdi.iterrows()
+            if endpoint in CLASSIFICATION_ENDPOINTS
+        }
+        for isoform, value in mccs.items():
+            row[f"{isoform}_MCC"] = value
+        if mccs:
+            row["macro_MCC"] = round(sum(mccs.values()) / len(mccs), 4)
     record(row)
+    tail = f", macro MCC {row['macro_MCC']}" if row.get("macro_MCC") is not None else ""
     logger.info(
-        ">>> %s/%s seed=%d: macro %.4f (%.1f min)", phase, name, seed, macro, row["minutes"]
+        ">>> %s/%s seed=%d: macro ST-RAE %.4f%s (%.1f min)",
+        phase,
+        name,
+        seed,
+        macro,
+        tail,
+        row["minutes"],
     )
 
 
@@ -221,7 +248,9 @@ def main() -> None:
     _archive_stale_results()
     logger.info("run identity (results namespace): %s", REV)
 
-    logger.info("=== Phase A: robustness across %d seeds ===", len(PHASE_A_SEEDS))
+    logger.info(
+        "=== Phase A: %d-fold CV, %d repeats ===", N_FOLDS, len(PHASE_A_SEEDS)
+    )
     run_phase("A", PHASE_A, PHASE_A_SEEDS)
     phase_a = ranked_means("A")
     logger.info("\nPhase A (mean macro ST-RAE, lower better):\n%s", phase_a.to_string())

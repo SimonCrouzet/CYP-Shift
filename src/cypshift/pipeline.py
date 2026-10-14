@@ -607,7 +607,7 @@ def run_cv(
     config: ExperimentConfig,
     n_folds: int = 5,
     bundle_path: Path | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
     """Fit and score the configured model by stratified, scaffold-grouped cross-validation.
 
     Where :func:`run` scores a single similarity-matched holdout, this predicts every
@@ -621,7 +621,9 @@ def run_cv(
     With ``bundle_path`` set, the pooled predictions, config and scores are written there.
 
     Returns:
-        The score table over the pooled out-of-fold predictions, and those predictions.
+        The regression score table over the pooled out-of-fold predictions, those
+        predictions, and the TDI classification scores when the model can predict them
+        (a dose-response curve), otherwise None.
     """
     config.validate()
     directory = Path(config.data.directory)
@@ -634,6 +636,7 @@ def run_cv(
     )
 
     out_of_fold = []
+    tdi_out_of_fold = []
     for fold in range(n_folds):
         held_out = folds == fold
         retained, evaluation = train.loc[~held_out], train.loc[held_out]
@@ -660,12 +663,52 @@ def run_cv(
             fold_predictions[endpoint] = prediction.mean[:, column]
         out_of_fold.append(fold_predictions)
 
+        # The TDI arm, out of fold too, when the model is one that can predict it (only the
+        # dose-response curve, from its two arms). Scored once, pooled, after the loop.
+        if hasattr(model, "predict_is_time_dependent"):
+            flags = model.predict_is_time_dependent(evaluation["SMILES"].tolist())
+            fold_tdi = evaluation[["Molecule_Name"]].copy()
+            for endpoint in CLASSIFICATION_ENDPOINTS:
+                fold_tdi[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
+            tdi_out_of_fold.append(fold_tdi)
+
     submission = pd.concat(out_of_fold, ignore_index=True)
     scores = score_submission(submission, train)
     _log_r2_decomposition(submission, train)
+    tdi_scores = None
+    if tdi_out_of_fold:
+        pooled_tdi = pd.concat(tdi_out_of_fold, ignore_index=True)
+        tdi_scores = _score_tdi_out_of_fold(pooled_tdi, directory)
+        if tdi_scores is not None:
+            logger.info(
+                "TDI CV (ranked by MCC):\n%s",
+                tdi_scores[["MCC_mean", "Accuracy_mean"]].to_string(),
+            )
     if bundle_path is not None:
         save_run_bundle(bundle_path, config, train, submission, scores)
-    return scores, submission
+    return scores, submission, tdi_scores
+
+
+def _score_tdi_out_of_fold(predictions: pd.DataFrame, directory: Path) -> pd.DataFrame | None:
+    """Score pooled out-of-fold is_TDI flags against the TDI labels.
+
+    ``predictions`` is a frame of ``Molecule_Name`` plus the two is_TDI columns, pooled from
+    every fold. It is scored over whatever compounds carry a TDI label, which is a different
+    (and smaller) set than the direct-labelled training compounds.
+    """
+    labels = load("tdi", directory)
+    shared = predictions.merge(
+        labels[["Molecule_Name", *CLASSIFICATION_ENDPOINTS]],
+        on="Molecule_Name",
+        suffixes=("_pred", ""),
+    )
+    if shared.empty:
+        logger.info("no TDI label overlaps the out-of-fold predictions")
+        return None
+    predicted = pd.DataFrame({e: shared[f"{e}_pred"] for e in CLASSIFICATION_ENDPOINTS})
+    truth = shared[list(CLASSIFICATION_ENDPOINTS)].astype("boolean")
+    logger.info("scoring TDI on %d out-of-fold compounds", len(shared))
+    return score_classification(predicted, truth)
 
 
 def _log_r2_decomposition(submission: pd.DataFrame, evaluation: pd.DataFrame) -> None:
