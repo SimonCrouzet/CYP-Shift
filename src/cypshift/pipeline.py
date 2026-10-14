@@ -101,6 +101,8 @@ def build_model(
             epochs=config.model.graph.epochs,
             batch_size=config.model.graph.batch_size,
             n_members=config.model.n_members,
+            ensemble=config.model.graph.ensemble,
+            pretraining=config.model.graph.pretraining,
             conditioning=config.conditioning.strategy,
             targets=targets,
             seed=config.data.seed,

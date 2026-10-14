@@ -71,6 +71,16 @@ EMBEDDING_SOURCES = ("none", "mammal")
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
 OBJECTIVES = ("squared", "absolute", "soft_threshold")
 
+#: How a graph ensemble's members differ. ``reseed`` varies only the initialisation seed;
+#: ``bagging`` also trains each member on a seeded bootstrap resample, so members see the
+#: data differently -- the diversity a reseed ensemble lacks.
+ENSEMBLE_STRATEGIES = ("reseed", "bagging")
+
+#: Pretrained D-MPNN encoder to initialise the graph model from. ``none`` trains from
+#: scratch; ``chemeleon`` loads the chemprop-native CheMeleon foundation encoder;
+#: ``mammal`` initialises from the cached MAMMAL embedding as a fixed input block.
+GRAPH_PRETRAINING = ("none", "chemeleon", "mammal")
+
 
 @dataclass
 class DataConfig:
@@ -272,6 +282,10 @@ class GraphConfig:
     dropout: float = 0.1
     epochs: int = 30
     batch_size: int = 64
+    #: How ensemble members differ; see :data:`ENSEMBLE_STRATEGIES`. Swept.
+    ensemble: str = "reseed"
+    #: A pretrained D-MPNN encoder to initialise from; see :data:`GRAPH_PRETRAINING`. Swept.
+    pretraining: str = "none"
 
 
 @dataclass
@@ -402,6 +416,8 @@ class ExperimentConfig:
             (self.model.kind, MODEL_KINDS, "model.kind"),
             (self.model.objective, OBJECTIVES, "model.objective"),
             (self.features.molecular_embedding, EMBEDDING_SOURCES, "features.molecular_embedding"),
+            (self.model.graph.ensemble, ENSEMBLE_STRATEGIES, "model.graph.ensemble"),
+            (self.model.graph.pretraining, GRAPH_PRETRAINING, "model.graph.pretraining"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:

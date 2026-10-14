@@ -91,6 +91,8 @@ class GraphNetwork:
         batch_size: int = 64,
         n_members: int = 1,
         loss: str = "soft_threshold",
+        ensemble: str = "reseed",
+        pretraining: str = "none",
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -104,6 +106,10 @@ class GraphNetwork:
         self.batch_size = batch_size
         self.n_members = n_members
         self.loss = loss
+        #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
+        #: to initialise from ("none"/"chemeleon"/"mammal").
+        self.ensemble = ensemble
+        self.pretraining = pretraining
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
         self._n_conditioning = n_condition_columns(conditioning, targets, assays)
@@ -165,12 +171,20 @@ class GraphNetwork:
             self._centre,
             self._spread,
         )
-        dataset = cpdata.MoleculeDataset(self._datapoints(usable, labelled=True))
-        loader = cpdata.build_dataloader(dataset, batch_size=self.batch_size, num_workers=0)
+        points = self._datapoints(usable, labelled=True)
 
         self._members = []
         for member in range(self.n_members):
             pl.seed_everything(self.seed + member, workers=True)
+            if self.ensemble == "bagging":
+                # Each member sees a bootstrap resample, so members differ in the data
+                # they fit, not only in initialisation -- the diversity a reseed lacks.
+                rng = np.random.default_rng(self.seed + member)
+                member_points = [points[i] for i in rng.integers(0, len(points), size=len(points))]
+            else:
+                member_points = points
+            dataset = cpdata.MoleculeDataset(member_points)
+            loader = cpdata.build_dataloader(dataset, batch_size=self.batch_size, num_workers=0)
             model = self._build()
             trainer = pl.Trainer(
                 max_epochs=self.epochs,
