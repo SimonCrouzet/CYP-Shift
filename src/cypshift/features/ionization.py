@@ -21,6 +21,7 @@ parquet and computed once. The block is a swept ``featurise`` hook, off unless r
 """
 
 import contextlib
+import json
 import logging
 import os
 from collections.abc import Callable, Sequence
@@ -42,6 +43,20 @@ IONIZATION_COLUMNS = ("n_cationic_ph74", "n_anionic_ph74", "cation_to_aromatic_a
 #: ETKDG seed, so the conformer-derived distance is reproducible.
 _EMBED_SEED = 0xF00D
 _MISSING_DISTANCE = -1.0
+#: Protonation pH and precision used for the dominant microstate.
+_PH = 7.4
+_PRECISION = 0.0
+
+
+def _generation_manifest() -> dict[str, object]:
+    """What the cached values depend on, so a settings change is detectable as stale."""
+    return {
+        "tool": "dimorphite-dl",
+        "ph": _PH,
+        "precision": _PRECISION,
+        "embed_seed": _EMBED_SEED,
+        "columns": list(IONIZATION_COLUMNS),
+    }
 
 
 def _dominant_microstate(smiles: str) -> str:
@@ -49,7 +64,7 @@ def _dominant_microstate(smiles: str) -> str:
     from dimorphite_dl import protonate_smiles
 
     try:
-        states = protonate_smiles(smiles, ph_min=7.4, ph_max=7.4, precision=0.0)
+        states = protonate_smiles(smiles, ph_min=_PH, ph_max=_PH, precision=_PRECISION)
     except Exception:  # noqa: BLE001 -- a protonation failure falls back to the input
         return smiles
     return states[0] if states else smiles
@@ -96,8 +111,22 @@ def _compute_one(smiles: str) -> tuple[float, float, float]:
 def _ensure_cache(canonical_smiles: list[str], cache_path: Path) -> pd.DataFrame:
     """The feature table for the requested compounds, computing and caching any missing."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path = cache_path.with_suffix(".manifest.json")
     columns = ["SMILES", *IONIZATION_COLUMNS]
-    table = pd.read_parquet(cache_path) if cache_path.exists() else pd.DataFrame(columns=columns)
+    if cache_path.exists():
+        # The values depend on the protonation and conformer settings; warn if a cache was
+        # generated under different ones, since equal SMILES would otherwise reuse them.
+        stored = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+        if stored != _generation_manifest():
+            logger.warning(
+                "ionization cache at %s was generated under different settings (%s); its values "
+                "may be stale -- delete it to recompute",
+                cache_path,
+                stored,
+            )
+        table = pd.read_parquet(cache_path)
+    else:
+        table = pd.DataFrame(columns=columns)
     missing = sorted({s for s in canonical_smiles if s and s not in set(table["SMILES"])})
     if missing:
         rows = [(s, *_compute_one(s)) for s in missing]
@@ -107,6 +136,7 @@ def _ensure_cache(canonical_smiles: list[str], cache_path: Path) -> pd.DataFrame
         temporary = cache_path.with_suffix(f".{os.getpid()}.tmp")
         table.to_parquet(temporary, index=False)
         os.replace(temporary, cache_path)
+        manifest_path.write_text(json.dumps(_generation_manifest(), indent=2) + "\n")
         logger.info("ionization: computed %d new compounds (%d cached)", len(missing), len(table))
     return table.set_index("SMILES")
 
