@@ -209,6 +209,9 @@ ASSAY_METADATA = {
     "luminescent_ac50": (0.0, 1.0, 1.0, 0.0),
     "literature_ic50": (0.0, 1.0, 0.0, 1.0),
     "reversible_pic50": (0.0, 1.0, 0.0, 0.0),
+    # The graph's response head reads the same P450-Glo luminescent curve, so it shares the
+    # luminescent dose-response profile; without an entry, metadata conditioning raised.
+    RESPONSE_ASSAY: (0.0, 1.0, 1.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

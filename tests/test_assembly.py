@@ -107,7 +107,9 @@ class TestAssayMetadata:
         assert all(len(v) == N_METADATA_COLUMNS for v in ASSAY_METADATA.values())
 
     def test_every_assay_has_metadata(self):
-        assert set(ASSAY_METADATA) == set(ASSAYS)
+        # Every core assay must have metadata; the dict may also carry extra contexts
+        # routed outside ASSAYS (the graph's response head), which still need a profile.
+        assert set(ASSAYS) <= set(ASSAY_METADATA)
 
     def test_no_column_is_a_deterministic_function_of_another(self):
         """A third column once held log10 of the top concentration: -4.0 for every

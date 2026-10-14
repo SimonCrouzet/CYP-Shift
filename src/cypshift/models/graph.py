@@ -241,13 +241,19 @@ class GraphNetwork:
             message_passing = cpnn.BondMessagePassing(
                 d_h=self.hidden, depth=self.depth, dropout=self.dropout
             )
-        # Value task on, carriers off; the response task (when present) on.
-        task_weights = [1.0, 0.0, 0.0] + ([1.0] if self.auxiliary_response else [])
-        criterion = (
-            SoftThresholdLoss(task_weights=torch.tensor([task_weights]))
-            if self.loss == "soft_threshold"
-            else None
-        )
+        # Value task on, the lower/upper carriers off, the response task (when present) on.
+        # Every objective installs an explicit criterion with these weights: leaving it None
+        # gave chemprop's default MSE over all tasks, which trained the carrier columns and
+        # made "absolute" an MSE run rather than MAE.
+        weights = torch.tensor([[1.0, 0.0, 0.0] + ([1.0] if self.auxiliary_response else [])])
+        if self.loss == "soft_threshold":
+            criterion = SoftThresholdLoss(task_weights=weights)
+        elif self.loss == "absolute":
+            criterion = cpnn.MAE(task_weights=weights)
+        elif self.loss == "squared":
+            criterion = cpnn.MSE(task_weights=weights)
+        else:
+            raise ValueError(f"unknown objective {self.loss!r}")
         predictor = cpnn.RegressionFFN(
             n_tasks=self._n_label,
             input_dim=message_passing.output_dim + self._n_conditioning,
