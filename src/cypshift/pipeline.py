@@ -16,6 +16,7 @@ from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
 from cypshift.data.splits import similarity_matched_holdout
 from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
+from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import (
@@ -418,6 +419,7 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
     for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
         submission[endpoint] = prediction.mean[:, column]
     scores = score_submission(submission, evaluation)
+    _log_r2_decomposition(submission, evaluation)
 
     tdi = score_tdi(model, evaluation, directory)
     if tdi is not None:
@@ -425,6 +427,27 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
             "TDI track (ranked by MCC):\n%s", tdi[["MCC_mean", "Accuracy_mean"]].to_string()
         )
     return scores, prediction
+
+
+def _log_r2_decomposition(submission: pd.DataFrame, evaluation: pd.DataFrame) -> None:
+    """Log R² split into its ranking ceiling and the spread and offset it loses.
+
+    Ranking (rho) transfers from this holdout to the blinded test; the spread and offset
+    terms do not, since the holdout's potency distribution differs from the test's. The
+    split says which part of a change is a real modelling gain rather than a calibration
+    the holdout cannot vouch for.
+    """
+    rows = {}
+    for endpoint in REGRESSION_ENDPOINTS:
+        measured = evaluation[endpoint].notna().to_numpy()
+        rows[endpoint.split("_")[0]] = r2_decomposition(
+            evaluation.loc[measured, endpoint].to_numpy(float),
+            submission.loc[measured, endpoint].to_numpy(float),
+        )
+    table = pd.DataFrame(rows).T[
+        ["rho", "spread_ratio", "offset", "r2", "ranking_ceiling", "spread_loss", "offset_loss"]
+    ]
+    logger.info("R² decomposition (rho transfers; spread/offset do not):\n%s", table.round(3))
 
 
 def score_tdi(model: object, evaluation: pd.DataFrame, directory: Path) -> pd.DataFrame | None:
