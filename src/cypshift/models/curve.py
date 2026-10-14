@@ -24,6 +24,7 @@ organisers' own rule.
 """
 
 import logging
+import math
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,7 @@ DESCRIBED_CONDITIONING = frozenset({"descriptor", "film"})
 #: from the predicted potency, defeating the point of modelling a curve at all.
 HILL_OFFSET = 0.5413  # softplus(0.5413) == 1.0
 EMAX_OFFSET = 2.2  # sigmoid(2.2) ~= 0.9
+_LN10 = math.log(10.0)  # convert the base-10 Hill exponent into a stable sigmoid logit
 
 
 def inhibition_at(parameters: torch.Tensor, pc: float | torch.Tensor) -> torch.Tensor:
@@ -93,7 +95,10 @@ def inhibition_at(parameters: torch.Tensor, pc: float | torch.Tensor) -> torch.T
     pic50 = parameters[..., PIC50]
     hill = nn.functional.softplus(parameters[..., HILL] + HILL_OFFSET) + 1e-3
     emax = torch.sigmoid(parameters[..., EMAX] + EMAX_OFFSET)
-    return emax / (1.0 + torch.pow(10.0, hill * (pc - pic50)))
+    # emax / (1 + 10**(hill*(pc - pic50))) rewritten as a sigmoid: torch.pow(10, .)
+    # overflows to inf for a large exponent and leaves NaN gradients even on rows whose
+    # loss never uses this branch, whereas sigmoid is numerically stable everywhere.
+    return emax * torch.sigmoid(_LN10 * hill * (pic50 - pc))
 
 
 class CurveNetwork(nn.Module):

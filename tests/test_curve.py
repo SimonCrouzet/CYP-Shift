@@ -366,3 +366,14 @@ def test_predict_keeps_the_dropout_passes_as_members():
     )
     model.fit(observations)
     assert model.predict(["CCO"]).samples.shape[0] == 4
+
+
+def test_inhibition_has_finite_gradients_in_the_overflow_regime():
+    """The Hill curve must not produce NaN gradients when the exponent is large (F4)."""
+    import torch
+
+    from cypshift.models.curve import inhibition_at
+
+    params = torch.tensor([3.0, 5.0, 5.0], requires_grad=True)  # pIC50 far below pC
+    inhibition_at(params, torch.tensor(12.0)).backward()
+    assert torch.isfinite(params.grad).all()
