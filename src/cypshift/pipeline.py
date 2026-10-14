@@ -69,6 +69,8 @@ def build_model(
             learning_rate=config.model.boosted.learning_rate,
             num_leaves=config.model.boosted.num_leaves,
             min_child_samples=config.model.boosted.min_child_samples,
+            subsample=config.model.boosted.subsample,
+            colsample_bytree=config.model.boosted.colsample_bytree,
             **shared,
         )
     if kind == "neural":

@@ -15,29 +15,55 @@ SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "
 
 def test_gradient_is_zero_inside_the_credible_interval():
     lower, upper = np.array([4.8, 5.8]), np.array([5.2, 6.2])
-    objective = soft_threshold_gradient(lower, upper)
+    objective = soft_threshold_gradient(lower, upper, np.ones(2))
     gradient, _ = objective(np.array([5.0, 6.0]), np.array([5.0, 6.0]))
     assert (gradient == 0).all()
 
 
 def test_gradient_points_down_when_predicting_too_high():
-    objective = soft_threshold_gradient(np.array([4.8]), np.array([5.2]))
+    objective = soft_threshold_gradient(np.array([4.8]), np.array([5.2]), np.ones(1))
     gradient, _ = objective(np.array([5.0]), np.array([9.0]))
     assert gradient[0] == 1.0  # positive gradient means the step reduces the prediction
 
 
 def test_gradient_points_up_when_predicting_too_low():
-    objective = soft_threshold_gradient(np.array([4.8]), np.array([5.2]))
+    objective = soft_threshold_gradient(np.array([4.8]), np.array([5.2]), np.ones(1))
     gradient, _ = objective(np.array([5.0]), np.array([1.0]))
     assert gradient[0] == -1.0
 
 
 def test_hessian_is_constant_and_positive():
     """The true second derivative is zero, which LightGBM cannot use."""
-    objective = soft_threshold_gradient(np.array([4.8, 4.8]), np.array([5.2, 5.2]))
+    objective = soft_threshold_gradient(np.array([4.8, 4.8]), np.array([5.2, 5.2]), np.ones(2))
     _, hessian = objective(np.array([5.0, 5.0]), np.array([1.0, 9.0]))
     assert (hessian > 0).all()
     assert len(set(hessian)) == 1
+
+
+def test_the_row_weight_scales_the_gradient_and_hessian():
+    """LightGBM does not weight a custom objective, so the weight is applied here."""
+    weight = np.array([0.0, 1.0, 10.0])
+    objective = soft_threshold_gradient(np.zeros(3), np.ones(3), weight)
+    gradient, hessian = objective(np.zeros(3), np.full(3, 5.0))  # all above the band
+    assert gradient.tolist() == [0.0, 1.0, 10.0]
+    assert hessian.tolist() == [0.0, 1.0, 10.0]
+
+
+def test_sample_weights_change_the_soft_threshold_fit():
+    """Regression test: uniform versus non-uniform weights must fit different models.
+
+    LightGBM 4.7.0 ignores ``sample_weight`` for a custom objective, so without the
+    in-objective weighting every source, screen and distance weight was a no-op.
+    """
+    observations = _observations()
+    uniform = observations.copy()
+    uniform["weight"] = 1.0
+    varied = observations.copy()
+    rng = np.random.default_rng(0)
+    varied["weight"] = rng.uniform(0.1, 10.0, len(varied))
+    a = _model(loss="soft_threshold").fit(uniform).predict(SMILES).mean
+    b = _model(loss="soft_threshold").fit(varied).predict(SMILES).mean
+    assert not np.allclose(a, b)
 
 
 def _observations(seed=0):

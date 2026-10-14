@@ -45,16 +45,21 @@ logger = logging.getLogger(__name__)
 
 
 def soft_threshold_gradient(
-    lower: NDArray[np.float64], upper: NDArray[np.float64]
+    lower: NDArray[np.float64], upper: NDArray[np.float64], weight: NDArray[np.float64]
 ) -> Callable[[NDArray[np.float64], NDArray[np.float64]], tuple[NDArray, NDArray]]:
     """Build LightGBM's gradient and Hessian for soft-threshold absolute error.
 
-    The bounds are captured by closure because LightGBM's objective signature passes
-    only the label and the current prediction, and they arrive in training-row order.
+    The bounds and weights are captured by closure because LightGBM's objective signature
+    passes only the label and the current prediction, and they arrive in training-row
+    order. LightGBM does **not** apply ``sample_weight`` to a custom objective -- verified
+    on LightGBM 4.7.0, a model fit with uniform versus strongly non-uniform weights is bit
+    identical -- so the per-row weight is multiplied into the gradient and Hessian here, or
+    the source, screen and distance weights would have no effect on the fit.
 
     Args:
         lower: Lower credible-interval bound per training row.
         upper: Upper bound per training row.
+        weight: Per-row sample weight.
 
     Returns:
         A callable LightGBM can use as ``objective``.
@@ -67,8 +72,8 @@ def soft_threshold_gradient(
         gradient[y_pred > upper] = 1.0
         gradient[y_pred < lower] = -1.0
         # Constant Hessian: the loss is piecewise linear, so genuine curvature is zero
-        # and LightGBM would take unbounded steps.
-        return gradient, np.ones_like(y_pred)
+        # and LightGBM would take unbounded steps. Both are scaled by the row weight.
+        return gradient * weight, np.ones_like(y_pred) * weight
 
     return objective
 
@@ -95,6 +100,8 @@ class BoostedTrees:
         learning_rate: float = 0.05,
         num_leaves: int = 63,
         min_child_samples: int = 20,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.6,
         n_members: int = 5,
         loss: str = "soft_threshold",
         seed: int = 0,
@@ -124,6 +131,8 @@ class BoostedTrees:
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
         self.min_child_samples = min_child_samples
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
         self.n_members = n_members
         self.loss = loss
         self.seed = seed
@@ -202,19 +211,19 @@ class BoostedTrees:
             for stage in stages:
                 mask = rows_for_stage(usable, stage)
                 parameters = dict(
-                    n_estimators=self.n_estimators,
-                    learning_rate=self.learning_rate,
+                    n_estimators=stage.epochs,
+                    learning_rate=stage.lr,
                     num_leaves=self.num_leaves,
                     min_child_samples=self.min_child_samples,
-                    subsample=0.8,
+                    subsample=self.subsample,
                     subsample_freq=1,
-                    colsample_bytree=0.6,
+                    colsample_bytree=self.colsample_bytree,
                     random_state=self.seed + member,
                     verbose=-1,
                 )
                 if self.loss == "soft_threshold":
                     parameters["objective"] = soft_threshold_gradient(
-                        lower[mask] - self._offset, upper[mask] - self._offset
+                        lower[mask] - self._offset, upper[mask] - self._offset, weight[mask]
                     )
                 elif self.loss in ("squared", "absolute"):
                     parameters["objective"] = (
