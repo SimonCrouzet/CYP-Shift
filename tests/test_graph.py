@@ -12,6 +12,7 @@ import pytest
 from cypshift.models.graph import CHEMELEON_URL, GraphNetwork, chemeleon_message_passing
 
 CHEMELEON_CACHE = Path("data/external/chemeleon/chemeleon_mp.pt")
+MAMMAL_CACHE = Path("data/external/embeddings/mammal.parquet")
 
 
 def test_chemeleon_url_points_at_zenodo():
@@ -24,6 +25,7 @@ def test_chemeleon_encoder_loads_with_its_published_width():
     assert encoder.output_dim == 2048  # CheMeleon's published hidden width
 
 
+@pytest.mark.skipif(MAMMAL_CACHE.exists(), reason="MAMMAL cache present; absent-path not testable")
 def test_mammal_pretraining_needs_its_cache():
     """Without the MAMMAL embedding cache, construction fails loudly, never silently."""
     with pytest.raises(FileNotFoundError):
