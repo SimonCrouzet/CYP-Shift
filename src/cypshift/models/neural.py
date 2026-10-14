@@ -29,6 +29,7 @@ almost no information about where a prediction is unreliable.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -51,6 +52,7 @@ from cypshift.data.assembly import (
 )
 from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.embeddings import block_for
+from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
@@ -305,6 +307,8 @@ class NeuralNetwork:
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",
+        ionization_geometry: bool = False,
+        ionization_cache: str = "data/external/ionization/features.parquet",
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
@@ -338,6 +342,9 @@ class NeuralNetwork:
         self.training = training
         #: Which cached foundation-model embedding to append, or "none".
         self.molecular_embedding = molecular_embedding
+        #: Append the computed ionization / conformer-geometry block, and where it caches.
+        self.ionization_geometry = ionization_geometry
+        self.ionization_cache = ionization_cache
         self._model: nn.Module | None = None
         self._scaler: BlockScaler | None = None
 
@@ -351,6 +358,7 @@ class NeuralNetwork:
             physchem=self.physchem,
             mechanism=self.mechanism,
             extra=self.surrogate,
+            ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
             embedding=block_for(self.molecular_embedding),
         )
         if one_hot is None:

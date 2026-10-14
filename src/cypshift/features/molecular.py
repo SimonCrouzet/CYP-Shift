@@ -227,6 +227,7 @@ def featurise(
     n_bits: int = 2048,
     radius: int = 2,
     extra: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
+    ionization: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
     embedding: Callable[[Sequence[str]], NDArray[np.float32]] | None = None,
 ) -> NDArray[np.float32]:
     """Assemble the requested blocks into one dense matrix.
@@ -253,7 +254,7 @@ def featurise(
         blocks.append(physicochemical(smiles).to_numpy(dtype=np.float32))
     if mechanism:
         blocks.append(mechanistic(smiles).to_numpy(dtype=np.float32))
-    for name, hook in (("extra", extra), ("embedding", embedding)):
+    for name, hook in (("extra", extra), ("ionization", ionization), ("embedding", embedding)):
         if hook is None:
             continue
         appended = np.asarray(hook(smiles), dtype=np.float32)

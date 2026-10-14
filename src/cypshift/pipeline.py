@@ -56,6 +56,8 @@ def build_model(
         surrogate=surrogate,
         training=config.training,
         molecular_embedding=config.features.molecular_embedding,
+        ionization_geometry=config.features.use_ionization_geometry,
+        ionization_cache=config.features.ionization_cache,
     )
     if kind == "boosted":
         from cypshift.models.boosted import BoostedTrees
@@ -124,6 +126,8 @@ def build_model(
             surrogate=surrogate,
             training=config.training,
             molecular_embedding=config.features.molecular_embedding,
+            ionization_geometry=config.features.use_ionization_geometry,
+            ionization_cache=config.features.ionization_cache,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
 

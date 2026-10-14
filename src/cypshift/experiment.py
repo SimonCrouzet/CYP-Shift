@@ -90,6 +90,14 @@ class FeatureConfig:
     fingerprint_radius: int = 2
     use_physicochemical: bool = True
     use_mechanistic: bool = True
+    #: Append the ionization / through-space pharmacophore block: charge state at pH 7.4
+    #: (dimorphite-dl) and a seeded-conformer 3D distance from a protonated nitrogen to the
+    #: nearest aromatic ring. Computed and cached (:mod:`cypshift.features.ionization`);
+    #: off by default and swept, since the conformer step is the slow one.
+    use_ionization_geometry: bool = False
+    #: Where the computed ionization/geometry features are cached (one parquet, keyed by
+    #: canonical SMILES).
+    ionization_cache: str = "data/external/ionization/features.parquet"
     #: Append Boltz-2 cofold features (affinity + pose/interaction) per (compound,
     #: enzyme). Off by default: it needs a precomputed cofold cache
     #: (scripts/cofold_structures.py); missing pairs are NaN. Toggled by
