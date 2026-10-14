@@ -271,7 +271,29 @@ def assemble_training_data(
     auxiliary = auxiliary_observations(config, retained)
     if not auxiliary.empty:
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
+    if config.training.macro_balance:
+        observations = balance_macro_weights(observations)
     return observations, surrogate
+
+
+def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:
+    """Rescale each scored endpoint's rows so the four carry equal total weight.
+
+    The leaderboard macro-averages the four endpoints, but a pooled fit is dominated by
+    the data-rich ones (CYP3A4 has nearly twice CYP2C9's labels). Scaling each scored
+    target's weights to a common total aligns training with the metric. Non-scored
+    (relative) rows are left untouched, and the fix only bites now that the boosted
+    objective actually applies the weights.
+    """
+    scored = observations["target"].isin(ISOFORMS)
+    if not scored.any():
+        return observations
+    totals = observations.loc[scored].groupby("target")["weight"].sum()
+    scale = (totals.mean() / totals).to_dict()
+    observations = observations.copy()
+    factors = observations.loc[scored, "target"].map(scale).to_numpy()
+    observations.loc[scored, "weight"] = observations.loc[scored, "weight"].to_numpy() * factors
+    return observations
 
 
 def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> pd.DataFrame:

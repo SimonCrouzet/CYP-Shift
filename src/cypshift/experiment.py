@@ -374,6 +374,11 @@ class TrainingConfig:
 
     preset: str | None = None
     stages: list[Stage] = field(default_factory=lambda: [Stage()])
+    #: Rescale each scored endpoint's rows so the four contribute equal total weight, which
+    #: approximates the macro-averaged metric the leaderboard uses rather than letting the
+    #: data-rich endpoints dominate a pooled fit. Effective now that the boosted objective
+    #: applies row weights. Swept, off by default.
+    macro_balance: bool = False
 
     def effective_stages(self) -> list[Stage]:
         """The curriculum to run: the named preset if set, otherwise the explicit stages."""

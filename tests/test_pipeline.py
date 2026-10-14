@@ -335,3 +335,20 @@ def test_auxiliary_dedups_against_the_whole_challenge_not_just_retained(monkeypa
     pipe.auxiliary_observations(config, _retained(n=5))
     # the dedup set is the full challenge (train + test), far larger than the 5 retained
     assert captured["n_dedup_smiles"] > 100
+
+
+def test_macro_balance_equalises_scored_endpoint_weight():
+    """Each scored endpoint should carry equal total weight; relatives stay untouched."""
+    from cypshift.pipeline import balance_macro_weights
+
+    obs = pd.DataFrame(
+        {
+            "target": ["CYP1A2"] * 10 + ["CYP2C9"] * 2 + ["CYP3A4"] * 6 + ["CYP2C19"] * 5,
+            "weight": [1.0] * 23,
+        }
+    )
+    out = balance_macro_weights(obs)
+    scored = out[out["target"].isin(["CYP1A2", "CYP2C9", "CYP3A4"])]
+    totals = scored.groupby("target")["weight"].sum()
+    assert totals.max() - totals.min() < 1e-9
+    assert (out.loc[out["target"] == "CYP2C19", "weight"] == 1.0).all()
