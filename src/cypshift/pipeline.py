@@ -415,6 +415,10 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         return empty
 
     frames = []
+    # Track each requested source's outcome so a named source-ablation that realised no
+    # rows is visible, and a parser failure is not mistaken for "no data for this enzyme".
+    contributed = {name: 0 for name in datasets}
+    raised: dict[str, str] = {}
     for enzyme, weight in to_pull:
         # A scored enzyme's own outside rows sit one tier from the endpoint; a relative's
         # further out. The curriculum trains distant tiers before near ones.
@@ -433,11 +437,13 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         for name in datasets:
             try:
                 loaded = all_loaders[name](enzyme, challenge, **extra_kwargs.get(name, {}))
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001 -- best-effort, but remember it raised
                 logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
+                raised[name] = str(error)
                 continue
             if loaded.empty:
                 continue
+            contributed[name] += len(loaded)
             # Give every source the same columns, so pooling and row-building are uniform:
             # a source without intervals collapses its bounds to the point and is uncensored.
             for column, default in (("conf_low", loaded["value"]), ("conf_high", loaded["value"])):
@@ -477,10 +483,30 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                     }
                 )
             )
+    # A requested source that realised nothing is a warning, not a silent skip: say whether
+    # it failed to parse or simply held no admitted compound.
+    for name in datasets:
+        if contributed[name] == 0:
+            reason = f"parser error: {raised[name]}" if name in raised else "no admitted rows"
+            logger.warning(
+                "auxiliary source %r was requested but contributed nothing (%s)", name, reason
+            )
     if not frames:
         return empty
     out = pd.concat(frames, ignore_index=True)
-    logger.info("added %d auxiliary rows from %d enzymes", len(out), out["target"].nunique())
+    # The realised inventory: how many rows actually entered, by source chemistry and
+    # censoring, so a run is judged on what it trained on rather than on what it requested.
+    inventory = (
+        out.assign(censored=out["is_censored"].astype(bool))
+        .groupby(["assay", "censored"])["value"]
+        .size()
+    )
+    logger.info(
+        "added %d auxiliary rows from %d enzymes; by assay/censored:\n%s",
+        len(out),
+        out["target"].nunique(),
+        inventory.to_string(),
+    )
     return out
 
 
