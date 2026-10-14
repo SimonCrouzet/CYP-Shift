@@ -17,14 +17,17 @@ submit:
   ``submissions/``. The winning config is saved next to it.
 
 Resilient like the sweep: every (phase, name, seed) result is appended to
-``data/night_results.csv`` as it lands, a re-run skips rows already there, and one
-failure is recorded rather than sinking the night. Boosted only -- fast and the
-family that has led every read so far.
+``data/night_results.csv`` as it lands under a fixed schema, tagged with the code
+revision. A re-run skips only rows completed at the *current* revision, so a code change
+(e.g. the boosted weight fix) re-runs rather than reusing stale results; failures are
+recorded and retried, not treated as done. Boosted only -- fast and the family that has
+led every read so far.
 
     /mnt/wsl/ext/envs/cypshift/bin/python scripts/night_run.py
 """
 
 import logging
+import subprocess
 import time
 from pathlib import Path
 
@@ -80,15 +83,46 @@ HYPERPARAMETERS: dict[str, dict] = {
 PHASE_B_SEEDS = [0, 1, 2]
 
 
+#: One fixed row schema, so a failure row cannot have fewer fields than a success row
+#: and push later rows under the wrong columns.
+RESULT_COLUMNS = [
+    "rev", "phase", "name", "seed", "status", "macro_ST_RAE", "minutes",
+    "CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4",
+]  # fmt: skip
+
+
+def run_identity() -> str:
+    """A code-revision tag (short SHA, ``-dirty`` when uncommitted), or ``nogit``.
+
+    Results are namespaced by it so a code change (e.g. the boosted weight fix) does not
+    silently reuse results trained under the old semantics.
+    """
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+        clean = subprocess.call(["git", "diff", "--quiet"]) == 0
+        clean = clean and subprocess.call(["git", "diff", "--cached", "--quiet"]) == 0
+        return sha if clean else f"{sha}-dirty"
+    except Exception:  # noqa: BLE001 -- no git is not fatal, just a weaker identity
+        return "nogit"
+
+
+REV = run_identity()
+
+
 def already_done() -> set[tuple[str, str, int]]:
+    """Completed (phase, name, seed) at the current revision; failures are retried."""
     if not RESULTS.exists():
         return set()
     table = pd.read_csv(RESULTS)
-    return {(r.phase, r.name, int(r.seed)) for r in table.itertuples()}
+    if "rev" not in table.columns or "status" not in table.columns:
+        return set()  # pre-schema results from an earlier code era: re-run under this one
+    ok = table[(table["rev"] == REV) & (table["status"] == "ok")]
+    return {(r.phase, r.name, int(r.seed)) for r in ok.itertuples()}
 
 
 def record(row: dict) -> None:
-    pd.DataFrame([row]).to_csv(RESULTS, mode="a", header=not RESULTS.exists(), index=False)
+    full = pd.DataFrame([{column: row.get(column) for column in RESULT_COLUMNS}])
+    full.to_csv(RESULTS, mode="a", header=not RESULTS.exists(), index=False)
 
 
 def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
@@ -101,9 +135,11 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
     scores, _ = run(config)
     macro = float(scores.loc[MACRO_LABEL, "ST-RAE_mean"])
     row = {
+        "rev": REV,
         "phase": phase,
         "name": name,
         "seed": seed,
+        "status": "ok",
         "macro_ST_RAE": round(macro, 4),
         "minutes": round((time.time() - started) / 60, 1),
     }
@@ -127,25 +163,57 @@ def run_phase(phase: str, configs: dict[str, dict], seeds: list[int]) -> None:
                 evaluate(phase, name, overrides, seed)
             except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
                 logger.exception("%s/%s seed=%d FAILED: %s", phase, name, seed, error)
-                record({"phase": phase, "name": name, "seed": seed, "macro_ST_RAE": "FAILED"})
+                record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
+
+
+def _completed(phase: str | None = None) -> pd.DataFrame:
+    """Successful rows at the current revision, optionally for one phase."""
+    table = pd.read_csv(RESULTS)
+    table = table[(table["rev"] == REV) & (table["status"] == "ok")].copy()
+    table["macro_ST_RAE"] = table["macro_ST_RAE"].astype(float)
+    return table if phase is None else table[table["phase"] == phase]
 
 
 def ranked_means(phase: str | None = None) -> pd.DataFrame:
     """Mean and spread of macro ST-RAE per configuration, best first."""
-    table = pd.read_csv(RESULTS)
-    table = table[table["macro_ST_RAE"] != "FAILED"].copy()
-    table["macro_ST_RAE"] = table["macro_ST_RAE"].astype(float)
-    if phase is not None:
-        table = table[table["phase"] == phase]
-    summary = (
-        table.groupby("name")["macro_ST_RAE"].agg(["mean", "std", "count"]).sort_values("mean")
+    return (
+        _completed(phase)
+        .groupby("name")["macro_ST_RAE"]
+        .agg(["mean", "std", "count"])
+        .sort_values("mean")
     )
-    return summary
+
+
+def ranked_on_common_seeds(names: set[str]) -> pd.DataFrame:
+    """Rank the named configurations on the seeds every one of them completed.
+
+    Comparing candidates evaluated on different seed sets is unfair; restrict to the seeds
+    they all share so the means are paired.
+    """
+    table = _completed()
+    table = table[table["name"].isin(names)]
+    if table.empty:
+        return table
+    seeds_per_name = table.groupby("name")["seed"].agg(set)
+    common = set.intersection(*seeds_per_name) if len(seeds_per_name) else set()
+    if common:
+        table = table[table["seed"].isin(common)]
+    return table.groupby("name")["macro_ST_RAE"].agg(["mean", "std", "count"]).sort_values("mean")
+
+
+def _archive_stale_results() -> None:
+    """Move an old-schema results file aside so a fresh namespace starts clean."""
+    if RESULTS.exists() and "rev" not in pd.read_csv(RESULTS, nrows=0).columns:
+        archived = RESULTS.with_suffix(".pre_schema.csv")
+        RESULTS.rename(archived)
+        logger.info("archived pre-schema results to %s", archived)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    _archive_stale_results()
+    logger.info("run identity (results namespace): %s", REV)
 
     logger.info("=== Phase A: robustness across %d seeds ===", len(PHASE_A_SEEDS))
     run_phase("A", PHASE_A, PHASE_A_SEEDS)
@@ -162,12 +230,11 @@ def main() -> None:
     registry = {winner: winner_overrides, **phase_b_configs}
     run_phase("B", phase_b_configs, PHASE_B_SEEDS)
 
-    # Overall best across both phases, on configurations present in the registry so its
-    # overrides can be rebuilt. The Phase A winner is scored on more seeds than Phase B's
-    # three, which only makes its mean the sterner bar to beat.
-    everything = ranked_means()
-    candidates = everything[everything.index.isin(registry)]
-    logger.info("\nCandidates (mean macro ST-RAE):\n%s", candidates.to_string())
+    # Overall best across both phases, compared on the seeds the candidates share so the
+    # winner (scored on more seeds) and the tuned variants (fewer) are ranked on equal
+    # footing rather than on whichever seed set each happened to complete.
+    candidates = ranked_on_common_seeds(set(registry))
+    logger.info("\nCandidates (mean macro ST-RAE, common seeds):\n%s", candidates.to_string())
     best = candidates.index[0]
     logger.info("Overall best: %s (mean %.4f)", best, candidates.loc[best, "mean"])
 
