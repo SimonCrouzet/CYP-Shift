@@ -43,6 +43,8 @@ logger = logging.getLogger("night")
 RESULTS = Path("data/night_results.csv")
 BEST_CONFIG = Path("configs/night_best.json")
 SUBMISSION = Path("submissions/night_submission_regression.csv")
+#: Per-run out-of-fold bundles, namespaced by revision, for later blending/calibration.
+BUNDLE_DIR = Path("data/run_bundles")
 
 OCT = {"sources.octant": True}
 TOX = {"sources.tox21": True}
@@ -132,7 +134,8 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
         config.override(key, value)
     config.validate()
     started = time.time()
-    scores, _ = run(config)
+    bundle = BUNDLE_DIR / REV / f"{phase}_{name}_seed{seed}".replace(":", "_")
+    scores, _ = run(config, bundle_path=bundle)
     macro = float(scores.loc[MACRO_LABEL, "ST-RAE_mean"])
     row = {
         "rev": REV,

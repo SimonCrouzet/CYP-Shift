@@ -4,6 +4,7 @@ One place where a configuration becomes an experiment, so a sweep and a single r
 follow exactly the same path and cannot drift apart.
 """
 
+import json
 import logging
 from pathlib import Path
 
@@ -510,8 +511,41 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     return out
 
 
-def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]:
+def save_run_bundle(
+    bundle_path: Path,
+    config: ExperimentConfig,
+    evaluation: pd.DataFrame,
+    submission: pd.DataFrame,
+    scores: pd.DataFrame,
+) -> None:
+    """Write an immutable record of one holdout run: per-compound out-of-fold predictions
+    alongside their truth, plus the resolved config and scores.
+
+    This is what later pairing, blending and calibration need -- the predictions per
+    compound on a shared holdout, not just the aggregate score. Written atomically.
+    """
+    bundle_path.mkdir(parents=True, exist_ok=True)
+    truth_columns = ["Molecule_Name"]
+    for endpoint in REGRESSION_ENDPOINTS:
+        truth_columns += [endpoint, f"{endpoint}_conf_low", f"{endpoint}_conf_high"]
+    predictions = submission.rename(columns={e: f"{e}_pred" for e in REGRESSION_ENDPOINTS})
+    out_of_fold = evaluation[truth_columns].merge(predictions, on="Molecule_Name", validate="1:1")
+    out_of_fold.to_parquet(bundle_path / "out_of_fold.parquet", index=False)
+    meta = {
+        "config": config.to_dict(),
+        "scores": scores.round(4).reset_index().to_dict("records"),
+    }
+    (bundle_path / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
+    logger.info("saved run bundle (%d OOF compounds) to %s", len(out_of_fold), bundle_path)
+
+
+def run(
+    config: ExperimentConfig, bundle_path: Path | None = None
+) -> tuple[pd.DataFrame, PredictiveDistribution]:
     """Fit the configured model and score it on the similarity-matched holdout.
+
+    With ``bundle_path`` set, an immutable run bundle (out-of-fold predictions, config and
+    scores) is written there for later pairing, blending and calibration.
 
     Returns:
         The score table and the predictive distribution behind it.
@@ -564,6 +598,8 @@ def run(config: ExperimentConfig) -> tuple[pd.DataFrame, PredictiveDistribution]
             logger.info(
                 "TDI track (ranked by MCC):\n%s", tdi[["MCC_mean", "Accuracy_mean"]].to_string()
             )
+    if bundle_path is not None:
+        save_run_bundle(bundle_path, config, evaluation, submission, scores)
     return scores, prediction
 
 

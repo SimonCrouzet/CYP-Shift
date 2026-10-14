@@ -393,3 +393,32 @@ def test_pool_same_assay_never_fabricates_a_measurement():
     )
     pooled = pool_same_assay(censored)
     assert pooled["value"].iloc[0] == 4.0 and pooled["is_censored"].iloc[0]
+
+
+def test_save_run_bundle_writes_oof_predictions_and_metadata(tmp_path):
+    """The bundle must carry per-compound OOF predictions beside truth, plus config/scores."""
+    import json as _json
+
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import save_run_bundle
+
+    names = ["A", "B", "C"]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = [5.0, 6.0, 4.0]
+        evaluation[f"{endpoint}_conf_low"] = evaluation[endpoint] - 0.2
+        evaluation[f"{endpoint}_conf_high"] = evaluation[endpoint] + 0.2
+    submission = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        submission[endpoint] = [4.8, 6.1, 4.2]
+    scores = pd.DataFrame({"ST-RAE_mean": [0.6]}, index=["MA"])
+    scores.index.name = "endpoint"
+
+    bundle = tmp_path / "bundle"
+    save_run_bundle(bundle, ExperimentConfig.load(), evaluation, submission, scores)
+    oof = pd.read_parquet(bundle / "out_of_fold.parquet")
+    assert len(oof) == 3
+    assert f"{REGRESSION_ENDPOINTS[0]}_pred" in oof.columns  # prediction beside truth
+    meta = _json.loads((bundle / "run.json").read_text())
+    assert "config" in meta and "scores" in meta
