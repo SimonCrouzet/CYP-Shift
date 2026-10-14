@@ -53,7 +53,7 @@ from cypshift.data.assembly import (
 from cypshift.data.conditioning import descriptor_conditions
 from cypshift.features.embeddings import block_for
 from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise, physicochemical
+from cypshift.features.molecular import featurise
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -370,48 +370,56 @@ class NeuralNetwork:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Scaled molecular features and, for the embedding strategy, condition indices.
 
-        Returns ``(features, index)`` where ``index`` is None unless conditioning is
-        ``embedding``. The embedding path keeps the condition out of the scaled feature
-        block -- it is looked up in a learned table inside the model instead of being
-        one-hot columns fed through the scaler.
+        The molecular block is scaled on its own and the (sparse one-hot or low-cardinality
+        descriptor) condition is appended raw afterwards, so standardising never fills in
+        the condition's zeros. Returns ``(features, index)`` where ``index`` is None unless
+        conditioning is ``embedding``/``heads``, which look the condition up in a learned
+        table rather than feeding it as columns.
         """
+        molecular = self._scale_blocks(self._features(smiles), fit=fit)
         if self.conditioning == "calibration":
             # The trunk conditions on the enzyme (target one-hot in the features); the
             # assay is not an input but an index into the per-assay calibration bias.
-            target_hot = np.array(
+            target_hot = torch.tensor(
                 [[t == name for name in self.targets] for t in frame["target"]],
-                dtype=np.float32,
+                dtype=torch.float32,
             )
-            features = self._scale_blocks(self._features(smiles, target_hot), fit=fit)
             assay_index = torch.tensor(
                 [self.assays.index(a) for a in frame["assay"]], dtype=torch.long
             )
-            return features, assay_index
+            return torch.cat([molecular, target_hot], dim=1), assay_index
         if self.conditioning in ("embedding", "heads"):
-            features = self._scale_blocks(self._features(smiles), fit=fit)
             index = torch.tensor(
                 condition_index(frame, self.targets, self.assays), dtype=torch.long
             )
-            return features, index
+            return molecular, index
         if self.conditioning == "film":
-            features = self._scale_blocks(self._features(smiles), fit=fit)
             block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
-            return features, torch.tensor(block, dtype=torch.float32)
+            return molecular, torch.tensor(block, dtype=torch.float32)
         if self.conditioning == "descriptor":
-            block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
-            return self._scale_blocks(self._features(smiles, block), fit=fit), None
-        one_hot = encode_conditions(frame, self.conditioning, self.targets, self.assays)
-        return self._scale_blocks(self._features(smiles, one_hot), fit=fit), None
+            block = torch.tensor(
+                descriptor_conditions(frame, self.assays, self.descriptor_sources),
+                dtype=torch.float32,
+            )
+            return torch.cat([molecular, block], dim=1), None
+        one_hot = torch.tensor(
+            encode_conditions(frame, self.conditioning, self.targets, self.assays),
+            dtype=torch.float32,
+        )
+        return torch.cat([molecular, one_hot], dim=1), None
 
-    def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
-        """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
+    def _scale_blocks(self, molecular: NDArray[np.float32], fit: bool) -> torch.Tensor:
+        """Scale the molecular block: log1p the fingerprint counts, standardise every dense
+        descriptor after it -- physchem, mechanistic, surrogate, ionization and embedding --
+        rather than physchem alone, which left the appended continuous blocks unscaled."""
         if fit:
-            n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
-            self._scaler = BlockScaler(n_count_columns=self.n_bits, n_dense_columns=n_dense)
-            self._scaler.fit(features)
+            self._scaler = BlockScaler(
+                n_count_columns=self.n_bits, n_dense_columns=molecular.shape[1] - self.n_bits
+            )
+            self._scaler.fit(molecular)
         if self._scaler is None:
             raise RuntimeError("model is not fitted")
-        return torch.from_numpy(self._scaler.transform(features))
+        return torch.from_numpy(self._scaler.transform(molecular))
 
     def fit(self, observations: pd.DataFrame) -> "NeuralNetwork":
         """Train on the observation table, using each row's own interval.

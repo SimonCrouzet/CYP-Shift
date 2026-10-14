@@ -197,14 +197,29 @@ class GraphNetwork:
         #: onto the pIC50 centre/spread.
         self._resp_centre = 0.0
         self._resp_spread = 1.0
+        #: Standardisation of the appended continuous x_d blocks (embedding, descriptors),
+        #: fitted on retained training; the one-hot conditioning is left raw.
+        self._xd_centre: np.ndarray | None = None
+        self._xd_scale: np.ndarray | None = None
+
+    def _continuous_blocks(self, smiles: list[str]) -> np.ndarray:
+        """The appended continuous x_d blocks (embedding, computed descriptors), or empty."""
+        blocks = []
+        if self._embedding is not None:
+            blocks.append(self._embedding(smiles))
+        if self._descriptor is not None:
+            blocks.append(self._descriptor(smiles))
+        return np.hstack(blocks) if blocks else np.empty((len(smiles), 0), dtype=np.float32)
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
         conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
-        smiles = frame["SMILES"].tolist()
-        if self._embedding is not None:
-            conditioning = np.hstack([conditioning, self._embedding(smiles)])
-        if self._descriptor is not None:
-            conditioning = np.hstack([conditioning, self._descriptor(smiles)])
+        continuous = self._continuous_blocks(frame["SMILES"].tolist())
+        if continuous.shape[1] and self._xd_centre is not None:
+            # Standardise the appended continuous blocks (embedding, descriptors) fitted on
+            # retained training; the sparse one-hot conditioning is left raw.
+            continuous = (continuous - self._xd_centre) / self._xd_scale
+        if continuous.shape[1]:
+            conditioning = np.hstack([conditioning, continuous])
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
@@ -281,6 +296,12 @@ class GraphNetwork:
             response = usable.loc[is_response, "value"].to_numpy(float)
             self._resp_centre = float(response.mean())
             self._resp_spread = float(response.std()) or 1.0
+        # Fit the continuous-x_d standardisation on the retained training rows, before the
+        # datapoints apply it.
+        continuous = self._continuous_blocks(usable["SMILES"].tolist())
+        if continuous.shape[1]:
+            self._xd_centre = continuous.mean(axis=0)
+            self._xd_scale = continuous.std(axis=0) + 1e-6
         logger.info(
             "building %d datapoints (%d response), pIC50 centre %.2f spread %.2f",
             len(usable),
