@@ -15,6 +15,12 @@
 # leaderboard and that for the science; where they disagree, the leave-one-target-out
 # result is the one about the descriptor.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

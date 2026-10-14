@@ -14,6 +14,12 @@
 # near relatives, 3.0 far ones -- so scored_weight trades that noisier same-target assay
 # mix against the challenge's own dose-response.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

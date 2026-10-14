@@ -4,8 +4,10 @@
     python scripts/run_experiment.py --config configs/default.json
     python scripts/run_experiment.py --set model.kind=neural conditioning.strategy=flat
 
-Any configuration field can be overridden with ``--set section.field=value``, which is
-also the form a Weights & Biases sweep passes on the command line.
+Any configuration field can be overridden with ``--set section.field=value``. A Weights
+& Biases sweep's default command instead passes each parameter as a bare long flag
+(``--section.field=value``); both forms are accepted, so the sweep configs need only a
+command block that adds ``--track``.
 """
 
 import argparse
@@ -22,16 +24,34 @@ logger = logging.getLogger("cypshift.run")
 
 
 def parse_value(text: str) -> object:
-    """Read a value the way JSON would, falling back to the plain string."""
+    """Read a value the way JSON would, with Python-style booleans, else the plain string."""
+    stripped = text.strip()
+    if stripped in ("True", "False"):  # W&B serialises booleans Python-style
+        return stripped == "True"
     try:
-        return json.loads(text)
+        return json.loads(stripped)
     except json.JSONDecodeError:
         return text
 
 
-def build_config(arguments: argparse.Namespace) -> ExperimentConfig:
+def overrides_from(set_args: list[str] | None, extras: list[str]) -> list[str]:
+    """Collect ``section.field=value`` assignments from ``--set`` and from W&B-style flags.
+
+    A W&B sweep's default command passes each parameter as ``--section.field=value``, not
+    ``--set section.field=value``, so the bare long flags are accepted as well.
+    """
+    assignments = list(set_args or [])
+    for item in extras:
+        if item.startswith("--") and "=" in item:
+            assignments.append(item[2:])
+        else:
+            raise SystemExit(f"unrecognised argument {item!r}; expected --section.field=value")
+    return assignments
+
+
+def build_config(arguments: argparse.Namespace, extras: list[str]) -> ExperimentConfig:
     config = ExperimentConfig.load(Path(arguments.config))
-    for assignment in arguments.set or []:
+    for assignment in overrides_from(arguments.set, extras):
         if "=" not in assignment:
             raise SystemExit(f"expected section.field=value, got {assignment!r}")
         dotted, _, raw = assignment.partition("=")
@@ -48,13 +68,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--track", action="store_true", help="Log to Weights & Biases.")
     parser.add_argument("--save-config", type=Path, help="Write the resolved config here.")
     parser.add_argument("--quiet", action="store_true")
-    arguments = parser.parse_args(argv)
+    arguments, extras = parser.parse_known_args(argv)
 
     logging.basicConfig(
         level=logging.WARNING if arguments.quiet else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    config = build_config(arguments)
+    config = build_config(arguments, extras)
     if arguments.save_config:
         config.save(arguments.save_config)
 
