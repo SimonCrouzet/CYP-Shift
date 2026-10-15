@@ -22,9 +22,6 @@ MACRO_LABEL: Final = "MA"
 BOOTSTRAP_SAMPLES: Final = 1000
 BOOTSTRAP_SEED: Final = 0
 
-#: Below this pIC50 the assay is outside its reliable dynamic range; the fitted
-#: credible interval widens roughly tenfold and the metric stops penalising error.
-ASSAY_FLOOR_PIC50: Final = 4.0
-
-#: log10(2), the fold-shift threshold defining a time-dependent inhibitor.
-TDI_SHIFT_THRESHOLD: Final = 0.301
+# Note: a TDI shift threshold and an assay floor used to live here, but the organisers'
+# evaluation code defines neither -- is_TDI is a provided label scored by MCC. They were our
+# models' decision heuristic, not a challenge constant, and now live in cypshift.models.tdi.

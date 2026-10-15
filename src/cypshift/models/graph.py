@@ -42,6 +42,7 @@ from chemprop import models as cpmodels
 from chemprop import nn as cpnn
 from chemprop.nn.metrics import ChempropMetric
 from lightning import pytorch as pl
+from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, RESPONSE_ASSAY, encode_conditions, n_condition_columns
@@ -50,6 +51,7 @@ from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,9 @@ logger = logging.getLogger(__name__)
 #: chemprop's finiteness mask zeroes the irrelevant task, so the two scales never mix.
 VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
+#: The preincubated dose-response arm's assay tag (see cypshift.data.assembly.ASSAYS), the
+#: second arm predict_is_time_dependent compares against the direct one.
+TDI_ASSAY = "tdi_drc"
 
 #: CheMeleon: a D-MPNN message-passing encoder pretrained on 100M molecules, published on
 #: Zenodo. Loaded into chemprop's own BondMessagePassing and fine-tuned here, the same way
@@ -189,6 +194,8 @@ class GraphNetwork:
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
         auxiliary_response: bool = False,
+        tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
+        tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         physchem: bool = False,
         mechanism: bool = False,
         ionization_geometry: bool = False,
@@ -200,6 +207,8 @@ class GraphNetwork:
         # The response head is trained on its own assay, so it joins the conditioning
         # vocabulary when it is on (and the label matrix grows a fourth column for it).
         self.auxiliary_response = auxiliary_response
+        self.tdi_shift_threshold = tdi_shift_threshold
+        self.tdi_assay_floor = tdi_assay_floor
         self.assays = (*assays, RESPONSE_ASSAY) if auxiliary_response else assays
         self._n_label = N_LABEL_COLUMNS + 1 if auxiliary_response else N_LABEL_COLUMNS
         self.conditioning = conditioning
@@ -398,19 +407,15 @@ class GraphNetwork:
             logger.info("member %d trained", member)
         return self
 
-    def predict(self, smiles: list[str]) -> PredictiveDistribution:
-        """Predict at the scored assay condition for every endpoint."""
+    def _samples_at_assay(self, smiles: list[str], assay: str) -> NDArray[np.float64]:
+        """Per-member predicted pIC50 at one assay condition; (members, n, endpoints)."""
         if not self._members:
             raise RuntimeError("model is not fitted")
         n = len(smiles)
         samples = np.empty((self.n_members, n, len(self.endpoints)))
         for column, endpoint in enumerate(self.endpoints):
             frame = pd.DataFrame(
-                {
-                    "SMILES": smiles,
-                    "target": [endpoint.split("_")[0]] * n,
-                    "assay": [SCORED_ASSAY] * n,
-                }
+                {"SMILES": smiles, "target": [endpoint.split("_")[0]] * n, "assay": [assay] * n}
             )
             dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
             loader = cpdata.build_dataloader(
@@ -425,4 +430,26 @@ class GraphNetwork:
                 samples[index, :, column] = (
                     predicted[:, VALUE].numpy() * self._spread + self._centre
                 )
-        return PredictiveDistribution(samples, self.endpoints)
+        return samples
+
+    def predict(self, smiles: list[str]) -> PredictiveDistribution:
+        """Predict at the scored (direct-inhibition) assay condition for every endpoint."""
+        return PredictiveDistribution(self._samples_at_assay(smiles, SCORED_ASSAY), self.endpoints)
+
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """Call is_TDI by comparing the direct and preincubated arms the graph predicts.
+
+
+        Same two-views-of-one-object idea as the curve model: condition the one trunk on the
+        direct and the ``tdi_drc`` (preincubated) assay, then apply the organisers' shift rule
+        with the model's own swept thresholds. Only meaningful when the preincubated arm was
+        trained (``sources.tdi_arm``); run_cv scores TDI only in that case.
+        """
+        direct = self._samples_at_assay(smiles, SCORED_ASSAY).mean(axis=0)
+        preincubated = self._samples_at_assay(smiles, TDI_ASSAY).mean(axis=0)
+        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
+        return np.where(
+            direct > floor,
+            (preincubated - direct) > shift,
+            preincubated > floor + shift,
+        )

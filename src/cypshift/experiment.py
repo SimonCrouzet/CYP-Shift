@@ -17,6 +17,7 @@ from typing import Any, get_args, get_origin
 from cypshift.data.assembly import ASSAYS, TIERS
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -274,10 +275,10 @@ class CurveConfig:
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
     screen_noise: float = 0.1
     #: The model's is_TDI decision thresholds on its predicted arm shift. Default to the
-    #: organisers' label rule (a 0.301-log, 2-fold shift above a 4.0 assay floor); swept,
+    #: organisers' label rule (the 2-fold shift above the assay floor, from config.py); swept,
     #: since the best threshold on noisy predicted shifts need not equal the labelling one.
-    tdi_shift_threshold: float = 0.301
-    tdi_assay_floor: float = 4.0
+    tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
+    tdi_assay_floor: float = TDI_FLOOR_DEFAULT
 
 
 @dataclass
@@ -300,6 +301,11 @@ class GraphConfig:
     #: inactives), sharing the encoder, to enrich the representation. Needs sources.veith.
     #: Swept, off by default.
     auxiliary_response: bool = False
+    #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
+    #: direct and preincubated (tdi_drc) arms. Default to the organisers' rule (config.py);
+    #: swept. Only used when sources.tdi_arm trained the preincubated arm.
+    tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
+    tdi_assay_floor: float = TDI_FLOOR_DEFAULT
 
 
 @dataclass

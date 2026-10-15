@@ -37,12 +37,7 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import (
-    ASSAY_FLOOR_PIC50,
-    ISOFORMS,
-    REGRESSION_ENDPOINTS,
-    TDI_SHIFT_THRESHOLD,
-)
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import (
     ASSAYS,
     REFERENCE_ASSAY,
@@ -62,6 +57,7 @@ from cypshift.models.base import (
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +580,7 @@ class NeuralNetwork:
         return np.mean(passes, axis=0)
 
     def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
+        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
     ) -> NDArray[np.bool_]:
         """TDI call from two scalar values -- see BoostedTrees.predict_is_time_dependent.
 
@@ -600,8 +596,8 @@ class NeuralNetwork:
             flags.append(
                 np.where(
                     direct > assay_floor,
-                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                    (preincubated - direct) > TDI_SHIFT_DEFAULT,
+                    preincubated > assay_floor + TDI_SHIFT_DEFAULT,
                 )
             )
         return np.stack(flags, axis=1)

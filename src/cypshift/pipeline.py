@@ -115,6 +115,8 @@ def build_model(
             pretraining=config.model.graph.pretraining,
             pretraining_cache=config.model.graph.pretraining_cache,
             auxiliary_response=config.model.graph.auxiliary_response,
+            tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
+            tdi_assay_floor=config.model.graph.tdi_assay_floor,
             physchem=config.features.use_physicochemical,
             mechanism=config.features.use_mechanistic,
             ionization_geometry=config.features.use_ionization_geometry,

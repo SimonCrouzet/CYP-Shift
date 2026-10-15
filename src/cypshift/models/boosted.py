@@ -24,12 +24,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from cypshift.config import (
-    ASSAY_FLOOR_PIC50,
-    ISOFORMS,
-    REGRESSION_ENDPOINTS,
-    TDI_SHIFT_THRESHOLD,
-)
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, encode_conditions
 from cypshift.features.embeddings import block_for
 from cypshift.features.ionization import block_for as ionization_block_for
@@ -41,6 +36,7 @@ from cypshift.models.base import (
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +320,7 @@ class BoostedTrees:
         return np.mean([m.predict(features) + self._offset for m in self._members], axis=0)
 
     def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
+        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
     ) -> NDArray[np.bool_]:
         """Time-dependent-inhibition call from *two scalar values* rather than two curves.
 
@@ -340,8 +336,8 @@ class BoostedTrees:
             flags.append(
                 np.where(
                     direct > assay_floor,
-                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                    (preincubated - direct) > TDI_SHIFT_DEFAULT,
+                    preincubated > assay_floor + TDI_SHIFT_DEFAULT,
                 )
             )
         return np.stack(flags, axis=1)

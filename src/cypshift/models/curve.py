@@ -33,7 +33,7 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS, TDI_SHIFT_THRESHOLD
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.conditioning import describe_all
 from cypshift.features.embeddings import block_for
 from cypshift.features.ionization import block_for as ionization_block_for
@@ -45,6 +45,7 @@ from cypshift.models.base import (
     rows_for_stage,
     training_stages,
 )
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -261,8 +262,8 @@ class CurveModel:
         n_forward_passes: int = 30,
         conditioning: str = "heads",
         descriptor_sources: tuple[str, ...] = ("curated",),
-        tdi_shift_threshold: float = TDI_SHIFT_THRESHOLD,
-        tdi_assay_floor: float = 4.0,
+        tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
+        tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",

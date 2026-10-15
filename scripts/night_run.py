@@ -184,6 +184,13 @@ REGRESSION: dict[str, dict] = {
         "model.objective": "expectile",
         "model.objective_tau": 0.6,
     },
+    # Trains the preincubated arm so the graph serves the TDI track too (scored by MCC),
+    # the regression+classification link over one architecture.
+    "graph_chemeleon_tdi": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "sources.tdi_arm": True,
+    },
     # --- Neural MLP (GPU) ---
     "neural": {"model.kind": "neural"},
     "neural_absolute": {"model.kind": "neural", "model.objective": "absolute"},

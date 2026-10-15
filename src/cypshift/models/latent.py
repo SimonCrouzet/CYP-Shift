@@ -34,9 +34,10 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
+from cypshift.config import ISOFORMS
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +247,7 @@ class LatentPotencyModel:
         return latent[..., DIRECT] + latent[..., SHIFT]
 
     def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = 4.0
+        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
     ) -> NDArray[np.bool_]:
         """Apply the challenge's own labelling rule to the predicted latents.
 
@@ -260,6 +261,6 @@ class LatentPotencyModel:
         resolved = direct > assay_floor
         return np.where(
             resolved,
-            (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-            preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+            (preincubated - direct) > TDI_SHIFT_DEFAULT,
+            preincubated > assay_floor + TDI_SHIFT_DEFAULT,
         )

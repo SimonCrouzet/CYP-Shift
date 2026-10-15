@@ -187,15 +187,15 @@ def test_a_clear_shift_is_called_time_dependent():
     """If the preincubated pIC50 is well above the direct one, the rule fires."""
     import numpy as np
 
-    from cypshift.config import TDI_SHIFT_THRESHOLD
     from cypshift.models.boosted import BoostedTrees
+    from cypshift.models.tdi import TDI_SHIFT_DEFAULT
 
     model = BoostedTrees()
     # stub the per-assay prediction: a big direct->preincubated shift on every isoform
     model._predict_pic50_at = lambda smiles, enzyme, assay: (
         np.full(len(smiles), 6.0)
         if assay == "tdi_drc"
-        else np.full(len(smiles), 6.0 - 2 * TDI_SHIFT_THRESHOLD)
+        else np.full(len(smiles), 6.0 - 2 * TDI_SHIFT_DEFAULT)
     )
     flags = model.predict_is_time_dependent(["CCO", "CCN"])
     assert flags.all()
