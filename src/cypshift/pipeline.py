@@ -147,6 +147,21 @@ def build_model(
             ionization_geometry=config.features.use_ionization_geometry,
             ionization_cache=config.features.ionization_cache,
         )
+    if kind == "tfm":
+        from cypshift.models.tfm import TabularFoundationModel
+
+        # Only the scored isoforms: the TFM fits one regressor per isoform and does not use
+        # auxiliary-enzyme conditioning, so extra targets would be fit but never read.
+        return TabularFoundationModel(
+            targets=ISOFORMS,
+            backend=config.model.tfm.backend,
+            physchem=config.features.use_physicochemical,
+            mechanism=config.features.use_mechanistic,
+            molecular_embedding=config.features.molecular_embedding,
+            ionization_geometry=config.features.use_ionization_geometry,
+            ionization_cache=config.features.ionization_cache,
+            seed=config.data.seed,
+        )
     raise ValueError(f"model.kind={kind!r} has no builder")
 
 

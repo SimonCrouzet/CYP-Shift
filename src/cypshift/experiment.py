@@ -68,7 +68,7 @@ SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding")
 #: (but ``none``) needs a precomputed cache from scripts/compute_embeddings.py.
 EMBEDDING_SOURCES = ("none", "mammal")
 
-MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
+MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble", "tfm")
 OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
 
 #: How a graph ensemble's members differ. ``reseed`` varies only the initialisation seed;
@@ -303,6 +303,17 @@ class GraphConfig:
 
 
 @dataclass
+class TfmConfig:
+    """The tabular foundation model family; see :data:`TFM_BACKENDS`."""
+
+    #: Which tabular foundation model backs it (``tabpfn``; Mitra to come). Swept.
+    backend: str = "tabpfn"
+
+
+TFM_BACKENDS = ("tabpfn",)
+
+
+@dataclass
 class ModelConfig:
     kind: str = "boosted"
     objective: str = "soft_threshold"
@@ -314,6 +325,7 @@ class ModelConfig:
     neural: NeuralConfig = field(default_factory=NeuralConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     curve: CurveConfig = field(default_factory=CurveConfig)
+    tfm: TfmConfig = field(default_factory=TfmConfig)
 
 
 @dataclass
