@@ -282,6 +282,9 @@ class GraphConfig:
     dropout: float = 0.1
     epochs: int = 30
     batch_size: int = 64
+    #: Dataloader worker processes (0 = main process). Higher keeps the GPU fed and speeds
+    #: training; the right value is machine-dependent, so it is set per run, not swept.
+    num_workers: int = 0
     #: How ensemble members differ; see :data:`ENSEMBLE_STRATEGIES`. Swept.
     ensemble: str = "reseed"
     #: A pretrained D-MPNN encoder to initialise from; see :data:`GRAPH_PRETRAINING`. Swept.

@@ -133,6 +133,7 @@ class GraphNetwork:
         dropout: float = 0.1,
         epochs: int = 30,
         batch_size: int = 64,
+        num_workers: int = 0,
         n_members: int = 1,
         loss: str = "soft_threshold",
         ensemble: str = "reseed",
@@ -158,6 +159,10 @@ class GraphNetwork:
         self.dropout = dropout
         self.epochs = epochs
         self.batch_size = batch_size
+        # Dataloader worker processes. 0 loads in the main process (safe everywhere, but
+        # starves the GPU); more parallelise featurisation so the GPU stays fed. Kept
+        # settable because the right value depends on the machine and who else is using it.
+        self.num_workers = num_workers
         self.n_members = n_members
         self.loss = loss
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
@@ -322,7 +327,9 @@ class GraphNetwork:
             else:
                 member_points = points
             dataset = cpdata.MoleculeDataset(member_points)
-            loader = cpdata.build_dataloader(dataset, batch_size=self.batch_size, num_workers=0)
+            loader = cpdata.build_dataloader(
+                dataset, batch_size=self.batch_size, num_workers=self.num_workers
+            )
             model = self._build()
             trainer = pl.Trainer(
                 max_epochs=self.epochs,
@@ -353,7 +360,7 @@ class GraphNetwork:
             )
             dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
             loader = cpdata.build_dataloader(
-                dataset, batch_size=self.batch_size, shuffle=False, num_workers=0
+                dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
             )
             for index, model in enumerate(self._members):
                 model.eval()

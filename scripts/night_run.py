@@ -29,6 +29,7 @@ config is one full cross-validation; the GPU families make this long, hence a si
 """
 
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -52,6 +53,11 @@ TDI_SUBMISSION = Path("submissions/night_submission_classification.csv")
 BUNDLE_DIR = Path("data/run_bundles")
 #: Folds for the stratified, scaffold-grouped cross-validation each config is scored on.
 N_FOLDS = 5
+#: Graph dataloader worker processes, read from the environment so it can be tuned per run
+#: without editing tracked code (which would change the results namespace and force a fresh
+#: run). Set ``CYP_WORKERS`` before launching: ~4 on a free machine, 2 when sharing it, 0-1
+#: when the machine is in use. Only the graph model uses it; it does not affect results.
+NUM_WORKERS = int(os.environ.get("CYP_WORKERS", "0"))
 
 #: The established auxiliary set (octant + tox21), which beats the plain baseline on the
 #: boosted model; used here to check whether it also helps the stronger families.
@@ -324,6 +330,10 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
     config.override("data.seed", seed)
     for key, value in overrides.items():
         config.override(key, value)
+    # Graph dataloader workers, set from the environment (CYP_WORKERS), not swept and not a
+    # tracked edit -- so tuning it to the machine does not change the git revision and a
+    # resume still reuses completed configs. Harmless on non-graph configs (unused field).
+    config.override("model.graph.num_workers", NUM_WORKERS)
     config.validate()
     started = time.time()
     bundle = BUNDLE_DIR / REV / f"{phase}_{name}_seed{seed}".replace(":", "_")
@@ -436,7 +446,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     _archive_stale_results()
-    logger.info("run identity (results namespace): %s", REV)
+    logger.info(
+        "run identity (results namespace): %s | graph dataloader workers: %d", REV, NUM_WORKERS
+    )
 
     logger.info(
         "=== Regression: %d configs, %d-fold CV x %d ===", len(REGRESSION), N_FOLDS, len(SEEDS)

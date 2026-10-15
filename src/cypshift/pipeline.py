@@ -106,6 +106,7 @@ def build_model(
             dropout=config.model.graph.dropout,
             epochs=config.model.graph.epochs,
             batch_size=config.model.graph.batch_size,
+            num_workers=config.model.graph.num_workers,
             n_members=config.model.n_members,
             ensemble=config.model.graph.ensemble,
             pretraining=config.model.graph.pretraining,
