@@ -138,6 +138,8 @@ def build_model(
             n_forward_passes=config.model.curve.forward_passes,
             conditioning=config.model.curve.conditioning,
             descriptor_sources=tuple(config.model.curve.descriptor_sources),
+            tdi_shift_threshold=config.model.curve.tdi_shift_threshold,
+            tdi_assay_floor=config.model.curve.tdi_assay_floor,
             seed=config.data.seed,
             surrogate=surrogate,
             training=config.training,

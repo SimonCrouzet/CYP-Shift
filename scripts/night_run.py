@@ -226,6 +226,18 @@ TDI: dict[str, dict] = {
         "model.curve.conditioning": "heads",
         "features.use_ionization_geometry": True,
     },
+    "curve_heads_tdishift_15": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.tdi_shift_threshold": 0.15,
+    },
+    "curve_heads_tdishift_50": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.tdi_shift_threshold": 0.5,
+    },
 }
 
 

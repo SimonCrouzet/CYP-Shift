@@ -273,6 +273,11 @@ class CurveConfig:
     #: inhibited fraction. One measurement with no replicate does not support a tight
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
     screen_noise: float = 0.1
+    #: The model's is_TDI decision thresholds on its predicted arm shift. Default to the
+    #: organisers' label rule (a 0.301-log, 2-fold shift above a 4.0 assay floor); swept,
+    #: since the best threshold on noisy predicted shifts need not equal the labelling one.
+    tdi_shift_threshold: float = 0.301
+    tdi_assay_floor: float = 4.0
 
 
 @dataclass

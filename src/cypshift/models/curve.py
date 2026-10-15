@@ -261,6 +261,8 @@ class CurveModel:
         n_forward_passes: int = 30,
         conditioning: str = "heads",
         descriptor_sources: tuple[str, ...] = ("curated",),
+        tdi_shift_threshold: float = TDI_SHIFT_THRESHOLD,
+        tdi_assay_floor: float = 4.0,
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",
@@ -268,6 +270,12 @@ class CurveModel:
         ionization_cache: str = "data/external/ionization/features.parquet",
     ) -> None:
         self.conditioning = conditioning
+        # The model's own is_TDI decision thresholds, applied to its (noisy) predicted
+        # arm shift. They default to the organisers' label rule (a 2-fold, 0.301-log shift
+        # above a 4.0 assay floor) but are swept, since the threshold that best recovers the
+        # labels from predicted shifts need not equal the one that defines them.
+        self.tdi_shift_threshold = tdi_shift_threshold
+        self.tdi_assay_floor = tdi_assay_floor
         #: Which sources build the per-enzyme vector when conditioning is
         #: "descriptor" or "film"; see
         #: :data:`cypshift.data.conditioning.DESCRIPTOR_SOURCES`.
@@ -467,15 +475,14 @@ class CurveModel:
         curves = torch.from_numpy(self._curves(smiles).mean(axis=0)[:, :, ARMS.index(arm)])
         return inhibition_at(curves, pc).numpy()
 
-    def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = 4.0
-    ) -> NDArray[np.bool_]:
-        """Compare the two arms' curves through the organisers' published rule."""
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """Call is_TDI from the two arms' curves, using the model's decision thresholds."""
+        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
         curves = self._curves(smiles).mean(axis=0)
         direct = curves[:, :, ARMS.index("direct"), PIC50]
         preincubated = curves[:, :, ARMS.index("preincubated"), PIC50]
         return np.where(
-            direct > assay_floor,
-            (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-            preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+            direct > floor,
+            (preincubated - direct) > shift,
+            preincubated > floor + shift,
         )
