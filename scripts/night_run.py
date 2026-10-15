@@ -332,6 +332,23 @@ CURVE_HP = {
 REGRESSION.update(_ofat("boosted", {}, BOOSTED_HP))
 REGRESSION.update(_ofat("neural", {"model.kind": "neural"}, NEURAL_HP))
 REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, GRAPH_HP))
+
+
+def _gpu_first(item: tuple[str, dict]) -> int:
+    """Run order key: GPU families before CPU boosted. The GPU is the scarce resource in a
+    full-machine window and boosted can run any time on CPU, so the slow graph/neural/TFM
+    configs go first (after the quick reference), not after every boosted config."""
+    name, overrides = item
+    if name == "ref_submitted":
+        return 0
+    gpu = ("graph", "neural", "per_target_ensemble", "tfm")
+    return 1 if overrides.get("model.kind") in gpu else 2
+
+
+#: Reordered GPU-first so a full-machine run uses the GPU rather than spending hours on the
+#: CPU boosted configs first (sort is stable, so within each group the curated order holds).
+REGRESSION = dict(sorted(REGRESSION.items(), key=_gpu_first))
+
 TDI.update(
     _ofat(
         "curve",
