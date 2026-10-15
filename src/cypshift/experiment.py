@@ -251,6 +251,10 @@ class NeuralConfig:
     batch_size: int = 256
     learning_rate: float = 1e-3
     forward_passes: int = 30
+    #: is_TDI decision thresholds for its direct-vs-preincubated arm comparison; our swept
+    #: heuristic (cypshift.models.tdi), not a challenge constant. Needs sources.tdi_arm.
+    tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
+    tdi_assay_floor: float = TDI_FLOOR_DEFAULT
 
 
 @dataclass
@@ -274,11 +278,14 @@ class CurveConfig:
     #: inhibited fraction. One measurement with no replicate does not support a tight
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
     screen_noise: float = 0.1
-    #: The model's is_TDI decision thresholds on its predicted arm shift. Default to the
-    #: organisers' label rule (the 2-fold shift above the assay floor, from config.py); swept,
-    #: since the best threshold on noisy predicted shifts need not equal the labelling one.
+    #: The model's is_TDI decision thresholds on its predicted arm shift; our heuristic, not
+    #: a challenge constant (see cypshift.models.tdi). Swept, since the best threshold on
+    #: noisy predicted shifts need not equal the one that defined the labels.
     tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
     tdi_assay_floor: float = TDI_FLOOR_DEFAULT
+    #: Asymmetry of the dose-response dead-zone loss; >0.5 penalises under-prediction more
+    #: (errs high), the curve's analogue of the expectile/pinball objectives. Swept.
+    loss_tau: float = 0.5
 
 
 @dataclass

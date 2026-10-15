@@ -16,8 +16,11 @@ model's noisy predicted shifts need not equal whatever rule generated them.
 
 import math
 
-#: Default arm shift to call is_TDI: a 2-fold IC50 shift, log10(2). Swept, not a spec value.
+#: Default arm shift to call is_TDI: a 2-fold IC50 shift (log10(2)), the standard domain
+#: definition of time-dependent inhibition. A heuristic guess at the organisers' is_TDI
+#: boundary, not their stated rule (their eval names no threshold); swept.
 TDI_SHIFT_DEFAULT = math.log10(2.0)
-#: Default minimum direct-arm pIC50 to consider an is_TDI call -- a weak-activity cutoff we
-#: chose (IC50 ~100 uM), not an organiser constant. Swept.
+#: Default minimum direct-arm pIC50 to call is_TDI: pIC50 4, where the assay's credible band
+#: widens sharply (actives ~0.3-0.5 wide, compounds below 4 are 1.2-2.6) -- the reliable-range
+#: / active-inactive boundary used across the pipeline. A data-grounded cutoff, ours; swept.
 TDI_FLOOR_DEFAULT = 4.0

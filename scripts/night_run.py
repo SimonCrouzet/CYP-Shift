@@ -276,6 +276,12 @@ TDI: dict[str, dict] = {
         "model.curve.conditioning": "heads",
         "model.curve.tdi_shift_threshold": 0.5,
     },
+    "curve_heads_losstau_60": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.loss_tau": 0.6,
+    },
 }
 
 

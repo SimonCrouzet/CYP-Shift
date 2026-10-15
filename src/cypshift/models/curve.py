@@ -216,6 +216,7 @@ def curve_loss(
     upper: torch.Tensor,
     weight: torch.Tensor,
     screen_pc: float = SCREEN_PC,
+    tau: float = 0.5,
 ) -> torch.Tensor:
     """Soft-threshold error against whichever part of the curve a row observed.
 
@@ -226,6 +227,9 @@ def curve_loss(
         upper: Upper bound.
         weight: Per-row trust.
         screen_pc: Concentration the screen was run at.
+        tau: Asymmetry. At 0.5 the dead-zone penalty is symmetric; ``tau>0.5`` penalises
+            falling below the band (under-prediction) more than overshooting it, the upward
+            bias the metric rewards -- the curve analogue of the expectile/pinball losses.
 
     Returns:
         Weighted mean loss.
@@ -235,7 +239,8 @@ def curve_loss(
     predicted = torch.where(observation_kind == 0, midpoint, response)
     above = torch.clamp(predicted - upper, min=0.0)
     below = torch.clamp(lower - predicted, min=0.0)
-    return ((above + below) * weight).sum() / weight.sum().clamp(min=1e-8)
+    penalty = 2.0 * (1.0 - tau) * above + 2.0 * tau * below
+    return (penalty * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
 class CurveModel:
@@ -264,6 +269,7 @@ class CurveModel:
         descriptor_sources: tuple[str, ...] = ("curated",),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
+        loss_tau: float = 0.5,
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",
@@ -277,6 +283,8 @@ class CurveModel:
         # labels from predicted shifts need not equal the one that defines them.
         self.tdi_shift_threshold = tdi_shift_threshold
         self.tdi_assay_floor = tdi_assay_floor
+        # Asymmetry of the dose-response dead-zone loss; >0.5 errs high to resist compression.
+        self.loss_tau = loss_tau
         #: Which sources build the per-enzyme vector when conditioning is
         #: "descriptor" or "film"; see
         #: :data:`cypshift.data.conditioning.DESCRIPTOR_SOURCES`.
@@ -408,7 +416,12 @@ class CurveModel:
                     rows = torch.arange(len(batch))
                     parameters = predicted[rows, target_index[batch], arm_index[batch]]
                     loss = curve_loss(
-                        parameters, kind[batch], lower_t[batch], upper_t[batch], weight_t[batch]
+                        parameters,
+                        kind[batch],
+                        lower_t[batch],
+                        upper_t[batch],
+                        weight_t[batch],
+                        tau=self.loss_tau,
                     )
                     loss.backward()
                     optimiser.step()

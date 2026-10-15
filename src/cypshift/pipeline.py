@@ -96,6 +96,8 @@ def build_model(
             batch_size=config.model.neural.batch_size,
             learning_rate=config.model.neural.learning_rate,
             n_forward_passes=config.model.neural.forward_passes,
+            tdi_shift_threshold=config.model.neural.tdi_shift_threshold,
+            tdi_assay_floor=config.model.neural.tdi_assay_floor,
             **shared,
         )
     if kind == "graph":
@@ -144,6 +146,7 @@ def build_model(
             descriptor_sources=tuple(config.model.curve.descriptor_sources),
             tdi_shift_threshold=config.model.curve.tdi_shift_threshold,
             tdi_assay_floor=config.model.curve.tdi_assay_floor,
+            loss_tau=config.model.curve.loss_tau,
             seed=config.data.seed,
             surrogate=surrogate,
             training=config.training,

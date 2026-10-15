@@ -311,6 +311,8 @@ class NeuralNetwork:
         n_forward_passes: int = 30,
         loss: str = "soft_threshold",
         tau: float = 0.5,
+        tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
+        tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         embedding_dim: int = 8,
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
@@ -342,6 +344,8 @@ class NeuralNetwork:
         self.n_forward_passes = n_forward_passes
         self.loss = loss
         self.tau = tau
+        self.tdi_shift_threshold = tdi_shift_threshold
+        self.tdi_assay_floor = tdi_assay_floor
         #: Width of the learned (target, assay) table when conditioning == "embedding".
         self.embedding_dim = embedding_dim
         #: Pocket-descriptor sources for the "descriptor" and "film" strategies.
@@ -579,25 +583,24 @@ class NeuralNetwork:
                 passes.append(out.numpy())
         return np.mean(passes, axis=0)
 
-    def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
-    ) -> NDArray[np.bool_]:
-        """TDI call from two scalar values -- see BoostedTrees.predict_is_time_dependent.
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """TDI call by comparing the direct and preincubated arms, with swept thresholds.
 
         Requires the preincubated arm in training (``sources.tdi_arm``). One column per
-        isoform, matching the curve model's shape.
+        isoform, matching the curve and graph models' shape.
         """
         if self._model is None:
             raise RuntimeError("model is not fitted")
+        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
         flags = []
         for enzyme in (e.split("_")[0] for e in REGRESSION_ENDPOINTS):
             direct = self._predict_pic50_at(smiles, enzyme, "direct_inhibition_drc")
             preincubated = self._predict_pic50_at(smiles, enzyme, "tdi_drc")
             flags.append(
                 np.where(
-                    direct > assay_floor,
-                    (preincubated - direct) > TDI_SHIFT_DEFAULT,
-                    preincubated > assay_floor + TDI_SHIFT_DEFAULT,
+                    direct > floor,
+                    (preincubated - direct) > shift,
+                    preincubated > floor + shift,
                 )
             )
         return np.stack(flags, axis=1)
