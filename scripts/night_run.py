@@ -1,27 +1,29 @@
-"""Settle the regression config overnight, then write a submission.
+"""Sweep the model space overnight on cross-validation, then write submissions.
 
-The first sweep ranked configurations on a single holdout split, so its top gaps
-(octant/tox21 versus the plain screen baseline, all within ~0.01) sit inside the
-noise of one split. This run separates signal from noise and ends in a file to
-submit:
+The boosted source/hyperparameter axis is exhausted (its holdout gains do not touch the
+leaderboard, which is ranking- and calibration-limited), so this run goes wide instead:
+every model family and its levers, scored on the stratified scaffold 5-fold CV, where the
+ranking (Spearman) transfers to the leaderboard even though the ST-RAE level does not.
 
-* Phase A -- robustness. The handful of configurations that led the sweep, plus the
-  two marginal winners combined (octant+tox21), each scored across five holdout
-  seeds. A configuration only counts as better if it beats the baseline on the
-  mean, not on one lucky split.
-* Phase B -- tuning. The boosted hyperparameters are swept around whichever Phase A
-  configuration won, across three seeds, so the submitted model is tuned rather than
-  left at defaults.
-* Phase C -- submission. The overall best (lowest mean macro ST-RAE) is refit on all
-  training data and used to predict the blinded test set, written to
-  ``submissions/``. The winning config is saved next to it.
+* Regression -- all five families and their levers: boosted (with the mammal embedding,
+  ionization geometry, the established octant+tox21 aux, and deeper trees), neural, the
+  D-MPNN graph (CheMeleon and MAMMAL pretraining, bagging, the qHTS response head,
+  ionization, and aux), and the per-target ensemble. Compared on the challenge data so the
+  families are apples-to-apples; a few aux-stack variants check whether octant+tox21 helps
+  the stronger models too. The mammal embedding stays challenge-only because its cache does
+  not cover the aux compounds; CheMeleon carries the pretrained-encoder-with-aux combination.
+* TDI -- the dose-response curve model under each conditioning strategy (detached per-arm
+  heads, a shared head on an enzyme descriptor, FiLM), scored by MCC out of fold.
+* Submissions -- the best regression config (lowest mean macro ST-RAE) and the best TDI
+  config (highest mean macro MCC) are each refit on all training data and written to
+  ``submissions/``, with their configs saved alongside. These are candidates to inspect,
+  not auto-uploaded: the ST-RAE level is optimistic, so judge the bundles on Spearman first.
 
-Resilient like the sweep: every (phase, name, seed) result is appended to
-``data/night_results.csv`` as it lands under a fixed schema, tagged with the code
-revision. A re-run skips only rows completed at the *current* revision, so a code change
-(e.g. the boosted weight fix) re-runs rather than reusing stale results; failures are
-recorded and retried, not treated as done. Boosted only -- fast and the family that has
-led every read so far.
+Resilient: every (phase, name, seed) result is appended to ``data/night_results.csv`` as it
+lands under a fixed schema, tagged with the code revision. A re-run skips only rows
+completed at the *current* revision; failures (an OOM graph fit, an invalid combination) are
+recorded and retried, never treated as done, so one bad config cannot sink the night. Each
+config is one full cross-validation; the GPU families make this long, hence a single repeat.
 
     /mnt/wsl/ext/envs/cypshift/bin/python scripts/night_run.py
 """
@@ -44,53 +46,234 @@ logger = logging.getLogger("night")
 RESULTS = Path("data/night_results.csv")
 BEST_CONFIG = Path("configs/night_best.json")
 SUBMISSION = Path("submissions/night_submission_regression.csv")
+TDI_BEST_CONFIG = Path("configs/night_best_tdi.json")
+TDI_SUBMISSION = Path("submissions/night_submission_classification.csv")
 #: Per-run out-of-fold bundles, namespaced by revision, for later blending/calibration.
 BUNDLE_DIR = Path("data/run_bundles")
 #: Folds for the stratified, scaffold-grouped cross-validation each config is scored on.
 N_FOLDS = 5
 
-OCT = {"sources.octant": True}
-TOX = {"sources.tox21": True}
+#: The established auxiliary set (octant + tox21), which beats the plain baseline on the
+#: boosted model; used here to check whether it also helps the stronger families.
+OCT_TOX = {"sources.octant": True, "sources.tox21": True}
+#: Deeper boosted trees, the tuned recipe from the earlier sweep.
+DEEP = {
+    "model.boosted.num_leaves": 127,
+    "model.boosted.n_estimators": 1000,
+    "model.boosted.learning_rate": 0.03,
+}
+#: Every auxiliary source at once -- the big-pool check (known to dilute, re-tested here).
 ALL_AUX = {
+    "sources.octant": True,
+    "sources.tox21": True,
+    "sources.veith": True,
     "sources.sair": True,
     "sources.novartis": True,
-    "sources.tox21": True,
     "sources.chembl": True,
-    "sources.octant": True,
-    "sources.veith": True,
 }
 
-#: The source comparison, re-run under the corrected weight/pooling semantics, plus the
-#: macro-balanced weighting that only became functional after the boosted weight fix.
-PHASE_A: dict[str, dict] = {
-    "baseline": {},
-    "octant": OCT,
-    "tox21": TOX,
-    "octant_tox21": {**OCT, **TOX},
-    "octant_tox21_curriculum": {**OCT, **TOX, "training.preset": "coarse_to_fine"},
-    "all_curriculum": {**ALL_AUX, "training.preset": "coarse_to_fine"},
-    "baseline_macrobalance": {"training.macro_balance": True},
-    "octant_tox21_macrobalance": {**OCT, **TOX, "training.macro_balance": True},
+#: Every model family and its levers, scored on the CV. Challenge-only unless the name says
+#: an aux source. The mammal cache now covers the octant+tox21 compounds (generated by
+#: compute_embeddings.py --extra), so mammal-with-aux is included alongside CheMeleon.
+REGRESSION: dict[str, dict] = {
+    # The exact recipe we submitted to the leaderboard (octant+tox21, 127-leaf boosted;
+    # live MA-ST-RAE 0.859). Scored first and on the same CV as everything else, so every
+    # config below is read as a delta against our real reference point.
+    "ref_submitted": {**OCT_TOX, "model.boosted.num_leaves": 127},
+    # --- Boosted (fast, CPU): objective, features, conditioning, screen, sources ---
+    "boosted": {},
+    "boosted_absolute": {"model.objective": "absolute"},
+    "boosted_squared": {"model.objective": "squared"},
+    "boosted_mammal": {"features.molecular_embedding": "mammal"},
+    "boosted_ionization": {"features.use_ionization_geometry": True},
+    "boosted_deep": DEEP,
+    "boosted_fp2048": {"features.fingerprint_bits": 2048},
+    "boosted_no_physchem": {"features.use_physicochemical": False},
+    "boosted_no_mechanistic": {"features.use_mechanistic": False},
+    "boosted_cond_descriptor": {"conditioning.strategy": "descriptor"},
+    "boosted_cond_metadata": {"conditioning.strategy": "metadata"},
+    "boosted_screen_predicted_label": {"multifidelity.screen_strategy": "predicted_label"},
+    "boosted_screen_embedding": {"multifidelity.screen_strategy": "embedding"},
+    "boosted_macro_balance": {"training.macro_balance": True},
+    "boosted_octant_tox21": OCT_TOX,
+    "boosted_octant_tox21_deep": {**OCT_TOX, **DEEP},
+    "boosted_octant_tox21_absolute": {**OCT_TOX, "model.objective": "absolute"},
+    "boosted_octant_tox21_ionization": {**OCT_TOX, "features.use_ionization_geometry": True},
+    "boosted_mammal_octant_tox21": {**OCT_TOX, "features.molecular_embedding": "mammal"},
+    "boosted_veith": {"sources.veith": True},
+    "boosted_veith_no_qhts": {"sources.veith": True, "auxiliary.include_qhts_inactives": False},
+    "boosted_octant_tox21_veith": {**OCT_TOX, "sources.veith": True},
+    "boosted_sair": {"sources.sair": True},
+    "boosted_all_aux": ALL_AUX,
+    # --- D-MPNN graph (GPU): the ranking candidates, run early ---
+    "graph": {"model.kind": "graph"},
+    "graph_absolute": {"model.kind": "graph", "model.objective": "absolute"},
+    "graph_squared": {"model.kind": "graph", "model.objective": "squared"},
+    "graph_chemeleon": {"model.kind": "graph", "model.graph.pretraining": "chemeleon"},
+    "graph_mammal": {"model.kind": "graph", "model.graph.pretraining": "mammal"},
+    "graph_bagging": {"model.kind": "graph", "model.graph.ensemble": "bagging"},
+    "graph_chemeleon_bagging": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "model.graph.ensemble": "bagging",
+    },
+    "graph_ionization": {"model.kind": "graph", "features.use_ionization_geometry": True},
+    "graph_chemeleon_ionization": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "features.use_ionization_geometry": True,
+    },
+    "graph_response": {"model.kind": "graph", "model.graph.auxiliary_response": True},
+    "graph_chemeleon_response": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "model.graph.auxiliary_response": True,
+    },
+    "graph_cond_descriptor": {"model.kind": "graph", "conditioning.strategy": "descriptor"},
+    "graph_cond_metadata": {"model.kind": "graph", "conditioning.strategy": "metadata"},
+    "graph_cond_film": {"model.kind": "graph", "conditioning.strategy": "film"},
+    "graph_macro_balance": {"model.kind": "graph", "training.macro_balance": True},
+    "graph_screen_predicted_label": {
+        "model.kind": "graph",
+        "multifidelity.screen_strategy": "predicted_label",
+    },
+    "graph_octant_tox21": {"model.kind": "graph", **OCT_TOX},
+    "graph_chemeleon_octant_tox21": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        **OCT_TOX,
+    },
+    "graph_mammal_octant_tox21": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "mammal",
+        **OCT_TOX,
+    },
+    "graph_chemeleon_veith": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "sources.veith": True,
+    },
+    # --- Neural MLP (GPU) ---
+    "neural": {"model.kind": "neural"},
+    "neural_absolute": {"model.kind": "neural", "model.objective": "absolute"},
+    "neural_squared": {"model.kind": "neural", "model.objective": "squared"},
+    "neural_mammal": {"model.kind": "neural", "features.molecular_embedding": "mammal"},
+    "neural_ionization": {"model.kind": "neural", "features.use_ionization_geometry": True},
+    "neural_cond_descriptor": {"model.kind": "neural", "conditioning.strategy": "descriptor"},
+    "neural_cond_metadata": {"model.kind": "neural", "conditioning.strategy": "metadata"},
+    "neural_cond_film": {"model.kind": "neural", "conditioning.strategy": "film"},
+    "neural_screen_predicted_label": {
+        "model.kind": "neural",
+        "multifidelity.screen_strategy": "predicted_label",
+    },
+    "neural_macro_balance": {"model.kind": "neural", "training.macro_balance": True},
+    "neural_octant_tox21": {"model.kind": "neural", **OCT_TOX},
+    "neural_octant_tox21_absolute": {
+        "model.kind": "neural",
+        **OCT_TOX,
+        "model.objective": "absolute",
+    },
+    "neural_mammal_octant_tox21": {
+        "model.kind": "neural",
+        **OCT_TOX,
+        "features.molecular_embedding": "mammal",
+    },
+    "neural_veith": {"model.kind": "neural", "sources.veith": True},
+    # --- Per-target ensemble (one learner per endpoint) ---
+    "per_target_ensemble": {"model.kind": "per_target_ensemble"},
+    "per_target_ensemble_absolute": {
+        "model.kind": "per_target_ensemble",
+        "model.objective": "absolute",
+    },
+    "per_target_ensemble_octant_tox21": {"model.kind": "per_target_ensemble", **OCT_TOX},
 }
-#: Cross-validation repeats (each is a full N_FOLDS run); fewer than before, since one CV
-#: already predicts every compound once, so a repeat only resamples folds and model seeds.
-PHASE_A_SEEDS = [0, 1, 2]
 
-#: Boosted hyperparameters, swept around the Phase A winner (tag -> overrides).
-HYPERPARAMETERS: dict[str, dict] = {
-    "nl31": {"model.boosted.num_leaves": 31},
-    "nl127": {"model.boosted.num_leaves": 127},
-    "lr0.03": {"model.boosted.learning_rate": 0.03},
-    "ne1000": {"model.boosted.n_estimators": 1000},
-    "nl127_ne1000": {"model.boosted.num_leaves": 127, "model.boosted.n_estimators": 1000},
-    "nl127_lr0.03": {"model.boosted.num_leaves": 127, "model.boosted.learning_rate": 0.03},
-    "deep_slow": {
-        "model.boosted.num_leaves": 127,
-        "model.boosted.learning_rate": 0.03,
-        "model.boosted.n_estimators": 1000,
+#: The TDI track: the dose-response curve model under each conditioning strategy, with the
+#: preincubated arm on so its two arms can be compared into an is_TDI call.
+TDI: dict[str, dict] = {
+    "curve_heads": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "heads",
+    },
+    "curve_descriptor": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "descriptor",
+    },
+    "curve_film": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "film",
+    },
+    "curve_heads_ionization": {
+        "model.kind": "curve",
+        "sources.tdi_arm": True,
+        "model.curve.conditioning": "heads",
+        "features.use_ionization_geometry": True,
     },
 }
-PHASE_B_SEEDS = [0, 1, 2]
+
+
+def _ofat(base_name: str, base: dict, options: dict[str, list]) -> dict[str, dict]:
+    """One config per (hyperparameter, value): the base plus that single override.
+
+    One-factor-at-a-time around each family's defaults, rather than a full grid (which would
+    be combinatorially impossible). Each generated config is named ``<base>_<field><value>``.
+    """
+    configs = {}
+    for key, values in options.items():
+        field = key.split(".")[-1]
+        for value in values:
+            tag = str(value).replace(".", "p").replace("-", "m")
+            configs[f"{base_name}_{field}{tag}"] = {**base, key: value}
+    return configs
+
+
+#: Per-family hyperparameters, each swept one-factor-at-a-time around the family default.
+BOOSTED_HP = {
+    "model.boosted.num_leaves": [31, 127],
+    "model.boosted.learning_rate": [0.03, 0.1],
+    "model.boosted.n_estimators": [300, 1000],
+    "model.boosted.min_child_samples": [5, 50],
+    "model.boosted.subsample": [0.6, 1.0],
+    "model.boosted.colsample_bytree": [0.4, 0.8],
+}
+NEURAL_HP = {
+    "model.neural.hidden": [128, 512],
+    "model.neural.dropout": [0.1, 0.3],
+    "model.neural.learning_rate": [0.0003, 0.003],
+    "model.neural.epochs": [100],
+}
+GRAPH_HP = {
+    "model.graph.hidden": [200, 600],
+    "model.graph.depth": [2, 5],
+    "model.graph.dropout": [0.0, 0.2],
+    "model.graph.epochs": [60],
+    "model.graph.batch_size": [32],
+}
+CURVE_HP = {
+    "model.curve.hidden": [128, 512],
+    "model.curve.dropout": [0.1, 0.3],
+    "model.curve.epochs": [100],
+    "model.curve.screen_noise": [0.05, 0.2],
+}
+
+REGRESSION.update(_ofat("boosted", {}, BOOSTED_HP))
+REGRESSION.update(_ofat("neural", {"model.kind": "neural"}, NEURAL_HP))
+REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, GRAPH_HP))
+TDI.update(
+    _ofat(
+        "curve",
+        {"model.kind": "curve", "sources.tdi_arm": True, "model.curve.conditioning": "heads"},
+        CURVE_HP,
+    )
+)
+
+#: One CV repeat (each seed is a full N_FOLDS cross-validation). The sweep is large and the
+#: GPU families are slow, so one repeat; the CV already predicts every compound once, and the
+#: driver is resumable, so a re-run continues where an interrupted night left off.
+SEEDS = [0]
 
 
 #: One fixed row schema, so a failure row cannot have fewer fields than a success row
@@ -217,21 +400,28 @@ def ranked_means(phase: str | None = None) -> pd.DataFrame:
     )
 
 
-def ranked_on_common_seeds(names: set[str]) -> pd.DataFrame:
-    """Rank the named configurations on the seeds every one of them completed.
+def ranked_mcc(phase: str) -> pd.DataFrame:
+    """Mean macro MCC per configuration, best (highest) first; empty when none scored TDI."""
+    table = _completed(phase)
+    scored = table.dropna(subset=["macro_MCC"]) if "macro_MCC" in table.columns else table.iloc[0:0]
+    if scored.empty:
+        return scored
+    return (
+        scored.groupby("name")["macro_MCC"]
+        .agg(["mean", "std", "count"])
+        .sort_values("mean", ascending=False)
+    )
 
-    Comparing candidates evaluated on different seed sets is unfair; restrict to the seeds
-    they all share so the means are paired.
-    """
-    table = _completed()
-    table = table[table["name"].isin(names)]
-    if table.empty:
-        return table
-    seeds_per_name = table.groupby("name")["seed"].agg(set)
-    common = set.intersection(*seeds_per_name) if len(seeds_per_name) else set()
-    if common:
-        table = table[table["seed"].isin(common)]
-    return table.groupby("name")["macro_ST_RAE"].agg(["mean", "std", "count"]).sort_values("mean")
+
+def write_submission(track: str, overrides: dict, output: Path, config_path: Path) -> None:
+    """Refit the chosen config on all training data and write its blinded-test submission."""
+    config = ExperimentConfig.load()
+    for key, value in overrides.items():
+        config.override(key, value)
+    config.validate()
+    config.save(config_path)
+    submit(output=output, config_path=config_path, track=track)
+    logger.info("%s submission written to %s (config %s)", track, output, config_path)
 
 
 def _archive_stale_results() -> None:
@@ -249,38 +439,28 @@ def main() -> None:
     logger.info("run identity (results namespace): %s", REV)
 
     logger.info(
-        "=== Phase A: %d-fold CV, %d repeats ===", N_FOLDS, len(PHASE_A_SEEDS)
+        "=== Regression: %d configs, %d-fold CV x %d ===", len(REGRESSION), N_FOLDS, len(SEEDS)
     )
-    run_phase("A", PHASE_A, PHASE_A_SEEDS)
-    phase_a = ranked_means("A")
-    logger.info("\nPhase A (mean macro ST-RAE, lower better):\n%s", phase_a.to_string())
-    winner = phase_a.index[0]
-    winner_overrides = PHASE_A[winner]
-    logger.info("Phase A winner: %s (mean %.4f)", winner, phase_a.loc[winner, "mean"])
+    run_phase("reg", REGRESSION, SEEDS)
+    regression = ranked_means("reg")
+    logger.info("\nRegression (mean macro ST-RAE, lower better):\n%s", regression.to_string())
 
-    logger.info("=== Phase B: tuning boosted hyperparameters around %s ===", winner)
-    phase_b_configs = {
-        f"{winner}+{tag}": {**winner_overrides, **hp} for tag, hp in HYPERPARAMETERS.items()
-    }
-    registry = {winner: winner_overrides, **phase_b_configs}
-    run_phase("B", phase_b_configs, PHASE_B_SEEDS)
+    logger.info("=== TDI: %d curve configs, %d-fold CV x %d ===", len(TDI), N_FOLDS, len(SEEDS))
+    run_phase("tdi", TDI, SEEDS)
+    tdi = ranked_mcc("tdi")
+    if not tdi.empty:
+        logger.info("\nTDI (mean macro MCC, higher better):\n%s", tdi.to_string())
 
-    # Overall best across both phases, compared on the seeds the candidates share so the
-    # winner (scored on more seeds) and the tuned variants (fewer) are ranked on equal
-    # footing rather than on whichever seed set each happened to complete.
-    candidates = ranked_on_common_seeds(set(registry))
-    logger.info("\nCandidates (mean macro ST-RAE, common seeds):\n%s", candidates.to_string())
-    best = candidates.index[0]
-    logger.info("Overall best: %s (mean %.4f)", best, candidates.loc[best, "mean"])
-
-    logger.info("=== Phase C: refit %s on all data and write the submission ===", best)
-    config = ExperimentConfig.load()
-    for key, value in registry[best].items():
-        config.override(key, value)
-    config.validate()
-    config.save(BEST_CONFIG)
-    submit(output=SUBMISSION, config_path=BEST_CONFIG, track="regression")
-    logger.info("submission written to %s (config %s)", SUBMISSION, BEST_CONFIG)
+    # Refit the best of each track on all data and write a candidate submission. Not
+    # auto-uploaded: the ST-RAE level is optimistic, so judge the bundles on Spearman first.
+    if not regression.empty:
+        best = regression.index[0]
+        logger.info("=== Best regression: %s (%.4f) ===", best, regression.loc[best, "mean"])
+        write_submission("regression", REGRESSION[best], SUBMISSION, BEST_CONFIG)
+    if not tdi.empty:
+        best_tdi = tdi.index[0]
+        logger.info("=== Best TDI: %s (MCC %.4f) ===", best_tdi, tdi.loc[best_tdi, "mean"])
+        write_submission("classification", TDI[best_tdi], TDI_SUBMISSION, TDI_BEST_CONFIG)
 
 
 if __name__ == "__main__":

@@ -536,6 +536,9 @@ def save_run_bundle(
         "scores": scores.round(4).reset_index().to_dict("records"),
     }
     (bundle_path / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
+    # Also write the config on its own, so each result carries a standalone, directly
+    # reloadable config file beside its predictions and scores.
+    (bundle_path / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n")
     logger.info("saved run bundle (%d OOF compounds) to %s", len(out_of_fold), bundle_path)
 
 
