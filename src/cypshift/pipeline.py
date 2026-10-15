@@ -87,6 +87,7 @@ def build_model(
 
         return NeuralNetwork(
             loss=config.model.objective,
+            tau=config.model.objective_tau,
             embedding_dim=config.conditioning.embedding_dim,
             descriptor_sources=tuple(config.conditioning.descriptor_sources),
             hidden=config.model.neural.hidden,
@@ -102,6 +103,7 @@ def build_model(
 
         return GraphNetwork(
             loss=config.model.objective,
+            tau=config.model.objective_tau,
             hidden=config.model.graph.hidden,
             depth=config.model.graph.depth,
             dropout=config.model.graph.dropout,

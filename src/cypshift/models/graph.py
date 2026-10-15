@@ -117,6 +117,54 @@ class SoftThresholdLoss(ChempropMetric):
         return loss
 
 
+class _AsymmetricValueLoss(ChempropMetric):
+    """Asymmetric point loss on the value task; ``tau>0.5`` penalises under-prediction more.
+
+    Base for expectile (asymmetric squared) and pinball (asymmetric absolute). Both keep a
+    gradient everywhere, so they preserve the predicted spread rather than collapsing it the
+    way the dead-zone soft-threshold loss does. The response auxiliary task, when present,
+    keeps its squared error. Censored rows carry no point value (NaN), so chemprop's
+    finiteness mask drops them here.
+    """
+
+    def __init__(self, tau: float = 0.5, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.tau = tau
+
+    def _per_row(self, prediction: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def _calc_unreduced_loss(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor,
+        weights: torch.Tensor,
+        *args: torch.Tensor,
+    ) -> torch.Tensor:
+        loss = torch.zeros_like(targets)
+        loss[:, VALUE] = self._per_row(preds[:, VALUE], targets[:, VALUE])
+        if targets.shape[1] > RESPONSE:
+            loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
+        return loss
+
+
+class ExpectileLoss(_AsymmetricValueLoss):
+    """Asymmetric least squares: ``w*(y-f)^2`` with ``w=tau`` when under-predicting."""
+
+    def _per_row(self, prediction: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        side = torch.where(value > prediction, self.tau, 1.0 - self.tau)
+        return side * (value - prediction) ** 2
+
+
+class PinballLoss(_AsymmetricValueLoss):
+    """Quantile loss ``max(tau*u, (tau-1)*u)``, ``u = y - f``, eliciting the tau quantile."""
+
+    def _per_row(self, prediction: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        residual = value - prediction
+        return torch.maximum(self.tau * residual, (self.tau - 1.0) * residual)
+
+
 class GraphNetwork:
     """Chemprop D-MPNN conditioned on target and assay through its readout."""
 
@@ -136,6 +184,7 @@ class GraphNetwork:
         num_workers: int = 0,
         n_members: int = 1,
         loss: str = "soft_threshold",
+        tau: float = 0.5,
         ensemble: str = "reseed",
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
@@ -165,6 +214,7 @@ class GraphNetwork:
         self.num_workers = num_workers
         self.n_members = n_members
         self.loss = loss
+        self.tau = tau
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -272,6 +322,10 @@ class GraphNetwork:
             criterion = cpnn.MAE(task_weights=weights)
         elif self.loss == "squared":
             criterion = cpnn.MSE(task_weights=weights)
+        elif self.loss == "expectile":
+            criterion = ExpectileLoss(self.tau, task_weights=weights)
+        elif self.loss == "pinball":
+            criterion = PinballLoss(self.tau, task_weights=weights)
         else:
             raise ValueError(f"unknown objective {self.loss!r}")
         predictor = cpnn.RegressionFFN(

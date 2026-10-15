@@ -167,6 +167,23 @@ REGRESSION: dict[str, dict] = {
         "model.graph.pretraining": "chemeleon",
         "sources.veith": True,
     },
+    "graph_expectile_t60": {
+        "model.kind": "graph",
+        "model.objective": "expectile",
+        "model.objective_tau": 0.6,
+    },
+    "graph_chemeleon_pinball_t60": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "model.objective": "pinball",
+        "model.objective_tau": 0.6,
+    },
+    "graph_chemeleon_expectile_t60": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "model.objective": "expectile",
+        "model.objective_tau": 0.6,
+    },
     # --- Neural MLP (GPU) ---
     "neural": {"model.kind": "neural"},
     "neural_absolute": {"model.kind": "neural", "model.objective": "absolute"},
@@ -193,6 +210,11 @@ REGRESSION: dict[str, dict] = {
         "features.molecular_embedding": "mammal",
     },
     "neural_veith": {"model.kind": "neural", "sources.veith": True},
+    "neural_expectile_t60": {
+        "model.kind": "neural",
+        "model.objective": "expectile",
+        "model.objective_tau": 0.6,
+    },
     # --- Per-target ensemble (one learner per endpoint) ---
     "per_target_ensemble": {"model.kind": "per_target_ensemble"},
     "per_target_ensemble_absolute": {

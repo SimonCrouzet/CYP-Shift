@@ -96,7 +96,7 @@ def soft_threshold_loss(
     return ((above + below) * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
-OBJECTIVES = ("squared", "absolute", "soft_threshold")
+OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
 
 
 def _objective(
@@ -106,14 +106,26 @@ def _objective(
     lower: torch.Tensor,
     upper: torch.Tensor,
     weight: torch.Tensor,
+    tau: float = 0.5,
 ) -> torch.Tensor:
-    """Weighted mean of the requested per-row objective."""
+    """Weighted mean of the requested per-row objective.
+
+    ``expectile`` and ``pinball`` take ``tau``: at ``tau>0.5`` they penalise under-prediction
+    more, the upward bias the soft-threshold metric rewards, while keeping a gradient
+    everywhere (unlike the dead-zone loss) so the predicted spread does not collapse.
+    """
     if name == "soft_threshold":
         return soft_threshold_loss(prediction, lower, upper, weight)
     if name == "squared":
         per_row = (prediction - value) ** 2
     elif name == "absolute":
         per_row = (prediction - value).abs()
+    elif name == "expectile":
+        side = torch.where(value > prediction, tau, 1.0 - tau)
+        per_row = side * (value - prediction) ** 2
+    elif name == "pinball":
+        residual = value - prediction
+        per_row = torch.maximum(tau * residual, (tau - 1.0) * residual)
     else:
         raise ValueError(f"unknown objective {name!r}; expected one of {OBJECTIVES}")
     return (per_row * weight).sum() / weight.sum().clamp(min=1e-8)
@@ -302,6 +314,7 @@ class NeuralNetwork:
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
         loss: str = "soft_threshold",
+        tau: float = 0.5,
         embedding_dim: int = 8,
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
@@ -332,6 +345,7 @@ class NeuralNetwork:
         self.learning_rate = learning_rate
         self.n_forward_passes = n_forward_passes
         self.loss = loss
+        self.tau = tau
         #: Width of the learned (target, assay) table when conditioning == "embedding".
         self.embedding_dim = embedding_dim
         #: Pocket-descriptor sources for the "descriptor" and "film" strategies.
@@ -501,6 +515,7 @@ class NeuralNetwork:
                         lower_t[index],
                         upper_t[index],
                         weight_t[index],
+                        self.tau,
                     )
                     batch_loss.backward()
                     optimiser.step()
