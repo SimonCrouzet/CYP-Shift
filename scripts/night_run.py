@@ -443,11 +443,17 @@ def write_submission(track: str, overrides: dict, output: Path, config_path: Pat
 
 
 def _archive_stale_results() -> None:
-    """Move an old-schema results file aside so a fresh namespace starts clean."""
-    if RESULTS.exists() and "rev" not in pd.read_csv(RESULTS, nrows=0).columns:
+    """Move a results file with a different schema aside so a fresh run starts clean.
+
+    Triggers whenever the existing columns differ from the current schema at all -- a missing
+    ``rev`` column (pre-rev era) or a changed column set (e.g. the added MCC columns). This
+    matters because ``record`` appends in text mode, and appending rows with a different field
+    count to an existing file corrupts it (pandas then cannot parse the mixed widths).
+    """
+    if RESULTS.exists() and list(pd.read_csv(RESULTS, nrows=0).columns) != RESULT_COLUMNS:
         archived = RESULTS.with_suffix(".pre_schema.csv")
         RESULTS.rename(archived)
-        logger.info("archived pre-schema results to %s", archived)
+        logger.info("archived results with a mismatched schema to %s", archived)
 
 
 def main() -> None:

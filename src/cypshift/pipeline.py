@@ -668,9 +668,10 @@ def run_cv(
             fold_predictions[endpoint] = prediction.mean[:, column]
         out_of_fold.append(fold_predictions)
 
-        # The TDI arm, out of fold too, when the model is one that can predict it (only the
-        # dose-response curve, from its two arms). Scored once, pooled, after the loop.
-        if hasattr(model, "predict_is_time_dependent"):
+        # The TDI arm, out of fold too, but only when the preincubated arm was actually
+        # trained (sources.tdi_arm) and the model can predict it. Without the arm trained,
+        # the call is meaningless (all-not-TDI, MCC ~0) and just wastes the bootstrap.
+        if config.sources.tdi_arm and hasattr(model, "predict_is_time_dependent"):
             flags = model.predict_is_time_dependent(evaluation["SMILES"].tolist())
             fold_tdi = evaluation[["Molecule_Name"]].copy()
             for endpoint in CLASSIFICATION_ENDPOINTS:
