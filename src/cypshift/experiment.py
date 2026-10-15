@@ -69,7 +69,7 @@ SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding")
 EMBEDDING_SOURCES = ("none", "mammal")
 
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble")
-OBJECTIVES = ("squared", "absolute", "soft_threshold")
+OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
 
 #: How a graph ensemble's members differ. ``reseed`` varies only the initialisation seed;
 #: ``bagging`` also trains each member on a seeded bootstrap resample, so members see the
@@ -301,6 +301,9 @@ class GraphConfig:
 class ModelConfig:
     kind: str = "boosted"
     objective: str = "soft_threshold"
+    #: Asymmetry level for the ``expectile``/``pinball`` objectives; >0.5 errs high, which the
+    #: soft-threshold metric rewards. Ignored by the other objectives. Swept.
+    objective_tau: float = 0.5
     n_members: int = 5
     boosted: BoostedConfig = field(default_factory=BoostedConfig)
     neural: NeuralConfig = field(default_factory=NeuralConfig)

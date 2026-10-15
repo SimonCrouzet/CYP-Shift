@@ -70,6 +70,7 @@ def build_model(
 
         return BoostedTrees(
             loss=config.model.objective,
+            tau=config.model.objective_tau,
             use_structure=config.sources.structure,
             structure_cache=config.features.structure_cache,
             n_members=config.model.n_members,

@@ -79,6 +79,48 @@ def soft_threshold_gradient(
     return objective
 
 
+def expectile_gradient(
+    tau: float, weight: NDArray[np.float64]
+) -> Callable[[NDArray[np.float64], NDArray[np.float64]], tuple[NDArray, NDArray]]:
+    """LightGBM gradient and Hessian for the asymmetric-least-squares (expectile) loss.
+
+    ``tau > 0.5`` weights under-prediction more heavily, so the fit errs high -- the bias the
+    soft-threshold metric rewards, because narrow active bands punish under-prediction most.
+    Unlike the dead-zone loss it has a gradient everywhere, so it preserves spread, and unlike
+    pinball it has a non-zero (piecewise-constant) Hessian, which LightGBM's second-order step
+    needs. Per-row weight is multiplied in, as for soft_threshold (LightGBM ignores it here).
+    """
+
+    def objective(
+        y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        side = np.where(y_true > y_pred, tau, 1.0 - tau)
+        gradient = 2.0 * side * (y_pred - y_true)
+        hessian = 2.0 * side
+        return gradient * weight, hessian * weight
+
+    return objective
+
+
+def pinball_gradient(
+    tau: float, weight: NDArray[np.float64]
+) -> Callable[[NDArray[np.float64], NDArray[np.float64]], tuple[NDArray, NDArray]]:
+    """LightGBM gradient and Hessian for the pinball (quantile) loss at level ``tau``.
+
+    Elicits the ``tau`` conditional quantile; ``tau > 0.5`` penalises under-prediction more.
+    The loss is piecewise linear so its true Hessian is zero; a constant stands in (as for
+    soft_threshold) to bound the step. Per-row weight multiplied in.
+    """
+
+    def objective(
+        y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        gradient = np.where(y_true > y_pred, -tau, 1.0 - tau)
+        return gradient * weight, np.ones_like(y_pred) * weight
+
+    return objective
+
+
 class BoostedTrees:
     """One boosted model over every isoform, conditioned on target and assay."""
 
@@ -105,6 +147,7 @@ class BoostedTrees:
         colsample_bytree: float = 0.6,
         n_members: int = 5,
         loss: str = "soft_threshold",
+        tau: float = 0.5,
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",
@@ -138,6 +181,7 @@ class BoostedTrees:
         self.colsample_bytree = colsample_bytree
         self.n_members = n_members
         self.loss = loss
+        self.tau = tau
         self.seed = seed
         #: Training curriculum (an object exposing ``.stages``), or None for one pooled
         #: stage. The tree has no trunk, so a multi-stage curriculum continues boosting
@@ -234,6 +278,10 @@ class BoostedTrees:
                     parameters["objective"] = soft_threshold_gradient(
                         lower[mask] - self._offset, upper[mask] - self._offset, weight[mask]
                     )
+                elif self.loss == "expectile":
+                    parameters["objective"] = expectile_gradient(self.tau, weight[mask])
+                elif self.loss == "pinball":
+                    parameters["objective"] = pinball_gradient(self.tau, weight[mask])
                 elif self.loss in ("squared", "absolute"):
                     parameters["objective"] = (
                         "regression" if self.loss == "squared" else "regression_l1"
