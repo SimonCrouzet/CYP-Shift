@@ -200,6 +200,15 @@ REGRESSION: dict[str, dict] = {
         "model.objective": "absolute",
     },
     "per_target_ensemble_octant_tox21": {"model.kind": "per_target_ensemble", **OCT_TOX},
+    # --- Tabular foundation model (TabPFN, per-endpoint over dense features) ---
+    # Needs TABPFN_TOKEN in the environment; without it these fail (recorded) and are skipped.
+    "tfm": {"model.kind": "tfm"},
+    "tfm_mammal": {"model.kind": "tfm", "features.molecular_embedding": "mammal"},
+    "tfm_mammal_octant_tox21": {
+        "model.kind": "tfm",
+        "features.molecular_embedding": "mammal",
+        **OCT_TOX,
+    },
 }
 
 #: The TDI track: the dose-response curve model under each conditioning strategy, with the

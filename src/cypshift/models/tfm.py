@@ -112,4 +112,4 @@ class TabularFoundationModel:
                 model.predict(features) if model is not None else np.full(len(smiles), np.nan)
             )
         samples = np.column_stack(columns)[None, :, :]
-        return PredictiveDistribution(samples.astype(np.float64))
+        return PredictiveDistribution(samples.astype(np.float64), self.endpoints)
