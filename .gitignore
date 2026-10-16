@@ -23,3 +23,8 @@ wandb/
 # Experiment outputs
 /artifacts/
 /submissions/
+
+# Working/submission configs -- kept local, never tracked
+configs/member_*.json
+configs/night_best*.json
+configs/submit_graph.json
