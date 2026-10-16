@@ -1,0 +1,119 @@
+{
+  "data": {
+    "directory": "data/raw",
+    "holdout_fraction": 0.2,
+    "n_similarity_bins": 8,
+    "n_matching_rounds": 3,
+    "seed": 0
+  },
+  "features": {
+    "fingerprint_bits": 4096,
+    "fingerprint_radius": 2,
+    "use_physicochemical": true,
+    "use_mechanistic": true,
+    "use_ionization_geometry": false,
+    "ionization_cache": "data/external/ionization/features.parquet",
+    "structure_cache": "data/structure",
+    "molecular_embedding": "none"
+  },
+  "sources": {
+    "screen": true,
+    "tdi_arm": false,
+    "chembl": false,
+    "sair": false,
+    "octant": false,
+    "veith": false,
+    "tox21": false,
+    "novartis": false,
+    "structure": false
+  },
+  "conditioning": {
+    "strategy": "factorised",
+    "embedding_dim": 8,
+    "descriptor_sources": [
+      "curated"
+    ]
+  },
+  "multifidelity": {
+    "screen_strategy": "extra_rows",
+    "screen_weight": 0.3,
+    "tdi_weight": 0.5,
+    "surrogate_hidden": 16
+  },
+  "auxiliary": {
+    "max_distance": 1.5,
+    "scored_weight": 1.0,
+    "weighting": "exponential",
+    "scale": 1.0,
+    "target_weight": 1.0,
+    "include_qhts_inactives": true
+  },
+  "training": {
+    "preset": null,
+    "stages": [
+      {
+        "tiers": [
+          "distant_aux",
+          "near_aux",
+          "challenge"
+        ],
+        "assays": null,
+        "epochs": null,
+        "lr": null,
+        "freeze_trunk": false
+      }
+    ],
+    "macro_balance": false
+  },
+  "model": {
+    "kind": "graph",
+    "objective": "soft_threshold",
+    "n_members": 5,
+    "boosted": {
+      "n_estimators": 600,
+      "learning_rate": 0.05,
+      "num_leaves": 63,
+      "min_child_samples": 20,
+      "subsample": 0.8,
+      "colsample_bytree": 0.6
+    },
+    "neural": {
+      "hidden": 256,
+      "dropout": 0.2,
+      "epochs": 60,
+      "batch_size": 256,
+      "learning_rate": 0.001,
+      "forward_passes": 30
+    },
+    "graph": {
+      "hidden": 300,
+      "depth": 3,
+      "dropout": 0.1,
+      "epochs": 30,
+      "batch_size": 64,
+      "ensemble": "reseed",
+      "pretraining": "none",
+      "pretraining_cache": "data/external/chemeleon/chemeleon_mp.pt",
+      "auxiliary_response": false
+    },
+    "curve": {
+      "hidden": 256,
+      "dropout": 0.2,
+      "epochs": 60,
+      "batch_size": 256,
+      "learning_rate": 0.001,
+      "forward_passes": 30,
+      "conditioning": "heads",
+      "descriptor_sources": [
+        "curated"
+      ],
+      "screen_noise": 0.1
+    }
+  },
+  "tracking": {
+    "enabled": false,
+    "project": "cyp-shift",
+    "entity": null,
+    "tags": []
+  }
+}

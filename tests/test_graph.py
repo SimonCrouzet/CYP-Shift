@@ -25,6 +25,15 @@ def test_chemeleon_encoder_loads_with_its_published_width():
     assert encoder.output_dim == 2048  # CheMeleon's published hidden width
 
 
+@pytest.mark.skipif(not CHEMELEON_CACHE.exists(), reason="CheMeleon encoder not downloaded")
+def test_freeze_toggle_controls_encoder_gradients():
+    """pretraining_finetune=False freezes the CheMeleon encoder; the default trains it."""
+    frozen = GraphNetwork(pretraining="chemeleon", pretraining_finetune=False)._build()
+    assert all(not p.requires_grad for p in frozen.message_passing.parameters())
+    trained = GraphNetwork(pretraining="chemeleon", pretraining_finetune=True)._build()
+    assert any(p.requires_grad for p in trained.message_passing.parameters())
+
+
 @pytest.mark.skipif(MAMMAL_CACHE.exists(), reason="MAMMAL cache present; absent-path not testable")
 def test_mammal_pretraining_needs_its_cache():
     """Without the MAMMAL embedding cache, construction fails loudly, never silently."""

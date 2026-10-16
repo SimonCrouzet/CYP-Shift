@@ -193,6 +193,7 @@ class GraphNetwork:
         ensemble: str = "reseed",
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
+        pretraining_finetune: bool = True,
         auxiliary_response: bool = False,
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -229,6 +230,9 @@ class GraphNetwork:
         self.ensemble = ensemble
         self.pretraining = pretraining
         self.pretraining_cache = pretraining_cache
+        #: Fine-tune the pretrained encoder (default) or freeze it as a fixed featuriser so
+        #: only the readout trains. Only meaningful when pretraining loads an encoder.
+        self.pretraining_finetune = pretraining_finetune
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
         self._n_conditioning = n_condition_columns(conditioning, targets, self.assays)
@@ -316,6 +320,12 @@ class GraphNetwork:
     def _build(self) -> cpmodels.MPNN:
         if self.pretraining == "chemeleon":
             message_passing = chemeleon_message_passing(Path(self.pretraining_cache))
+            if not self.pretraining_finetune:
+                # Freeze the pretrained encoder: it stays a fixed featuriser and only the
+                # readout trains. Cheaper and overfit-resistant on small data, at the cost
+                # of not adapting the representation to CYP chemistry.
+                for parameter in message_passing.parameters():
+                    parameter.requires_grad = False
         else:
             message_passing = cpnn.BondMessagePassing(
                 d_h=self.hidden, depth=self.depth, dropout=self.dropout

@@ -116,6 +116,7 @@ def build_model(
             ensemble=config.model.graph.ensemble,
             pretraining=config.model.graph.pretraining,
             pretraining_cache=config.model.graph.pretraining_cache,
+            pretraining_finetune=config.model.graph.pretraining_finetune,
             auxiliary_response=config.model.graph.auxiliary_response,
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,

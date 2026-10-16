@@ -129,6 +129,11 @@ REGRESSION: dict[str, dict] = {
     "graph_absolute": {"model.kind": "graph", "model.objective": "absolute"},
     "graph_squared": {"model.kind": "graph", "model.objective": "squared"},
     "graph_chemeleon": {"model.kind": "graph", "model.graph.pretraining": "chemeleon"},
+    "graph_chemeleon_frozen": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "chemeleon",
+        "model.graph.pretraining_finetune": False,
+    },
     "graph_mammal": {"model.kind": "graph", "model.graph.pretraining": "mammal"},
     "graph_bagging": {"model.kind": "graph", "model.graph.ensemble": "bagging"},
     "graph_chemeleon_bagging": {
