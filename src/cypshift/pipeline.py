@@ -101,9 +101,10 @@ def build_model(
             **shared,
         )
     if kind == "graph":
-        from cypshift.models.graph import GraphNetwork
+        from cypshift.models.graph import GraphNetwork, SeparatedTrunkGraph
 
-        return GraphNetwork(
+        graph_cls = SeparatedTrunkGraph if config.model.graph.separate_trunks else GraphNetwork
+        return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
             hidden=config.model.graph.hidden,

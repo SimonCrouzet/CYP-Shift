@@ -307,6 +307,10 @@ class GraphConfig:
     #: Fine-tune the pretrained encoder (default) or freeze it as a fixed featuriser so only
     #: the readout trains. Only meaningful with a pretrained encoder. Swept.
     pretraining_finetune: bool = True
+    #: Train one encoder per scored isoform (separated trunks) instead of one shared trunk.
+    #: Removes cross-isoform interference -- CYP2D6 does not share a representation with the
+    #: lipophilicity-driven isoforms -- at the cost of one training per isoform. Swept.
+    separate_trunks: bool = False
     #: Train an auxiliary head on the Veith qHTS max-response (a 0-1 magnitude keeping the
     #: inactives), sharing the encoder, to enrich the representation. Needs sources.veith.
     #: Swept, off by default.

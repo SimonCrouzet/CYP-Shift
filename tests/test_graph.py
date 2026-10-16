@@ -41,6 +41,30 @@ def test_mammal_pretraining_needs_its_cache():
         GraphNetwork(pretraining="mammal")
 
 
+def test_separated_trunk_withholds_other_scored_isoforms_but_keeps_aux():
+    """Each sub-model trains on its own isoform plus the auxiliary enzymes, never the other
+    scored isoforms, so the trunks do not share a representation across scored targets."""
+    from cypshift.models.graph import SeparatedTrunkGraph
+
+    model = SeparatedTrunkGraph(
+        endpoints=("CYP2D6_pIC50_direct_inhibition", "CYP3A4_pIC50_direct_inhibition"),
+        targets=("CYP2D6", "CYP3A4", "CYP2C19"),  # CYP2C19 is auxiliary, not scored
+    )
+    assert model._auxiliary == ("CYP2C19",)
+
+
+def test_build_model_selects_separated_trunk_when_configured():
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.models.graph import GraphNetwork, SeparatedTrunkGraph
+    from cypshift.pipeline import build_model
+
+    config = ExperimentConfig.load()
+    config.override("model.kind", "graph")
+    assert isinstance(build_model(config), GraphNetwork)
+    config.override("model.graph.separate_trunks", True)
+    assert isinstance(build_model(config), SeparatedTrunkGraph)
+
+
 def test_descriptor_blocks_widen_the_conditioning():
     """Computed descriptors the graph cannot learn are appended to its conditioning slot."""
     base = GraphNetwork(targets=("CYP2D6",))._n_conditioning

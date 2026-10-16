@@ -463,3 +463,50 @@ class GraphNetwork:
             (preincubated - direct) > shift,
             preincubated > floor + shift,
         )
+
+
+class SeparatedTrunkGraph:
+    """One GraphNetwork per scored endpoint: a separate encoder per isoform, no trunk shared
+    across the scored isoforms.
+
+    The shared-trunk GraphNetwork forces one representation to serve all four isoforms at
+    once. That interferes with CYP2D6, whose potency tracks a protonated basic amine and does
+    not ride the lipophilicity axis the other three share, so a trunk shaped by the others
+    pulls 2D6 the wrong way. Here each scored isoform trains its own encoder. The auxiliary
+    enzymes (relatives) stay in every sub-model for transfer; only the other scored isoforms
+    are withheld, so each trunk specialises without their interference. It costs one training
+    per isoform. The interface matches GraphNetwork, so it is a drop-in the pipeline selects.
+    """
+
+    name = "graph_separated_trunk"
+
+    def __init__(
+        self,
+        endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS,
+        targets: tuple[str, ...] = ISOFORMS,
+        **graph_kwargs: object,
+    ) -> None:
+        self.endpoints = tuple(endpoints)
+        self.targets = tuple(targets)
+        self._graph_kwargs = graph_kwargs
+        scored = {endpoint.split("_")[0] for endpoint in self.endpoints}
+        self._auxiliary = tuple(target for target in self.targets if target not in scored)
+        self._models: dict[str, GraphNetwork] = {}
+
+    def fit(self, observations: pd.DataFrame) -> "SeparatedTrunkGraph":
+        for endpoint in self.endpoints:
+            enzyme = endpoint.split("_")[0]
+            keep = (enzyme, *self._auxiliary)
+            rows = observations[observations["target"].isin(keep)].reset_index(drop=True)
+            model = GraphNetwork(endpoints=(endpoint,), targets=keep, **self._graph_kwargs)
+            model.fit(rows)
+            self._models[endpoint] = model
+        return self
+
+    def predict(self, smiles: list[str]) -> PredictiveDistribution:
+        columns = [self._models[e].predict(smiles).samples[:, :, 0] for e in self.endpoints]
+        return PredictiveDistribution(np.stack(columns, axis=2), self.endpoints)
+
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        columns = [self._models[e].predict_is_time_dependent(smiles)[:, 0] for e in self.endpoints]
+        return np.stack(columns, axis=1)

@@ -135,6 +135,12 @@ REGRESSION: dict[str, dict] = {
         "model.graph.pretraining_finetune": False,
     },
     "graph_mammal": {"model.kind": "graph", "model.graph.pretraining": "mammal"},
+    "graph_mammal_bagging": {
+        "model.kind": "graph",
+        "model.graph.pretraining": "mammal",
+        "model.graph.ensemble": "bagging",
+    },
+    "graph_separated": {"model.kind": "graph", "model.graph.separate_trunks": True},
     "graph_bagging": {"model.kind": "graph", "model.graph.ensemble": "bagging"},
     "graph_chemeleon_bagging": {
         "model.kind": "graph",
