@@ -328,6 +328,9 @@ class TfmConfig:
 
     #: Which tabular foundation model backs it (``tabpfn``; Mitra to come). Swept.
     backend: str = "tabpfn"
+    #: PCA target width for the dimensionality adaptation that fits the shared feature set to
+    #: TabPFN's ~2000-feature ceiling (and off its weak spot, raw sparse fingerprints). Swept.
+    pca_components: int = 500
 
 
 TFM_BACKENDS = ("tabpfn",)

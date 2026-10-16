@@ -1,16 +1,19 @@
 """A tabular foundation model (TabPFN) as a per-endpoint regressor.
 
-TabPFN is an in-context transformer that fits a small table in a single forward pass. The
-molecular evidence is clear that it does well on **dense** inputs (learned embeddings, RDKit
-descriptors) and poorly on raw high-dimensional sparse fingerprints, so this model deliberately
-drops the Morgan block and feeds only the physicochemical, mechanistic, ionization and optional
-foundation-model-embedding blocks. It fits one regressor per endpoint, on the compounds that
-carry that label, which also sidesteps the sparse multi-label coverage -- no imputation.
+TabPFN is an in-context transformer that fits a small table in a single forward pass. This is
+only the *model*: it consumes the **same configured feature set as every other model**
+(fingerprint + physicochemical + mechanistic + ionization + embedding + surrogate), so swapping
+``model.kind`` from boosted to tfm changes the model and nothing else. TabPFN has a feature
+ceiling (~2000 columns) and does poorly on raw high-dimensional sparse fingerprints, so its one
+adaptation is a dimensionality module -- impute, standardise, then PCA the assembled matrix down
+to ``pca_components`` -- fit on the training compounds and applied unchanged to the test set. The
+adaptation compresses the shared feature set; it does not substitute a different one.
 
-It has no sample weights and no custom objective, so it cannot see the interval-censored loss;
-it is meant as a blend member whose different inductive bias complements the boosted/graph
-families, not as the censoring-aware model. Backend is a parameter so a second tabular
-foundation model (e.g. Mitra) can slot in behind the same interface later.
+It fits one regressor per endpoint, on the compounds that carry that label, which sidesteps the
+sparse multi-label coverage. It has no sample weights and no custom objective, so it cannot see
+the interval-censored loss; it is meant as a blend member whose different inductive bias
+complements the boosted/graph families. Backend is a parameter so a second tabular foundation
+model (e.g. Mitra) can slot in behind the same interface later.
 
 Needs the ``tfm`` extra (``pip install cypshift[tfm]``) and downloads its weights to the
 HuggingFace cache; ``HF_HOME`` is pointed at the shared ext cache if unset.
@@ -46,11 +49,15 @@ class TabularFoundationModel:
         self,
         targets: tuple[str, ...] = ISOFORMS,
         backend: str = "tabpfn",
+        n_bits: int = 2048,
+        fingerprint_radius: int = 2,
         physchem: bool = True,
         mechanism: bool = True,
         molecular_embedding: str = "none",
         ionization_geometry: bool = False,
         ionization_cache: str = "data/external/ionization/features.parquet",
+        surrogate: object | None = None,
+        pca_components: int = 500,
         device: str | None = None,
         seed: int = 0,
     ) -> None:
@@ -58,25 +65,40 @@ class TabularFoundationModel:
             raise ValueError(f"unknown tfm backend {backend!r}; have {TFM_BACKENDS}")
         self.targets = targets
         self.backend = backend
+        self.n_bits = n_bits
+        self.fingerprint_radius = fingerprint_radius
         self.physchem = physchem
         self.mechanism = mechanism
         self.molecular_embedding = molecular_embedding
         self.ionization_geometry = ionization_geometry
         self.ionization_cache = ionization_cache
+        self.surrogate = surrogate
+        #: PCA target width for the dimensionality adaptation (TabPFN's feature ceiling is
+        #: ~2000 and it degrades on raw sparse fingerprints). Swept.
+        self.pca_components = pca_components
         self.device = device
         self.seed = seed
         self._models: dict[str, object] = {}
+        self._reducer: object | None = None
 
-    def _features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
-        """Dense feature blocks only -- no Morgan, which TabPFN handles poorly."""
+    def _raw_features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
+        """The shared configured feature set -- identical assembly to the other models."""
         return featurise(
             list(smiles),
-            fingerprint=False,
+            n_bits=self.n_bits,
+            radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
+            extra=self.surrogate,
             ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
             embedding=block_for(self.molecular_embedding),
         )
+
+    def _features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
+        """The shared feature set compressed by the fitted impute/scale/PCA adaptation."""
+        if self._reducer is None:
+            raise RuntimeError("feature reducer not fitted; call fit first")
+        return self._reducer.transform(self._raw_features(smiles)).astype(np.float32)
 
     def _regressor(self) -> object:
         import torch
@@ -85,9 +107,32 @@ class TabularFoundationModel:
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         return TabPFNRegressor(device=device, random_state=self.seed)
 
+    def _fit_reducer(self, smiles: Sequence[str]) -> None:
+        """Fit the impute/scale/PCA adaptation on the training compounds only.
+
+        PCA keeps at most ``pca_components`` components, capped by the data's own rank so a
+        narrow feature set or few compounds never asks for more than exists.
+        """
+        from sklearn.decomposition import PCA
+        from sklearn.impute import SimpleImputer
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        raw = self._raw_features(smiles)
+        width = min(self.pca_components, raw.shape[0], raw.shape[1])
+        self._reducer = Pipeline(
+            [
+                ("impute", SimpleImputer(strategy="median")),
+                ("scale", StandardScaler()),
+                ("pca", PCA(n_components=width, random_state=self.seed)),
+            ]
+        ).fit(raw)
+        logger.info("tfm reducer: %d features -> %d PCA components", raw.shape[1], width)
+
     def fit(self, observations: pd.DataFrame) -> "TabularFoundationModel":
         """Fit one regressor per endpoint on that endpoint's labelled rows."""
         usable = observations[np.isfinite(observations["value"])]
+        self._fit_reducer(usable["SMILES"].drop_duplicates().tolist())
         for isoform in self.targets:
             rows = usable[usable["target"] == isoform]
             if rows.empty:

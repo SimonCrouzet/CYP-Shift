@@ -164,11 +164,15 @@ def build_model(
         return TabularFoundationModel(
             targets=ISOFORMS,
             backend=config.model.tfm.backend,
+            n_bits=config.features.fingerprint_bits,
+            fingerprint_radius=config.features.fingerprint_radius,
             physchem=config.features.use_physicochemical,
             mechanism=config.features.use_mechanistic,
             molecular_embedding=config.features.molecular_embedding,
             ionization_geometry=config.features.use_ionization_geometry,
             ionization_cache=config.features.ionization_cache,
+            surrogate=surrogate,
+            pca_components=config.model.tfm.pca_components,
             seed=config.data.seed,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")
