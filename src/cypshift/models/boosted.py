@@ -26,9 +26,7 @@ from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, encode_conditions
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise
+from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.models.base import (
     PredictiveDistribution,
     active_stages,
@@ -194,17 +192,16 @@ class BoostedTrees:
     def _features(self, smiles: list[str], encoding: NDArray[np.float32]) -> NDArray[np.float32]:
         return np.hstack(
             [
-                featurise(
+                molecular_feature_matrix(
                     smiles,
                     n_bits=self.n_bits,
-                    radius=self.fingerprint_radius,
+                    fingerprint_radius=self.fingerprint_radius,
                     physchem=self.physchem,
                     mechanism=self.mechanism,
-                    extra=self.surrogate,
-                    ionization=ionization_block_for(
-                        self.ionization_geometry, Path(self.ionization_cache)
-                    ),
-                    embedding=block_for(self.molecular_embedding),
+                    surrogate=self.surrogate,
+                    ionization_geometry=self.ionization_geometry,
+                    ionization_cache=self.ionization_cache,
+                    molecular_embedding=self.molecular_embedding,
                 ),
                 encoding,
             ]

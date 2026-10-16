@@ -29,7 +29,6 @@ almost no information about where a prediction is unreliable.
 """
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -46,9 +45,7 @@ from cypshift.data.assembly import (
     n_conditions,
 )
 from cypshift.data.conditioning import descriptor_conditions
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise
+from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -365,15 +362,16 @@ class NeuralNetwork:
     def _features(
         self, smiles: list[str], one_hot: NDArray[np.float32] | None = None
     ) -> NDArray[np.float32]:
-        molecular = featurise(
+        molecular = molecular_feature_matrix(
             smiles,
             n_bits=self.n_bits,
-            radius=self.fingerprint_radius,
+            fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            extra=self.surrogate,
-            ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
-            embedding=block_for(self.molecular_embedding),
+            surrogate=self.surrogate,
+            ionization_geometry=self.ionization_geometry,
+            ionization_cache=self.ionization_cache,
+            molecular_embedding=self.molecular_embedding,
         )
         if one_hot is None:
             return molecular.astype(np.float32)

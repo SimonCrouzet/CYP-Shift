@@ -22,16 +22,13 @@ HuggingFace cache; ``HF_HOME`` is pointed at the shared ext cache if unset.
 import logging
 import os
 from collections.abc import Sequence
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise
+from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.models.base import PredictiveDistribution
 
 logger = logging.getLogger(__name__)
@@ -83,15 +80,16 @@ class TabularFoundationModel:
 
     def _raw_features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
         """The shared configured feature set -- identical assembly to the other models."""
-        return featurise(
-            list(smiles),
+        return molecular_feature_matrix(
+            smiles,
             n_bits=self.n_bits,
-            radius=self.fingerprint_radius,
+            fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            extra=self.surrogate,
-            ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
-            embedding=block_for(self.molecular_embedding),
+            surrogate=self.surrogate,
+            ionization_geometry=self.ionization_geometry,
+            ionization_cache=self.ionization_cache,
+            molecular_embedding=self.molecular_embedding,
         )
 
     def _features(self, smiles: Sequence[str]) -> NDArray[np.float32]:

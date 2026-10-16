@@ -25,7 +25,6 @@ organisers' own rule.
 
 import logging
 import math
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -35,9 +34,8 @@ from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.conditioning import describe_all
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise, physicochemical
+from cypshift.features.assembly import molecular_feature_matrix
+from cypshift.features.molecular import physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -320,15 +318,16 @@ class CurveModel:
         self._scaler: BlockScaler | None = None
 
     def _features(self, smiles: list[str], fit: bool) -> torch.Tensor:
-        matrix = featurise(
+        matrix = molecular_feature_matrix(
             smiles,
             n_bits=self.n_bits,
-            radius=self.fingerprint_radius,
+            fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            extra=self.surrogate,
-            ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
-            embedding=block_for(self.molecular_embedding),
+            surrogate=self.surrogate,
+            ionization_geometry=self.ionization_geometry,
+            ionization_cache=self.ionization_cache,
+            molecular_embedding=self.molecular_embedding,
         ).astype(np.float32)
         if fit:
             n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
