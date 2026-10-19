@@ -74,7 +74,15 @@ OBSERVATION_COLUMNS = (
     # binding site is. The data-type facet is the ``assay`` column. A training stage
     # selects on either or both.
     "data_space",
+    # Which dataset the row came from (see SOURCES). Same-chemistry sources pool into one
+    # assay by default; source-stratified conditioning keeps them apart by this column.
+    "source",
 )
+
+#: The datasets a row can originate from, for source-stratified conditioning. The challenge's
+#: own direct and preincubated measurements share "challenge"; the single-point screen is its
+#: own source; the rest are the auxiliary loaders.
+SOURCES = ("challenge", "screen", "chembl", "sair", "octant", "veith", "tox21", "novartis")
 
 
 @dataclass(frozen=True)
@@ -102,6 +110,7 @@ def _from_wide(
     value_template: str,
     weight: float,
     censored_template: str | None = None,
+    source: str = "challenge",
 ) -> pd.DataFrame:
     """Melt one wide source into observation rows, one per compound and target."""
     rows = []
@@ -130,6 +139,7 @@ def _from_wide(
             frame.loc[present, flag].to_numpy(bool) if flag and flag in frame else False
         )
         block["data_space"] = "challenge"  # the challenge's own data; its assay carries the type
+        block["source"] = source
         rows.append(block)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=OBSERVATION_COLUMNS)
 
@@ -168,6 +178,7 @@ def build_observations(
                 "{isoform}_pIC50_direct_inhibition",
                 weights.screen_pseudo_label,
                 censored_template="{isoform}_is_censored",
+                source="screen",
             )
         )
     if tdi is not None:
@@ -224,6 +235,7 @@ def encode_conditions(
     strategy: str = "factorised",
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
+    sources: tuple[str, ...] | None = None,
 ) -> np.ndarray:
     """Encode which target and assay each observation came from.
 
@@ -245,8 +257,8 @@ def encode_conditions(
         ValueError: On an unknown strategy, target or assay.
     """
     if strategy == "factorised":
-        return one_hot_encode(observations, targets, assays)
-    if strategy == "metadata":
+        base = one_hot_encode(observations, targets, assays)
+    elif strategy == "metadata":
         unknown_targets = set(observations["target"]) - set(targets)
         unknown_assays = set(observations["assay"]) - set(assays)
         if unknown_targets or unknown_assays:
@@ -257,20 +269,34 @@ def encode_conditions(
         scalars = np.array(
             [ASSAY_METADATA[assay] for assay in observations["assay"]], dtype=np.float32
         )
-        return np.hstack([target_block, scalars])
-    raise ValueError(f"unknown conditioning strategy {strategy!r}")
+        base = np.hstack([target_block, scalars])
+    else:
+        raise ValueError(f"unknown conditioning strategy {strategy!r}")
+    if sources is None:
+        return base
+    # Source-stratified conditioning: append a one-hot over which dataset the row came from,
+    # so same-chemistry sources kept apart in assembly each get their own calibration.
+    unknown_sources = set(observations["source"]) - set(sources)
+    if unknown_sources:
+        raise ValueError(f"unrecognised source {unknown_sources}")
+    source_block = np.array(
+        [[row == s for s in sources] for row in observations["source"]], dtype=np.float32
+    )
+    return np.hstack([base, source_block]).astype(np.float32)
 
 
 def n_condition_columns(
     strategy: str = "factorised",
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
+    sources: tuple[str, ...] | None = None,
 ) -> int:
     """Width of the encoding a strategy produces, without building it."""
+    extra = len(sources) if sources is not None else 0
     if strategy == "factorised":
-        return len(targets) + len(assays)
+        return len(targets) + len(assays) + extra
     if strategy == "metadata":
-        return len(targets) + N_METADATA_COLUMNS
+        return len(targets) + N_METADATA_COLUMNS + extra
     raise ValueError(f"unknown conditioning strategy {strategy!r}")
 
 

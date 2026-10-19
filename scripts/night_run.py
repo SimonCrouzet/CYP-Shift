@@ -176,6 +176,23 @@ REGRESSION: dict[str, dict] = {
         "multifidelity.screen_strategy": "predicted_label",
     },
     "graph_octant_tox21": {"model.kind": "graph", **OCT_TOX},
+    # Several sources that pool by chemistry (octant/tox21 luminescent, chembl/sair literature),
+    # with vs without source-stratified conditioning that keeps them apart.
+    "graph_all_aux": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "sources.chembl": True,
+        "sources.sair": True,
+        "sources.veith": True,
+    },
+    "graph_all_aux_source_heads": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "sources.chembl": True,
+        "sources.sair": True,
+        "sources.veith": True,
+        "model.graph.source_heads": True,
+    },
     "graph_chemeleon_octant_tox21": {
         "model.kind": "graph",
         "model.graph.pretraining": "chemeleon",

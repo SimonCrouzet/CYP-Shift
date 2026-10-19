@@ -45,7 +45,13 @@ from lightning import pytorch as pl
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
-from cypshift.data.assembly import ASSAYS, RESPONSE_ASSAY, encode_conditions, n_condition_columns
+from cypshift.data.assembly import (
+    ASSAYS,
+    RESPONSE_ASSAY,
+    SOURCES,
+    encode_conditions,
+    n_condition_columns,
+)
 from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise
@@ -195,6 +201,7 @@ class GraphNetwork:
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
         pretraining_finetune: bool = True,
+        source_heads: bool = False,
         auxiliary_response: bool = False,
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -234,9 +241,15 @@ class GraphNetwork:
         #: Fine-tune the pretrained encoder (default) or freeze it as a fixed featuriser so
         #: only the readout trains. Only meaningful when pretraining loads an encoder.
         self.pretraining_finetune = pretraining_finetune
+        #: Condition on which dataset each row came from (a source one-hot), so same-chemistry
+        #: sources kept apart in assembly each get their own calibration. Swept.
+        self.source_heads = source_heads
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
-        self._n_conditioning = n_condition_columns(conditioning, targets, self.assays)
+        self._conditioning_sources = SOURCES if source_heads else None
+        self._n_conditioning = n_condition_columns(
+            conditioning, targets, self.assays, sources=self._conditioning_sources
+        )
         # "mammal" pretraining appends the cached MAMMAL embedding to the readout's
         # conditioning slot (x_d) as fixed input features; widen the readout to fit it.
         self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
@@ -281,7 +294,9 @@ class GraphNetwork:
         return np.hstack(blocks) if blocks else np.empty((len(smiles), 0), dtype=np.float32)
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
-        conditioning = encode_conditions(frame, self.conditioning, self.targets, self.assays)
+        conditioning = encode_conditions(
+            frame, self.conditioning, self.targets, self.assays, sources=self._conditioning_sources
+        )
         continuous = self._continuous_blocks(frame["SMILES"].tolist())
         if continuous.shape[1] and self._xd_centre is not None:
             # Standardise the appended continuous blocks (embedding, descriptors) fitted on
@@ -426,7 +441,13 @@ class GraphNetwork:
         samples = np.empty((self.n_members, n, len(self.endpoints)))
         for column, endpoint in enumerate(self.endpoints):
             frame = pd.DataFrame(
-                {"SMILES": smiles, "target": [endpoint.split("_")[0]] * n, "assay": [assay] * n}
+                {
+                    "SMILES": smiles,
+                    "target": [endpoint.split("_")[0]] * n,
+                    "assay": [assay] * n,
+                    # Predict as the reference source; source-stratified heads read this.
+                    "source": ["challenge"] * n,
+                }
             )
             dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
             loader = cpdata.build_dataloader(

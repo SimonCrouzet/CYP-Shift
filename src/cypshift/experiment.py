@@ -318,6 +318,9 @@ class GraphConfig:
     #: Removes cross-isoform interference -- CYP2D6 does not share a representation with the
     #: lipophilicity-driven isoforms -- at the cost of one training per isoform. Swept.
     separate_trunks: bool = False
+    #: Condition on the row's source dataset (keeping same-chemistry sources apart rather than
+    #: pooling them), so each source gets its own calibration on the shared trunk. Swept.
+    source_heads: bool = False
     #: Train an auxiliary head on the Veith qHTS max-response (a 0-1 magnitude keeping the
     #: inactives), sharing the encoder, to enrich the representation. Needs sources.veith.
     #: Swept, off by default.

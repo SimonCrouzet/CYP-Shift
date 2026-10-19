@@ -233,6 +233,7 @@ def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) 
                     "conf_high": np.clip(fraction + measurement_noise, 0.0, 1.0),
                     "is_censored": False,
                     "data_space": "challenge",
+                    "source": "screen",
                 }
             )
         )

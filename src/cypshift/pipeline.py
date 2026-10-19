@@ -119,6 +119,7 @@ def build_model(
             pretraining=config.model.graph.pretraining,
             pretraining_cache=config.model.graph.pretraining_cache,
             pretraining_finetune=config.model.graph.pretraining_finetune,
+            source_heads=config.model.graph.source_heads,
             auxiliary_response=config.model.graph.auxiliary_response,
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
@@ -304,6 +305,8 @@ def assemble_training_data(
             curves = build_observations(retained, tdi=tdi, weights=weights)
             points = response_observations(kept, config.model.curve.screen_noise)
             points["weight"] = config.multifidelity.screen_weight
+            if "source" not in points.columns:
+                points["source"] = "screen"
             observations = pd.concat([curves, points[curves.columns]], ignore_index=True)
         else:
             # Every other model predicts a pIC50, so the screen has to be mapped onto
@@ -315,6 +318,10 @@ def assemble_training_data(
 
     auxiliary = auxiliary_observations(config, retained)
     if not auxiliary.empty:
+        # Default the source for any frame that predates the column (external or test frames);
+        # it is only read under source-stratified conditioning, where real sources are present.
+        if "source" not in auxiliary.columns:
+            auxiliary = auxiliary.assign(source="_pooled")
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
     if config.training.macro_balance:
         observations = balance_macro_weights(observations)
@@ -414,6 +421,9 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     # The graph's auxiliary response head wants Veith as a 0-1 max-response on its own
     # assay, not a pooled pIC50; only that model requests it, so other models are untouched.
     response_mode = config.model.kind == "graph" and config.model.graph.auxiliary_response
+    # Source-stratified conditioning keeps same-chemistry sources (veith+tox21, chembl+sair)
+    # as separate rows instead of pooling them, so the graph can condition on the source.
+    source_heads = config.model.kind == "graph" and config.model.graph.source_heads
     if response_mode:
         assay_by_source["veith"] = RESPONSE_ASSAY
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
@@ -470,7 +480,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
             else {"include_inactives": config.auxiliary.include_qhts_inactives}
         )
         extra_kwargs = {"veith": veith_kwargs}
-        by_assay: dict[str, list[pd.DataFrame]] = {}
+        by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
         for name in datasets:
             try:
                 loaded = all_loaders[name](enzyme, challenge, **extra_kwargs.get(name, {}))
@@ -488,9 +498,12 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                     loaded[column] = default
             if "is_censored" not in loaded.columns:
                 loaded["is_censored"] = False
-            by_assay.setdefault(assay_by_source[name], []).append(loaded)
+            # Pool same-chemistry sources together by default; keep them apart (keyed by the
+            # source name) only when the model conditions on the source.
+            source_key = name if source_heads else "_pooled"
+            by_assay.setdefault((assay_by_source[name], source_key), []).append(loaded)
 
-        for assay, gathered in by_assay.items():
+        for (assay, source_key), gathered in by_assay.items():
             data = pd.concat(gathered, ignore_index=True)
             if len(gathered) > 1:
                 data = pool_same_assay(data)
@@ -517,6 +530,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                         "weight": weight,
                         "is_censored": censored,
                         "data_space": data_space,
+                        "source": source_key,
                     }
                 )
             )

@@ -41,6 +41,15 @@ def test_mammal_pretraining_needs_its_cache():
         GraphNetwork(pretraining="mammal")
 
 
+def test_source_heads_widen_the_conditioning_by_the_source_vocabulary():
+    """source_heads appends a one-hot over SOURCES to the graph's conditioning vector."""
+    from cypshift.data.assembly import SOURCES
+
+    base = GraphNetwork(targets=("CYP2D6",))._n_conditioning
+    wide = GraphNetwork(targets=("CYP2D6",), source_heads=True)._n_conditioning
+    assert wide == base + len(SOURCES)
+
+
 def test_separated_trunk_withholds_other_scored_isoforms_but_keeps_aux():
     """Each sub-model trains on its own isoform plus the auxiliary enzymes, never the other
     scored isoforms, so the trunks do not share a representation across scored targets."""
