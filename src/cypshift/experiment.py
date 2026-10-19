@@ -82,6 +82,10 @@ ENSEMBLE_STRATEGIES = ("reseed", "bagging")
 #: ``mammal`` initialises from the cached MAMMAL embedding as a fixed input block.
 GRAPH_PRETRAINING = ("none", "chemeleon", "mammal")
 
+#: How the Veith qHTS panel is represented: a pooled pIC50, or a 0-1 max-response on its own
+#: assay (which the graph consumes through a separate head).
+QHTS_REPRESENTATIONS = ("pic50", "max_response")
+
 
 @dataclass
 class DataConfig:
@@ -190,6 +194,10 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
+    #: How Veith qHTS enters: as a pooled ``pic50`` (default) or as a 0-1 ``max_response`` on
+    #: its own assay. A data-side choice, not gated on the model -- but max_response needs a
+    #: model with a separate head for it, so validation requires model.kind=graph + veith.
+    qhts_representation: str = "pic50"
     #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
     #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
     tox21: bool = False
@@ -321,10 +329,6 @@ class GraphConfig:
     #: Condition on the row's source dataset (keeping same-chemistry sources apart rather than
     #: pooling them), so each source gets its own calibration on the shared trunk. Swept.
     source_heads: bool = False
-    #: Train an auxiliary head on the Veith qHTS max-response (a 0-1 magnitude keeping the
-    #: inactives), sharing the encoder, to enrich the representation. Needs sources.veith.
-    #: Swept, off by default.
-    auxiliary_response: bool = False
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);
@@ -486,10 +490,18 @@ class ExperimentConfig:
             (self.features.molecular_embedding, EMBEDDING_SOURCES, "features.molecular_embedding"),
             (self.model.graph.ensemble, ENSEMBLE_STRATEGIES, "model.graph.ensemble"),
             (self.model.graph.pretraining, GRAPH_PRETRAINING, "model.graph.pretraining"),
+            (self.sources.qhts_representation, QHTS_REPRESENTATIONS, "sources.qhts_representation"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:
                 raise ValueError(f"{name}={value!r} is not one of {allowed}")
+        if self.sources.qhts_representation == "max_response" and not (
+            self.model.kind == "graph" and self.sources.veith
+        ):
+            raise ValueError(
+                "sources.qhts_representation='max_response' needs a model that can consume it: "
+                "model.kind='graph' with sources.veith on"
+            )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
         if self.model.n_members < 1:

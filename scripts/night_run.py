@@ -154,7 +154,11 @@ REGRESSION: dict[str, dict] = {
         "model.graph.pretraining": "chemeleon",
         "features.use_ionization_geometry": True,
     },
-    "graph_response": {"model.kind": "graph", "model.graph.auxiliary_response": True},
+    "graph_response": {
+        "model.kind": "graph",
+        "sources.veith": True,
+        "sources.qhts_representation": "max_response",
+    },
     # Veith qHTS with vs without its inactives, to finally sweep include_qhts_inactives.
     "graph_veith": {"model.kind": "graph", "sources.veith": True},
     "graph_veith_active_only": {
@@ -165,7 +169,8 @@ REGRESSION: dict[str, dict] = {
     "graph_chemeleon_response": {
         "model.kind": "graph",
         "model.graph.pretraining": "chemeleon",
-        "model.graph.auxiliary_response": True,
+        "sources.veith": True,
+        "sources.qhts_representation": "max_response",
     },
     "graph_cond_descriptor": {"model.kind": "graph", "conditioning.strategy": "descriptor"},
     "graph_cond_metadata": {"model.kind": "graph", "conditioning.strategy": "metadata"},

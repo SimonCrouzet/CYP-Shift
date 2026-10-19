@@ -120,7 +120,7 @@ def build_model(
             pretraining_cache=config.model.graph.pretraining_cache,
             pretraining_finetune=config.model.graph.pretraining_finetune,
             source_heads=config.model.graph.source_heads,
-            auxiliary_response=config.model.graph.auxiliary_response,
+            auxiliary_response=config.sources.qhts_representation == "max_response",
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
             physchem=config.features.use_physicochemical,
@@ -420,7 +420,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     }
     # The graph's auxiliary response head wants Veith as a 0-1 max-response on its own
     # assay, not a pooled pIC50; only that model requests it, so other models are untouched.
-    response_mode = config.model.kind == "graph" and config.model.graph.auxiliary_response
+    response_mode = config.sources.qhts_representation == "max_response"
     # Source-stratified conditioning keeps same-chemistry sources (veith+tox21, chembl+sair)
     # as separate rows instead of pooling them, so the graph can condition on the source.
     source_heads = config.model.kind == "graph" and config.model.graph.source_heads
