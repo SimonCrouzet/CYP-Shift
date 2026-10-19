@@ -127,7 +127,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Which CV repeat's bundles to use.")
     parser.add_argument("--members", default=None, help="Comma-separated config names to blend.")
     parser.add_argument("--top-k", type=int, default=None, help="Blend the best K single models.")
-    parser.add_argument("--method", choices=METHODS, default="nnls")
+    parser.add_argument(
+        "--per-family",
+        action="store_true",
+        help="Blend the single best model from each family (graph/boosted/tfm/neural/curve) -- "
+        "architecturally diverse members, which the challenge write-ups found beat more of a kind.",
+    )
+    # Equal-weight by default: fitting weights (nnls) overfits the small out-of-fold set and
+    # the ADMET-challenge write-ups repeatedly found equal averaging beats stacking.
+    parser.add_argument("--method", choices=METHODS, default="equal")
     parser.add_argument(
         "--submissions",
         default=None,
@@ -144,10 +152,20 @@ def main() -> None:
         missing = [m for m in chosen if m not in available]
         if missing:
             raise SystemExit(f"no bundle for: {missing}; have {list(available)[:10]}...")
+    elif arguments.per_family:
+        families = ("ref", "graph", "neural", "curve", "tfm", "boosted", "per_target")
+
+        def family(name: str) -> str:
+            return next((f for f in families if name.startswith(f)), "other")
+
+        best_of: dict[str, str] = {}
+        for name in singles.index:  # singles is sorted best-first, so the first per family wins
+            best_of.setdefault(family(name), name)
+        chosen = list(best_of.values())
     elif arguments.top_k:
         chosen = list(singles.head(arguments.top_k).index)
     else:
-        raise SystemExit("pass --members or --top-k")
+        raise SystemExit("pass --members, --top-k, or --per-family")
     members = {n: available[n] for n in chosen}
 
     predictions, truth, weights = blend(members, arguments.method)
