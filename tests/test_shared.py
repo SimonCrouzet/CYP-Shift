@@ -102,5 +102,5 @@ def test_prediction_is_made_at_the_scored_assay():
 
 def test_the_route_satisfies_the_declared_interface():
     model = _route()
-    assert model.name == "structure_free"
+    assert model.name == "proteochemometric"
     assert hasattr(model, "fit") and hasattr(model, "predict")

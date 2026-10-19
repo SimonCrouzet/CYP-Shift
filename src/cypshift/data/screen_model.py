@@ -20,10 +20,10 @@ Both are built here.
     and it keeps structure the four output numbers discard, at the cost of dimensions
     that mean nothing individually.
 
-**The surrogate is fitted on training compounds only.** Fitting it on everything and
+**The screen_model is fitted on training compounds only.** Fitting it on everything and
 then predicting for the holdout would let the screen readings of held-out compounds
 reach the model through the feature, which inflates the holdout score without
-improving anything on the blinded test set. :func:`fit_surrogate` takes the compounds
+improving anything on the blinded test set. :func:`fit_screen_model` takes the compounds
 it may learn from explicitly for that reason.
 """
 
@@ -41,10 +41,10 @@ from cypshift.features.molecular import featurise
 
 logger = logging.getLogger(__name__)
 
-SURROGATE_STRATEGIES = ("predicted_label", "embedding")
+SCREEN_MODEL_STRATEGIES = ("predicted_label", "embedding")
 
 #: Width of the screen model's hidden layer, and therefore of the ``embedding``
-#: surrogate. Small on purpose: it is an input to another model, and a wide block of
+#: screen_model. Small on purpose: it is an input to another model, and a wide block of
 #: unnamed columns would swamp the fingerprint it sits beside.
 DEFAULT_EMBEDDING_WIDTH = 16
 
@@ -54,15 +54,15 @@ MIN_COMPOUNDS_FOR_EARLY_STOPPING = 30
 
 
 @dataclass
-class Surrogate:
+class ScreenModel:
     """A model of the screen, used to featurise compounds for the real model."""
 
     network: MLPRegressor
     strategy: str
     n_bits: int
     columns: tuple[str, ...]
-    #: Centre and spread of the surrogate's own output on the training compounds.
-    #: The surrogate standardises itself because of where its columns land: they are
+    #: Centre and spread of the screen_model's own output on the training compounds.
+    #: The screen_model standardises itself because of where its columns land: they are
     #: appended last, and BlockScaler treats trailing columns as binary and passes them
     #: through unscaled. An embedding block averaging 6.2 would then sit unscaled
     #: beside a sparse fingerprint -- the same mistake that cost 0.089 when uniform
@@ -77,14 +77,14 @@ class Surrogate:
         return hidden_activations(self.network, x)
 
     def transform(self, smiles: list[str]) -> NDArray[np.float32]:
-        """Standardised surrogate features for a list of compounds."""
+        """Standardised screen_model features for a list of compounds."""
         values = self._raw(list(smiles))
         if self.centre is None or self.spread is None:
             return values
         return ((values - self.centre) / self.spread).astype(np.float32)
 
     def __call__(self, smiles: list[str]) -> NDArray[np.float32]:
-        """So a Surrogate can be handed straight to ``featurise(extra=...)``."""
+        """So a ScreenModel can be handed straight to ``featurise(extra=...)``."""
         return self.transform(list(smiles))
 
 
@@ -115,31 +115,31 @@ def screen_targets(screen: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return wide, enzymes
 
 
-def fit_surrogate(
+def fit_screen_model(
     screen: pd.DataFrame,
     trainable: set[str],
     strategy: str,
     n_bits: int = 2048,
     hidden: int = DEFAULT_EMBEDDING_WIDTH,
     seed: int = 0,
-) -> Surrogate:
+) -> ScreenModel:
     """Fit a model of the screen on the compounds it is allowed to see.
 
     Args:
         screen: The long single-concentration table.
-        trainable: Molecule names the surrogate may learn from. Compounds outside this
+        trainable: Molecule names the screen_model may learn from. Compounds outside this
             set are dropped even if the screen covers them, so a holdout compound's
             screen reading cannot reach the model through the feature.
-        strategy: One of :data:`SURROGATE_STRATEGIES`.
+        strategy: One of :data:`SCREEN_MODEL_STRATEGIES`.
         n_bits: Fingerprint width, matched to the downstream model's.
-        hidden: Width of the hidden layer, and of an ``embedding`` surrogate.
+        hidden: Width of the hidden layer, and of an ``embedding`` screen_model.
         seed: Passed to the network.
 
     Raises:
         ValueError: On an unknown strategy, or if no trainable compound has a reading.
     """
-    if strategy not in SURROGATE_STRATEGIES:
-        raise ValueError(f"unknown surrogate strategy {strategy!r}")
+    if strategy not in SCREEN_MODEL_STRATEGIES:
+        raise ValueError(f"unknown screen_model strategy {strategy!r}")
 
     wide, enzymes = screen_targets(screen)
     wide = wide[wide["Molecule_Name"].isin(trainable)]
@@ -167,7 +167,7 @@ def fit_surrogate(
     )
     network.fit(x, y)
     logger.info(
-        "fitted %s surrogate on %d compounds over %d enzymes",
+        "fitted %s screen_model on %d compounds over %d enzymes",
         strategy,
         len(wide),
         len(enzymes),
@@ -177,20 +177,20 @@ def fit_surrogate(
         if strategy == "predicted_label"
         else tuple(f"screen_embedding_{i}" for i in range(hidden))
     )
-    surrogate = Surrogate(network, strategy, n_bits, columns)
+    screen_model = ScreenModel(network, strategy, n_bits, columns)
     # Standardise on the training compounds only, for the same reason the network is
     # fitted on them only.
-    raw = surrogate._raw(wide["SMILES"].tolist())
-    surrogate.centre = raw.mean(axis=0)
-    surrogate.spread = raw.std(axis=0) + 1e-6
-    return surrogate
+    raw = screen_model._raw(wide["SMILES"].tolist())
+    screen_model.centre = raw.mean(axis=0)
+    screen_model.spread = raw.std(axis=0) + 1e-6
+    return screen_model
 
 
-def surrogate_frame(surrogate: Surrogate, smiles: list[str]) -> pd.DataFrame:
-    """Surrogate features as a named table, for joining onto an observation set."""
-    values = surrogate.transform(smiles)
+def screen_model_frame(screen_model: ScreenModel, smiles: list[str]) -> pd.DataFrame:
+    """ScreenModel features as a named table, for joining onto an observation set."""
+    values = screen_model.transform(smiles)
     return pd.DataFrame(
-        values, columns=list(surrogate.columns), index=pd.Index(smiles, name="SMILES")
+        values, columns=list(screen_model.columns), index=pd.Index(smiles, name="SMILES")
     )
 
 

@@ -197,7 +197,7 @@ def inhibited_fraction(log2_fold_change: np.ndarray) -> np.ndarray:
 
     No calibration is involved. This is the measured quantity in the units a
     dose-response curve predicts at that concentration, which is what lets a screen
-    reading constrain the curve directly instead of via a fitted pIC50 surrogate.
+    reading constrain the curve directly instead of via a fitted pIC50 screen_model.
     """
     return np.clip(1.0 - np.power(2.0, log2_fold_change), 0.0, 1.0)
 

@@ -239,8 +239,8 @@ def featurise(
         mechanism: Include the mechanistic substructure counts.
         n_bits: Fingerprint length.
         extra: Optional block appended before the embedding, called with the same
-            compounds. This is how a multi-fidelity surrogate enters -- as an input
-            feature rather than as extra training rows. See :mod:`cypshift.data.surrogate`.
+            compounds. This is how a multi-fidelity screen_model enters -- as an input
+            feature rather than as extra training rows. See :mod:`cypshift.data.screen_model`.
         embedding: Optional foundation-model embedding block appended last. See
             :mod:`cypshift.features.embeddings`.
 

@@ -132,7 +132,7 @@ class BoostedTrees:
         fingerprint_radius: int = 2,
         use_structure: bool = False,
         structure_cache: str = "data/structure",
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
         num_leaves: int = 63,
@@ -165,8 +165,8 @@ class BoostedTrees:
         self.structure_cache = structure_cache
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
-        #: rows. See :mod:`cypshift.data.surrogate`.
-        self.surrogate = surrogate
+        #: rows. See :mod:`cypshift.data.screen_model`.
+        self.screen_model = screen_model
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
@@ -198,7 +198,7 @@ class BoostedTrees:
                     fingerprint_radius=self.fingerprint_radius,
                     physchem=self.physchem,
                     mechanism=self.mechanism,
-                    surrogate=self.surrogate,
+                    screen_model=self.screen_model,
                     ionization_geometry=self.ionization_geometry,
                     ionization_cache=self.ionization_cache,
                     molecular_embedding=self.molecular_embedding,

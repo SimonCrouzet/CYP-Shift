@@ -2,7 +2,7 @@
 
 TabPFN is an in-context transformer that fits a small table in a single forward pass. This is
 only the *model*: it consumes the **same configured feature set as every other model**
-(fingerprint + physicochemical + mechanistic + ionization + embedding + surrogate), so swapping
+(fingerprint + physicochemical + mechanistic + ionization + embedding + screen_model), so swapping
 ``model.kind`` from boosted to tfm changes the model and nothing else. TabPFN has a feature
 ceiling (~2000 columns) and does poorly on raw high-dimensional sparse fingerprints, so its one
 adaptation is a dimensionality module -- impute, standardise, then PCA the assembled matrix down
@@ -53,7 +53,7 @@ class TabularFoundationModel:
         molecular_embedding: str = "none",
         ionization_geometry: bool = False,
         ionization_cache: str = "data/external/ionization/features.parquet",
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         pca_components: int = 500,
         device: str | None = None,
         seed: int = 0,
@@ -69,7 +69,7 @@ class TabularFoundationModel:
         self.molecular_embedding = molecular_embedding
         self.ionization_geometry = ionization_geometry
         self.ionization_cache = ionization_cache
-        self.surrogate = surrogate
+        self.screen_model = screen_model
         #: PCA target width for the dimensionality adaptation (TabPFN's feature ceiling is
         #: ~2000 and it degrades on raw sparse fingerprints). Swept.
         self.pca_components = pca_components
@@ -86,7 +86,7 @@ class TabularFoundationModel:
             fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            surrogate=self.surrogate,
+            screen_model=self.screen_model,
             ionization_geometry=self.ionization_geometry,
             ionization_cache=self.ionization_cache,
             molecular_embedding=self.molecular_embedding,

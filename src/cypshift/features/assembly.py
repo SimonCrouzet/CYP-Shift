@@ -31,9 +31,9 @@ def molecular_feature_matrix(
     ionization_geometry: bool,
     ionization_cache: str,
     molecular_embedding: str,
-    surrogate: object | None = None,
+    screen_model: object | None = None,
 ) -> NDArray[np.float32]:
-    """The configured dense feature set: fingerprint + physchem + mechanism + surrogate +
+    """The configured dense feature set: fingerprint + physchem + mechanism + screen_model +
     ionization + embedding, in that fixed block order."""
     return featurise(
         list(smiles),
@@ -41,7 +41,7 @@ def molecular_feature_matrix(
         radius=fingerprint_radius,
         physchem=physchem,
         mechanism=mechanism,
-        extra=surrogate,
+        extra=screen_model,
         ionization=ionization_block_for(ionization_geometry, Path(ionization_cache)),
         embedding=block_for(molecular_embedding),
     )

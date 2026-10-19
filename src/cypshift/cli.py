@@ -247,13 +247,13 @@ def submit(
     logger.info("training on all %d compounds, predicting %d", len(train), len(test))
 
     # Full-data fit: only the blinded-test compounds are kept out of the TDI arm.
-    observations, surrogate = assemble_training_data(
+    observations, screen_model = assemble_training_data(
         config, train, exclude_names=set(test["Molecule_Name"])
     )
     scored = list(ISOFORMS)
     present = observations.get("target", [])
     extra = [t for t in dict.fromkeys(present) if t not in scored]
-    model = build_model(config, surrogate, targets=tuple(scored + sorted(extra)))
+    model = build_model(config, screen_model, targets=tuple(scored + sorted(extra)))
     # Check the model can serve the track before the expensive fit, not after.
     if track == "classification" and not hasattr(model, "predict_is_time_dependent"):
         raise typer.BadParameter(

@@ -20,8 +20,8 @@ from cypshift.data.assembly import (
 )
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
+from cypshift.data.screen_model import SCREEN_MODEL_STRATEGIES, fit_screen_model
 from cypshift.data.splits import similarity_matched_holdout, stratified_scaffold_folds
-from cypshift.data.surrogate import SURROGATE_STRATEGIES, fit_surrogate
 from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 def build_model(
     config: ExperimentConfig,
-    surrogate: object | None = None,
+    screen_model: object | None = None,
     targets: tuple[str, ...] = ISOFORMS,
 ) -> object:
     """Construct the model a configuration names.
@@ -59,7 +59,7 @@ def build_model(
         mechanism=config.features.use_mechanistic,
         targets=targets,
         seed=config.data.seed,
-        surrogate=surrogate,
+        screen_model=screen_model,
         training=config.training,
         molecular_embedding=config.features.molecular_embedding,
         ionization_geometry=config.features.use_ionization_geometry,
@@ -150,7 +150,7 @@ def build_model(
             tdi_assay_floor=config.model.curve.tdi_assay_floor,
             loss_tau=config.model.curve.loss_tau,
             seed=config.data.seed,
-            surrogate=surrogate,
+            screen_model=screen_model,
             training=config.training,
             molecular_embedding=config.features.molecular_embedding,
             ionization_geometry=config.features.use_ionization_geometry,
@@ -171,7 +171,7 @@ def build_model(
             molecular_embedding=config.features.molecular_embedding,
             ionization_geometry=config.features.use_ionization_geometry,
             ionization_cache=config.features.ionization_cache,
-            surrogate=surrogate,
+            screen_model=screen_model,
             pca_components=config.model.tfm.pca_components,
             seed=config.data.seed,
         )
@@ -203,7 +203,7 @@ def supported_conditioning(kind: str) -> tuple[str, ...]:
 def supported_screen_strategy(kind: str) -> tuple[str, ...]:
     """Which screen strategies a model family can use when ``sources.screen`` is on.
 
-    The surrogate strategies fit a model to the screen and hand its output, or its
+    The screen_model strategies fit a model to the screen and hand its output, or its
     hidden layer, to the real model as an input column. That is a way of using a cheap
     measurement when the model cannot consume the measurement itself, and two families
     do not need it:
@@ -212,11 +212,11 @@ def supported_screen_strategy(kind: str) -> tuple[str, ...]:
         The screen is a reading of inhibition at 4.95e-5 M, which is a point on the very
         curve this model predicts. It enters through ``extra_rows`` as an observation in
         its own units, with no calibration and nothing fitted in between. Passing the
-        same readings through a surrogate instead would replace a direct measurement
+        same readings through a screen_model instead would replace a direct measurement
         with a prediction of it, which is strictly worse and was the reason for
         modelling a curve in the first place.
     ``graph``
-        Consumes molecular graphs rather than a dense feature matrix, so a surrogate
+        Consumes molecular graphs rather than a dense feature matrix, so a screen_model
         column has nowhere to go.
 
     Refusing beats accepting the setting and quietly training without it, which would
@@ -240,7 +240,7 @@ def assemble_training_data(
     1,238 CYP3A4 negatives have a preincubated arm but no direct curve) in training.
 
     Returns the observations and, where the strategy produces one, a per-compound
-    surrogate feature derived from the screen rather than extra training rows.
+    screen_model feature derived from the screen rather than extra training rows.
     """
     screen_strategy = config.multifidelity.screen_strategy
     if screen_strategy not in SCREEN_STRATEGIES:
@@ -273,20 +273,20 @@ def assemble_training_data(
         if tdi.empty:
             logger.info("no preincubated measurement survives the exclusions")
             tdi = None
-    surrogate = None
+    screen_model = None
     if not config.sources.screen:
         observations = build_observations(retained, tdi=tdi, weights=weights)
-    elif screen_strategy in SURROGATE_STRATEGIES:
+    elif screen_strategy in SCREEN_MODEL_STRATEGIES:
         # Fitted only on retained compounds. Letting it see the holdout would carry
         # those compounds' screen readings into the feature and inflate the score
         # without improving anything on the blinded test set.
         screen = load("screen", Path(config.data.directory))
-        surrogate = fit_surrogate(
+        screen_model = fit_screen_model(
             screen,
             trainable=set(retained["Molecule_Name"]),
             strategy=screen_strategy,
             n_bits=config.features.fingerprint_bits,
-            hidden=config.multifidelity.surrogate_hidden,
+            hidden=config.multifidelity.screen_model_hidden,
             seed=config.data.seed,
         )
         observations = build_observations(retained, tdi=tdi, weights=weights)
@@ -314,7 +314,7 @@ def assemble_training_data(
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
     if config.training.macro_balance:
         observations = balance_macro_weights(observations)
-    return observations, surrogate
+    return observations, screen_model
 
 
 def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:
@@ -602,7 +602,7 @@ def run(
     # Keep the held-out and blinded-test compounds out of the TDI arm so their preincubated
     # measurement cannot leak into training.
     exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
-    observations, surrogate = assemble_training_data(config, retained, exclude_names=exclude)
+    observations, screen_model = assemble_training_data(config, retained, exclude_names=exclude)
     scored = list(ISOFORMS)
     extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]
     targets = tuple(scored + sorted(extra))
@@ -614,7 +614,7 @@ def run(
         len(observations),
     )
 
-    model = build_model(config, surrogate, targets=targets)
+    model = build_model(config, screen_model, targets=targets)
     model.fit(observations)
     prediction = model.predict(evaluation["SMILES"].tolist())
 
@@ -678,7 +678,7 @@ def run_cv(
         # Keep this fold's compounds and the blinded test out of the TDI arm, so a
         # preincubated measurement of a validation compound cannot leak into training.
         exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
-        observations, surrogate = assemble_training_data(config, retained, exclude_names=exclude)
+        observations, screen_model = assemble_training_data(config, retained, exclude_names=exclude)
         scored = list(ISOFORMS)
         extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]
         targets = tuple(scored + sorted(extra))
@@ -690,7 +690,7 @@ def run_cv(
             int(held_out.sum()),
         )
 
-        model = build_model(config, surrogate, targets=targets)
+        model = build_model(config, screen_model, targets=targets)
         model.fit(observations)
         prediction = model.predict(evaluation["SMILES"].tolist())
         fold_predictions = evaluation[["Molecule_Name"]].copy()

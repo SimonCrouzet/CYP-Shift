@@ -224,13 +224,13 @@ class MultifidelityConfig:
     #:
     #: How the single-concentration screen is folded in when ``sources.screen`` is on:
     #: extra_rows (pooled points / pseudo-labels), predicted_label or embedding (a
-    #: surrogate feature). The "use it at all" decision is ``sources.screen``.
+    #: screen_model feature). The "use it at all" decision is ``sources.screen``.
     screen_strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5
-    #: Hidden-layer width of the screen surrogate model (an MLP), which is also the
-    #: dimension of the ``embedding`` surrogate. Wired into fit_surrogate; swept.
-    surrogate_hidden: int = 16
+    #: Hidden-layer width of the screen screen_model model (an MLP), which is also the
+    #: dimension of the ``embedding`` screen_model. Wired into fit_screen_model; swept.
+    screen_model_hidden: int = 16
 
 
 @dataclass

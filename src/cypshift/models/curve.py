@@ -256,7 +256,7 @@ class CurveModel:
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
         epochs: int = 60,
@@ -297,8 +297,8 @@ class CurveModel:
         self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
-        #: rows. See :mod:`cypshift.data.surrogate`.
-        self.surrogate = surrogate
+        #: rows. See :mod:`cypshift.data.screen_model`.
+        self.screen_model = screen_model
         self.hidden = hidden
         self.dropout = dropout
         self.epochs = epochs
@@ -324,7 +324,7 @@ class CurveModel:
             fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            surrogate=self.surrogate,
+            screen_model=self.screen_model,
             ionization_geometry=self.ionization_geometry,
             ionization_cache=self.ionization_cache,
             molecular_embedding=self.molecular_embedding,

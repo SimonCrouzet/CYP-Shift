@@ -47,9 +47,9 @@ def test_an_unbuildable_model_kind_is_rejected():
 def test_screen_off_uses_only_the_curves():
     config = ExperimentConfig()
     config.sources.screen = False
-    observations, surrogate = assemble_training_data(config, _retained())
+    observations, screen_model = assemble_training_data(config, _retained())
     assert set(observations["assay"]) == {"direct_inhibition_drc"}
-    assert surrogate is None
+    assert screen_model is None
 
 
 def test_an_unknown_strategy_says_so_rather_than_falling_back():
@@ -62,8 +62,8 @@ def test_an_unknown_strategy_says_so_rather_than_falling_back():
 
 @pytest.mark.parametrize("strategy", ["predicted_label", "embedding"])
 @pytest.mark.parametrize("kind", ["graph", "curve"])
-def test_a_surrogate_strategy_is_refused_where_it_makes_no_sense(kind, strategy):
-    """A surrogate predicts what the screen would have said, for a model that cannot
+def test_a_screen_model_strategy_is_refused_where_it_makes_no_sense(kind, strategy):
+    """A screen_model predicts what the screen would have said, for a model that cannot
     use the reading itself. The curve model can: the screen is inhibition at 4.95e-5 M,
     a point on the curve it predicts, so substituting a prediction of a measurement we
     hold would be strictly worse. The graph model has no dense matrix to append to."""
@@ -76,8 +76,8 @@ def test_a_surrogate_strategy_is_refused_where_it_makes_no_sense(kind, strategy)
 
 
 @pytest.mark.parametrize("kind", ["boosted", "neural"])
-def test_scalar_models_keep_the_surrogate_strategies(kind):
-    """They predict a pIC50 and so cannot consume a response measurement; the surrogate
+def test_scalar_models_keep_the_screen_model_strategies(kind):
+    """They predict a pIC50 and so cannot consume a response measurement; the screen_model
     is the only route the screen has into them."""
     from cypshift.pipeline import supported_screen_strategy
 
@@ -248,9 +248,9 @@ def test_run_widens_the_target_vocabulary_for_auxiliary_enzymes(monkeypatch):
     captured = {}
     real_build = pipe.build_model
 
-    def spy(config, surrogate=None, targets=None):
+    def spy(config, screen_model=None, targets=None):
         captured["targets"] = targets
-        return real_build(config, surrogate, targets=targets)
+        return real_build(config, screen_model, targets=targets)
 
     monkeypatch.setattr(pipe, "build_model", spy)
     monkeypatch.setattr(

@@ -287,7 +287,7 @@ class CalibratedMLP(nn.Module):
 class NeuralNetwork:
     """Structure-free model trained on the challenge's own loss."""
 
-    name = "structure_free_neural"
+    name = "proteochemometric_neural"
 
     def __init__(
         self,
@@ -299,7 +299,7 @@ class NeuralNetwork:
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
         epochs: int = 60,
@@ -331,8 +331,8 @@ class NeuralNetwork:
         self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
-        #: rows. See :mod:`cypshift.data.surrogate`.
-        self.surrogate = surrogate
+        #: rows. See :mod:`cypshift.data.screen_model`.
+        self.screen_model = screen_model
         self.hidden = hidden
         self.dropout = dropout
         self.epochs = epochs
@@ -368,7 +368,7 @@ class NeuralNetwork:
             fingerprint_radius=self.fingerprint_radius,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            surrogate=self.surrogate,
+            screen_model=self.screen_model,
             ionization_geometry=self.ionization_geometry,
             ionization_cache=self.ionization_cache,
             molecular_embedding=self.molecular_embedding,
@@ -422,7 +422,7 @@ class NeuralNetwork:
 
     def _scale_blocks(self, molecular: NDArray[np.float32], fit: bool) -> torch.Tensor:
         """Scale the molecular block: log1p the fingerprint counts, standardise every dense
-        descriptor after it -- physchem, mechanistic, surrogate, ionization and embedding --
+        descriptor after it -- physchem, mechanistic, screen_model, ionization and embedding --
         rather than physchem alone, which left the appended continuous blocks unscaled."""
         if fit:
             self._scaler = BlockScaler(
