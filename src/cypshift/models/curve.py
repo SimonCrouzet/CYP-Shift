@@ -262,6 +262,7 @@ class CurveModel:
         self,
         targets: tuple[str, ...] = ISOFORMS,
         n_bits: int = 2048,
+        use_fingerprint: bool = True,
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
@@ -302,6 +303,7 @@ class CurveModel:
         #: Which molecular feature blocks to include and the fingerprint radius.
         #: These are read by featurise; toggling physchem changes the dense-block width,
         #: which the scaler follows. Swept via features.* in the config.
+        self.use_fingerprint = use_fingerprint
         self.physchem = physchem
         self.mechanism = mechanism
         self.fingerprint_radius = fingerprint_radius
@@ -332,6 +334,7 @@ class CurveModel:
             smiles,
             n_bits=self.n_bits,
             fingerprint_radius=self.fingerprint_radius,
+            use_fingerprint=self.use_fingerprint,
             physchem=self.physchem,
             mechanism=self.mechanism,
             screen_model=self.screen_model,

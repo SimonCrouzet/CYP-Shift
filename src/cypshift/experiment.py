@@ -99,6 +99,11 @@ class FeatureConfig:
     #: all already at or past their optimum.
     fingerprint_bits: int = 4096
     fingerprint_radius: int = 2
+    #: Include the Morgan fingerprint block. On for every model by default; a sweepable
+    #: toggle so a dense-only feature set (physchem/mechanism/ionization/embedding, no
+    #: fingerprint) can be tried -- it is what TabPFN and other dense learners prefer. The
+    #: graph ignores it (it learns its own representation from the molecular graph).
+    use_fingerprint: bool = True
     use_physicochemical: bool = True
     use_mechanistic: bool = True
     #: Append the ionization / through-space pharmacophore block: charge state at pH 7.4

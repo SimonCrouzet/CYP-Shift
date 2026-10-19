@@ -47,7 +47,24 @@ def test_pca_adaptation_compresses_to_the_configured_width():
 
 
 def test_pca_width_capped_by_available_rank():
-    """pca_components larger than the data's rank is capped, never an error."""
-    model = TabularFoundationModel(n_bits=256, pca_components=10_000)
+    """When PCA applies, its width is capped by the data's rank (n_samples), never an error."""
+    # pca_components below the feature count (273) triggers PCA; it is then capped by samples.
+    model = TabularFoundationModel(n_bits=256, pca_components=100)
     model._fit_reducer(SMILES)
     assert model._features(SMILES).shape[1] <= len(SMILES)
+
+
+def test_no_pca_when_set_already_fits_under_ceiling():
+    """A feature set already within pca_components is passed through unchanged -- no PCA."""
+    model = TabularFoundationModel(n_bits=256, pca_components=10_000)
+    model._fit_reducer(SMILES)
+    assert model._features(SMILES).shape[1] == model._raw_features(SMILES).shape[1]
+
+
+def test_dense_only_feature_set_drops_the_fingerprint():
+    """use_fingerprint=False gives a small dense set (no Morgan), which needs no PCA."""
+    model = TabularFoundationModel(n_bits=256, use_fingerprint=False, pca_components=500)
+    model._fit_reducer(SMILES)
+    width = model._features(SMILES).shape[1]
+    assert width == model._raw_features(SMILES).shape[1]  # passthrough, no PCA
+    assert width < 256  # the 256 fingerprint bits are absent

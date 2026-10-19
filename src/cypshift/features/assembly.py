@@ -31,12 +31,14 @@ def molecular_feature_matrix(
     ionization_geometry: bool,
     ionization_cache: str,
     molecular_embedding: str,
+    use_fingerprint: bool = True,
     screen_model: object | None = None,
 ) -> NDArray[np.float32]:
     """The configured dense feature set: fingerprint + physchem + mechanism + screen_model +
-    ionization + embedding, in that fixed block order."""
+    ionization + embedding, in that fixed block order. use_fingerprint drops the Morgan block."""
     return featurise(
         list(smiles),
+        fingerprint=use_fingerprint,
         n_bits=n_bits,
         radius=fingerprint_radius,
         physchem=physchem,

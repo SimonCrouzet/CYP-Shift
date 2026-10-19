@@ -48,6 +48,7 @@ class TabularFoundationModel:
         backend: str = "tabpfn",
         n_bits: int = 2048,
         fingerprint_radius: int = 2,
+        use_fingerprint: bool = True,
         physchem: bool = True,
         mechanism: bool = True,
         molecular_embedding: str = "none",
@@ -64,6 +65,7 @@ class TabularFoundationModel:
         self.backend = backend
         self.n_bits = n_bits
         self.fingerprint_radius = fingerprint_radius
+        self.use_fingerprint = use_fingerprint
         self.physchem = physchem
         self.mechanism = mechanism
         self.molecular_embedding = molecular_embedding
@@ -84,6 +86,7 @@ class TabularFoundationModel:
             smiles,
             n_bits=self.n_bits,
             fingerprint_radius=self.fingerprint_radius,
+            use_fingerprint=self.use_fingerprint,
             physchem=self.physchem,
             mechanism=self.mechanism,
             screen_model=self.screen_model,
@@ -117,15 +120,16 @@ class TabularFoundationModel:
         from sklearn.preprocessing import StandardScaler
 
         raw = self._raw_features(smiles)
-        width = min(self.pca_components, raw.shape[0], raw.shape[1])
-        self._reducer = Pipeline(
-            [
-                ("impute", SimpleImputer(strategy="median")),
-                ("scale", StandardScaler()),
-                ("pca", PCA(n_components=width, random_state=self.seed)),
-            ]
-        ).fit(raw)
-        logger.info("tfm reducer: %d features -> %d PCA components", raw.shape[1], width)
+        steps = [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+        # PCA only when the assembled set exceeds the target width (e.g. the fingerprint is on);
+        # a dense-only set already under the ceiling is passed through, the input TabPFN prefers.
+        if raw.shape[1] > self.pca_components:
+            width = min(self.pca_components, raw.shape[0], raw.shape[1])
+            steps.append(("pca", PCA(n_components=width, random_state=self.seed)))
+            logger.info("tfm reducer: %d features -> %d PCA components", raw.shape[1], width)
+        else:
+            logger.info("tfm reducer: %d features, no PCA (already within ceiling)", raw.shape[1])
+        self._reducer = Pipeline(steps).fit(raw)
 
     def fit(self, observations: pd.DataFrame) -> "TabularFoundationModel":
         """Fit one regressor per endpoint on that endpoint's labelled rows."""

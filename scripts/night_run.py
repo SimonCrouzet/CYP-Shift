@@ -155,6 +155,13 @@ REGRESSION: dict[str, dict] = {
         "features.use_ionization_geometry": True,
     },
     "graph_response": {"model.kind": "graph", "model.graph.auxiliary_response": True},
+    # Veith qHTS with vs without its inactives, to finally sweep include_qhts_inactives.
+    "graph_veith": {"model.kind": "graph", "sources.veith": True},
+    "graph_veith_active_only": {
+        "model.kind": "graph",
+        "sources.veith": True,
+        "auxiliary.include_qhts_inactives": False,
+    },
     "graph_chemeleon_response": {
         "model.kind": "graph",
         "model.graph.pretraining": "chemeleon",
@@ -249,6 +256,13 @@ REGRESSION: dict[str, dict] = {
     # --- Tabular foundation model (TabPFN, per-endpoint over dense features) ---
     # Needs TABPFN_TOKEN in the environment; without it these fail (recorded) and are skipped.
     "tfm": {"model.kind": "tfm"},
+    # Dense-only feature set (no Morgan, so no destructive PCA) -- the input TabPFN prefers.
+    "tfm_dense": {"model.kind": "tfm", "features.use_fingerprint": False},
+    "tfm_dense_mammal": {
+        "model.kind": "tfm",
+        "features.use_fingerprint": False,
+        "features.molecular_embedding": "mammal",
+    },
     "tfm_mammal": {"model.kind": "tfm", "features.molecular_embedding": "mammal"},
     "tfm_mammal_octant_tox21": {
         "model.kind": "tfm",
