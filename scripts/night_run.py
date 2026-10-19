@@ -256,13 +256,6 @@ REGRESSION: dict[str, dict] = {
     # --- Tabular foundation model (TabPFN, per-endpoint over dense features) ---
     # Needs TABPFN_TOKEN in the environment; without it these fail (recorded) and are skipped.
     "tfm": {"model.kind": "tfm"},
-    # Dense-only feature set (no Morgan, so no destructive PCA) -- the input TabPFN prefers.
-    "tfm_dense": {"model.kind": "tfm", "features.use_fingerprint": False},
-    "tfm_dense_mammal": {
-        "model.kind": "tfm",
-        "features.use_fingerprint": False,
-        "features.molecular_embedding": "mammal",
-    },
     "tfm_mammal": {"model.kind": "tfm", "features.molecular_embedding": "mammal"},
     "tfm_mammal_octant_tox21": {
         "model.kind": "tfm",
@@ -363,6 +356,72 @@ CURVE_HP = {
 REGRESSION.update(_ofat("boosted", {}, BOOSTED_HP))
 REGRESSION.update(_ofat("neural", {"model.kind": "neural"}, NEURAL_HP))
 REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, GRAPH_HP))
+
+
+def _feature_set(**on: object) -> dict:
+    """A fully-specified feature set: every block stated on/off, so the set is the swept
+    unit (not a single toggle layered on defaults)."""
+    blocks = {
+        "features.use_fingerprint": False,
+        "features.use_physicochemical": False,
+        "features.use_mechanistic": False,
+        "features.use_ionization_geometry": False,
+        "features.molecular_embedding": "none",
+    }
+    return {**blocks, **on}
+
+
+#: Feature sets swept as a first-class axis. The feature set is a lever, not a fixed choice,
+#: so each model is run over the same panel of block combinations.
+FEATURE_SETS = {
+    "fp": _feature_set(**{"features.use_fingerprint": True}),
+    "dense": _feature_set(
+        **{"features.use_physicochemical": True, "features.use_mechanistic": True}
+    ),
+    "fp_dense": _feature_set(
+        **{
+            "features.use_fingerprint": True,
+            "features.use_physicochemical": True,
+            "features.use_mechanistic": True,
+        }
+    ),
+    "dense_ion": _feature_set(
+        **{
+            "features.use_physicochemical": True,
+            "features.use_mechanistic": True,
+            "features.use_ionization_geometry": True,
+        }
+    ),
+    "dense_emb": _feature_set(
+        **{
+            "features.use_physicochemical": True,
+            "features.use_mechanistic": True,
+            "features.molecular_embedding": "mammal",
+        }
+    ),
+    "emb": _feature_set(**{"features.molecular_embedding": "mammal"}),
+    "full": _feature_set(
+        **{
+            "features.use_fingerprint": True,
+            "features.use_physicochemical": True,
+            "features.use_mechanistic": True,
+            "features.use_ionization_geometry": True,
+            "features.molecular_embedding": "mammal",
+        }
+    ),
+}
+
+
+def _feature_sweep(prefix: str, base: dict) -> dict[str, dict]:
+    """One config per feature set, on top of a base model config."""
+    return {f"{prefix}_{name}": {**base, **overrides} for name, overrides in FEATURE_SETS.items()}
+
+
+# Sweep the feature set for the tabular models, where the input representation is the lever
+# (TabPFN especially; the boosted baseline for comparison). The graph ignores the fingerprint
+# -- it learns its own -- so its block sweep rides on the dense/conditioning knobs elsewhere.
+REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
+REGRESSION.update(_feature_sweep("boosted_fs", {}))
 
 
 def _gpu_first(item: tuple[str, dict]) -> int:
