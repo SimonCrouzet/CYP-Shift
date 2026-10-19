@@ -247,7 +247,7 @@ class BoostedTrees:
 
         # A curriculum trains the stages in order; the tree has no trunk to freeze, so a
         # later stage continues boosting from the previous stage's trees (init_model). One
-        # pooled stage over every tier reduces to a single fit, the previous behaviour.
+        # pooled stage over every data_space reduces to a single fit, the previous behaviour.
         stages = active_stages(
             usable, training_stages(self.training, self.n_estimators, self.learning_rate)
         )

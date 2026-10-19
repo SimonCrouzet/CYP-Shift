@@ -317,7 +317,7 @@ class CurveModel:
         self.n_forward_passes = n_forward_passes
         self.seed = seed
         #: Training curriculum (an object exposing ``.stages``), or None for one pooled
-        #: stage over every tier.
+        #: stage over every data_space.
         self.training = training
         #: Which cached foundation-model embedding to append, or "none".
         self.molecular_embedding = molecular_embedding
@@ -448,8 +448,8 @@ class CurveModel:
         for stage in active_stages(usable, stages):
             mask = rows_for_stage(usable, stage)
             logger.info(
-                "stage tiers=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
-                stage.tiers,
+                "stage data_spaces=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
+                stage.data_spaces,
                 stage.assays or "all",
                 int(mask.sum()),
                 stage.epochs,

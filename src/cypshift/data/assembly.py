@@ -51,14 +51,14 @@ REFERENCE_ASSAY = "direct_inhibition_drc"
 #: onto the potency scale; only that model sees it.
 RESPONSE_ASSAY = "luminescent_max_response"
 
-#: Proximity tiers, ordered from farthest to the scored endpoint to the endpoint itself.
+#: Proximity data_spaces, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
 #: relative or noisy outside dataset (``distant_aux``), a scored enzyme's own outside rows
 #: (``near_aux``), or the challenge's own measurements (``challenge``). The other facet is
 #: the assay a row was measured in (:data:`ASSAYS`), the *type* of data; a stage can filter
 #: on either or both, after the pattern of a proteochemometric corpus that separates target
 #: relatedness from assay context. Both are stamped on every row when it is built.
-TIERS = ("distant_aux", "near_aux", "challenge")
+DATA_SPACES = ("distant_aux", "near_aux", "challenge")
 
 OBSERVATION_COLUMNS = (
     "Molecule_Name",
@@ -70,10 +70,10 @@ OBSERVATION_COLUMNS = (
     "conf_high",
     "weight",
     "is_censored",
-    # Proximity tier of the row (see TIERS): challenge, or how far an auxiliary enzyme's
+    # Proximity data_space of the row (see DATA_SPACES): challenge, or how far an auxiliary enzyme's
     # binding site is. The data-type facet is the ``assay`` column. A training stage
     # selects on either or both.
-    "tier",
+    "data_space",
 )
 
 
@@ -129,7 +129,7 @@ def _from_wide(
         block["is_censored"] = (
             frame.loc[present, flag].to_numpy(bool) if flag and flag in frame else False
         )
-        block["tier"] = "challenge"  # the challenge's own data; its assay carries the type
+        block["data_space"] = "challenge"  # the challenge's own data; its assay carries the type
         rows.append(block)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=OBSERVATION_COLUMNS)
 

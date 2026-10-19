@@ -49,7 +49,7 @@
     "preset": null,
     "stages": [
       {
-        "tiers": [
+        "data_spaces": [
           "distant_aux",
           "near_aux",
           "challenge"

@@ -349,7 +349,7 @@ class NeuralNetwork:
         self.descriptor_sources = descriptor_sources
         self.seed = seed
         #: The training curriculum (an object exposing ``.stages``), or None for one
-        #: pooled stage over every tier -- the baseline.
+        #: pooled stage over every data_space -- the baseline.
         self.training = training
         #: Which cached foundation-model embedding to append, or "none".
         self.molecular_embedding = molecular_embedding
@@ -530,8 +530,8 @@ class NeuralNetwork:
             mask = rows_for_stage(usable, stage)
             rows = all_rows[torch.tensor(mask)]
             logger.info(
-                "stage tiers=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
-                stage.tiers,
+                "stage data_spaces=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
+                stage.data_spaces,
                 stage.assays or "all",
                 int(mask.sum()),
                 stage.epochs,

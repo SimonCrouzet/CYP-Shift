@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
-from cypshift.data.assembly import ASSAYS, TIERS
+from cypshift.data.assembly import ASSAYS, DATA_SPACES
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
@@ -359,8 +359,8 @@ class Stage:
     """One stage of the training curriculum: which data, and how to train on it.
 
     Two facets select the data, after the pattern that separates target relatedness from
-    assay context: ``tiers`` is the proximity facet (a subset of
-    :data:`cypshift.data.assembly.TIERS`) and ``assays`` the data-type facet (a subset of
+    assay context: ``data_spaces`` is the proximity facet (a subset of
+    :data:`cypshift.data.assembly.DATA_SPACES`) and ``assays`` the data-type facet (a subset of
     :data:`cypshift.data.assembly.ASSAYS`, or ``None`` for every assay). Both are fixed by
     the curriculum. The rest are the *swappable strategy* for the stage: ``epochs`` and
     ``lr`` (``None`` reuses the model's own), and ``freeze_trunk``, which holds the trunk
@@ -369,7 +369,7 @@ class Stage:
     run frozen or fully fine-tuned without changing which data it trains on.
     """
 
-    tiers: tuple[str, ...] = TIERS
+    data_spaces: tuple[str, ...] = DATA_SPACES
     assays: tuple[str, ...] | None = None
     epochs: int | None = None
     lr: float | None = None
@@ -387,29 +387,29 @@ CURRICULUM_PRESETS: dict[str, list[Stage]] = {
     # Coarse to fine: pretrain on outside data, adapt to the challenge, sharpen on the
     # scored dose-response with the trunk frozen.
     "coarse_to_fine": [
-        Stage(tiers=("distant_aux", "near_aux")),
-        Stage(tiers=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
-        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+        Stage(data_spaces=("distant_aux", "near_aux")),
+        Stage(data_spaces=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
     ],
     # The single-concentration screen as its own stage before the dose-response.
     "assay_first": [
-        Stage(tiers=("distant_aux", "near_aux")),
-        Stage(tiers=("challenge",), assays=(_SCREEN,), lr=5e-4),
-        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+        Stage(data_spaces=("distant_aux", "near_aux")),
+        Stage(data_spaces=("challenge",), assays=(_SCREEN,), lr=5e-4),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
     ],
     # Coarse to fine, then a short unfrozen polish at a very low lr (progressive unfreezing).
     "progressive": [
-        Stage(tiers=("distant_aux", "near_aux")),
-        Stage(tiers=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
-        Stage(tiers=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
-        Stage(tiers=("challenge",), assays=(_DRC,), epochs=10, lr=5e-5),
+        Stage(data_spaces=("distant_aux", "near_aux")),
+        Stage(data_spaces=("challenge",), assays=(_SCREEN, _DRC), lr=5e-4),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=10, lr=5e-5),
     ],
 }
 
 
 @dataclass
 class TrainingConfig:
-    """The training curriculum: an ordered list of stages, trained farthest tier first.
+    """The training curriculum: an ordered list of stages, trained farthest data_space first.
 
     Two ways to set it. A ``preset`` names a whole curriculum from
     :data:`CURRICULUM_PRESETS`, so the fine-tuning strategy is one swept categorical --
@@ -495,12 +495,13 @@ class ExperimentConfig:
         if not stages:
             raise ValueError("training must resolve to at least one stage")
         for index, stage in enumerate(stages):
-            if not stage.tiers:
-                raise ValueError(f"training.stages[{index}].tiers is empty")
-            unknown_tiers = set(stage.tiers) - set(TIERS)
-            if unknown_tiers:
+            if not stage.data_spaces:
+                raise ValueError(f"training.stages[{index}].data_spaces is empty")
+            unknown_data_spaces = set(stage.data_spaces) - set(DATA_SPACES)
+            if unknown_data_spaces:
                 raise ValueError(
-                    f"training.stages[{index}].tiers has unknown {sorted(unknown_tiers)}"
+                    f"training.stages[{index}].data_spaces has unknown "
+                    f"{sorted(unknown_data_spaces)}"
                 )
             unknown_assays = set(stage.assays or ()) - set(ASSAYS)
             if unknown_assays:

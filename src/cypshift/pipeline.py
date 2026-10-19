@@ -454,9 +454,9 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     contributed = {name: 0 for name in datasets}
     raised: dict[str, str] = {}
     for enzyme, weight in to_pull:
-        # A scored enzyme's own outside rows sit one tier from the endpoint; a relative's
-        # further out. The curriculum trains distant tiers before near ones.
-        tier = "near_aux" if enzyme in scored else "distant_aux"
+        # A scored enzyme's own outside rows sit one data_space from the endpoint; a relative's
+        # further out. The curriculum trains distant data_spaces before near ones.
+        data_space = "near_aux" if enzyme in scored else "distant_aux"
         # Group the enabled datasets by their assay context, so sources of one detection
         # chemistry (veith+tox21, chembl+sair) pool together while different chemistries
         # stay distinct rows the calibration can offset apart.
@@ -513,7 +513,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                         "conf_high": high,
                         "weight": weight,
                         "is_censored": censored,
-                        "tier": tier,
+                        "data_space": data_space,
                     }
                 )
             )

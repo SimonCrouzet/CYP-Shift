@@ -269,7 +269,7 @@ def test_run_widens_the_target_vocabulary_for_auxiliary_enzymes(monkeypatch):
                 "conf_high": [5.0],
                 "weight": [0.6],
                 "is_censored": [False],
-                "tier": ["distant_aux"],
+                "data_space": ["distant_aux"],
             }
         ),
     )
