@@ -323,7 +323,8 @@ class BoostedTrees:
 
         The scalar counterpart of the curve model's comparison: predict the direct and
         preincubated pIC50 for each enzyme and apply the organisers' rule. Requires the
-        preincubated arm in training (``sources.tdi_arm``), or the tdi-assay prediction
+        preincubated assay_condition in training (``sources.tdi_assay_condition``), or the tdi-assay
+        prediction
         is untrained. Returns one column per isoform, matching the curve model's shape.
         """
         flags = []

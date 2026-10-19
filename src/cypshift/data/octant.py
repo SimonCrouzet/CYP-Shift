@@ -13,7 +13,7 @@ deduplicated regardless.
 
 Source: https://huggingface.co/datasets/openadmet/Octant_CYP_inhibition_reactivity_blog_release
 (CC-BY-4.0). Its 30-minute active-enzyme preincubation means the readout captures
-reversible plus metabolite/time-dependent inhibition -- relevant to the CYP3A4 TDI arm.
+reversible plus metabolite/time-dependent inhibition -- relevant to the CYP3A4 TDI assay_condition.
 """
 
 import logging

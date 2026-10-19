@@ -582,9 +582,11 @@ class NeuralNetwork:
         return np.mean(passes, axis=0)
 
     def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
-        """TDI call by comparing the direct and preincubated arms, with swept thresholds.
+        """TDI call by comparing the direct and preincubated assay_conditions, with swept
+        thresholds.
 
-        Requires the preincubated arm in training (``sources.tdi_arm``). One column per
+        Requires the preincubated assay_condition in training (``sources.tdi_assay_condition``). One
+        column per
         isoform, matching the curve and graph models' shape.
         """
         if self._model is None:

@@ -131,63 +131,65 @@ def _retained_with_tdi(n: int = 40) -> pd.DataFrame:
     return pd.DataFrame(frame)
 
 
-def test_the_preincubated_arm_is_absent_when_all_its_compounds_are_excluded():
+def test_the_preincubated_assay_condition_is_absent_when_all_its_compounds_are_excluded():
     """Excluding every TDI compound (as a holdout/test set would, in the limit) leaves no
-    arm, and an empty frame is treated as the source being absent."""
+    assay_condition, and an empty frame is treated as the source being absent."""
     from cypshift.data.challenge import load
 
     all_tdi = set(load("tdi")["Molecule_Name"].dropna())
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.sources.tdi_arm = True
+    config.sources.tdi_assay_condition = True
     observations, _ = assemble_training_data(config, _retained_with_tdi(), exclude_names=all_tdi)
     assert "tdi_drc" not in set(observations["assay"])
 
 
-def test_the_preincubated_arm_reaches_the_training_table():
+def test_the_preincubated_assay_condition_reaches_the_training_table():
     """Omitting it reduced the classification track to a constant "no": the curve
-    model's second arm trained on nothing, so predict_is_time_dependent compared an
-    untrained arm against a trained one and scored MCC 0.0 -- identical to answering
+    model's second assay_condition trained on nothing, so predict_is_time_dependent compared an
+    untrained assay_condition against a trained one and scored MCC 0.0 -- identical to answering
     "no" to every compound. build_observations accepted a tdi argument that the
     pipeline never passed."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.sources.tdi_arm = True
+    config.sources.tdi_assay_condition = True
     observations, _ = assemble_training_data(config, _retained_with_tdi())
     assert "tdi_drc" in set(observations["assay"])
 
 
-def test_the_arm_is_off_by_default_to_protect_the_regression_track():
+def test_the_assay_condition_is_off_by_default_to_protect_the_regression_track():
     """It costs about 0.04 macro ST-RAE at every weight tried, more than every gain
     measured so far combined. The classification track turns it on instead."""
-    assert ExperimentConfig().sources.tdi_arm is False
+    assert ExperimentConfig().sources.tdi_assay_condition is False
 
 
-def test_the_preincubated_arm_can_be_switched_off():
+def test_the_preincubated_assay_condition_can_be_switched_off():
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.sources.tdi_arm = False
+    config.sources.tdi_assay_condition = False
     observations, _ = assemble_training_data(config, _retained_with_tdi())
     assert "tdi_drc" not in set(observations["assay"])
 
 
-def test_the_preincubated_arm_excludes_named_compounds_but_keeps_the_cohort():
-    """Held-out and test compounds stay out of the TDI arm (no leakage), but the rest of the
-    cohort stays in -- including compounds with a preincubated arm but no direct curve, which
-    the old intersection with the direct set dropped."""
+def test_the_preincubated_assay_condition_excludes_named_compounds_but_keeps_the_cohort():
+    """Held-out and test compounds stay out of the TDI assay_condition (no leakage), but
+    the rest of the cohort stays in -- including compounds with a preincubated
+    assay_condition but no direct curve, which the old intersection with the direct set
+    dropped."""
     config = ExperimentConfig()
     config.override("model.kind", "curve")
-    config.sources.tdi_arm = True
-    # The synthetic direct set shares no name with the TDI file, yet the arm is still present:
+    config.sources.tdi_assay_condition = True
+    # The synthetic direct set shares no name with the TDI file, yet the assay_condition is
+    # still present:
     # the cohort is kept rather than intersected away.
     full, _ = assemble_training_data(config, _retained())
-    arm = full[full["assay"] == "tdi_drc"]
-    assert not arm.empty
-    victim = arm["Molecule_Name"].iloc[0]
+    assay_condition = full[full["assay"] == "tdi_drc"]
+    assert not assay_condition.empty
+    victim = assay_condition["Molecule_Name"].iloc[0]
     pruned, _ = assemble_training_data(config, _retained(), exclude_names={victim})
-    pruned_arm = pruned[pruned["assay"] == "tdi_drc"]
-    assert victim not in set(pruned_arm["Molecule_Name"])
-    assert len(pruned_arm) < len(arm)
+    pruned_assay_condition = pruned[pruned["assay"] == "tdi_drc"]
+    assert victim not in set(pruned_assay_condition["Molecule_Name"])
+    assert len(pruned_assay_condition) < len(assay_condition)
 
 
 def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):

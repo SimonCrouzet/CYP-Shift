@@ -234,10 +234,11 @@ def assemble_training_data(
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray] | None]:
     """Build the observation table the configured multi-fidelity strategy calls for.
 
-    ``exclude_names`` are compounds kept out of the preincubated (TDI) arm -- the holdout
+    ``exclude_names`` are compounds kept out of the preincubated (TDI) assay_condition -- the
+    holdout
     and blinded-test compounds, so their TDI measurement cannot leak. Excluding by name
     rather than intersecting with the direct-labelled set keeps the TDI-only cohort (around
-    1,238 CYP3A4 negatives have a preincubated arm but no direct curve) in training.
+    1,238 CYP3A4 negatives have a preincubated assay_condition but no direct curve) in training.
 
     Returns the observations and, where the strategy produces one, a per-compound
     screen_model feature derived from the screen rather than extra training rows.
@@ -255,19 +256,19 @@ def assemble_training_data(
 
     weights = SourceWeights(
         screen_pseudo_label=config.multifidelity.screen_weight,
-        tdi_arm=config.multifidelity.tdi_weight,
+        tdi_assay_condition=config.multifidelity.tdi_weight,
     )
-    # The preincubated arm. Omitting it was measured to kill the classification track
-    # outright: the curve model's second arm trained on nothing, so
-    # predict_is_time_dependent compared an untrained arm against a trained one and
+    # The preincubated assay_condition. Omitting it was measured to kill the classification track
+    # outright: the curve model's second assay_condition trained on nothing, so
+    # predict_is_time_dependent compared an untrained assay_condition against a trained one and
     # returned False for every compound -- MCC 0.0, identical to answering "no" to
     # everything. It is a real measurement of the same compounds under preincubation,
     # so it belongs in the table whatever the model does with it.
-    tdi = load("tdi", Path(config.data.directory)) if config.sources.tdi_arm else None
+    tdi = load("tdi", Path(config.data.directory)) if config.sources.tdi_assay_condition else None
     if tdi is not None:
         # Keep every TDI-cohort compound except the held-out and test ones; intersecting
         # with the direct-labelled set instead would drop the ~1,238 compounds that carry a
-        # preincubated arm but were never promoted to a direct curve.
+        # preincubated assay_condition but were never promoted to a direct curve.
         if exclude_names:
             tdi = tdi[~tdi["Molecule_Name"].isin(exclude_names)]
         if tdi.empty:
@@ -599,7 +600,8 @@ def run(
         seed=config.data.seed,
     )
     retained, evaluation = train.loc[~mask], train.loc[mask]
-    # Keep the held-out and blinded-test compounds out of the TDI arm so their preincubated
+    # Keep the held-out and blinded-test compounds out of the TDI assay_condition so their
+    # preincubated
     # measurement cannot leak into training.
     exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
     observations, screen_model = assemble_training_data(config, retained, exclude_names=exclude)
@@ -624,10 +626,10 @@ def run(
     scores = score_submission(submission, evaluation)
     _log_r2_decomposition(submission, evaluation)
 
-    # Only score TDI when the preincubated arm was actually trained; a model that merely
+    # Only score TDI when the preincubated assay_condition was actually trained; a model that merely
     # owns a predict_is_time_dependent method would otherwise report a meaningless MCC from
-    # an untrained second arm.
-    if config.sources.tdi_arm:
+    # an untrained second assay_condition.
+    if config.sources.tdi_assay_condition:
         tdi = score_tdi(model, evaluation, directory)
         if tdi is not None:
             logger.info(
@@ -675,7 +677,7 @@ def run_cv(
     for fold in range(n_folds):
         held_out = folds == fold
         retained, evaluation = train.loc[~held_out], train.loc[held_out]
-        # Keep this fold's compounds and the blinded test out of the TDI arm, so a
+        # Keep this fold's compounds and the blinded test out of the TDI assay_condition, so a
         # preincubated measurement of a validation compound cannot leak into training.
         exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
         observations, screen_model = assemble_training_data(config, retained, exclude_names=exclude)
@@ -698,10 +700,12 @@ def run_cv(
             fold_predictions[endpoint] = prediction.mean[:, column]
         out_of_fold.append(fold_predictions)
 
-        # The TDI arm, out of fold too, but only when the preincubated arm was actually
-        # trained (sources.tdi_arm) and the model can predict it. Without the arm trained,
+        # The TDI assay_condition, out of fold too, but only when the preincubated assay_condition
+        # was actually
+        # trained (sources.tdi_assay_condition) and the model can predict it. Without the
+        # assay_condition trained,
         # the call is meaningless (all-not-TDI, MCC ~0) and just wastes the bootstrap.
-        if config.sources.tdi_arm and hasattr(model, "predict_is_time_dependent"):
+        if config.sources.tdi_assay_condition and hasattr(model, "predict_is_time_dependent"):
             flags = model.predict_is_time_dependent(evaluation["SMILES"].tolist())
             fold_tdi = evaluation[["Molecule_Name"]].copy()
             for endpoint in CLASSIFICATION_ENDPOINTS:
@@ -772,7 +776,8 @@ def score_tdi(model: object, evaluation: pd.DataFrame, directory: Path) -> pd.Da
     """Score the time-dependent inhibition track, when the model can predict it.
 
     Only a model of the dose-response curve can. The label is defined by comparing the
-    preincubated arm's midpoint against the direct arm's, so predicting it means
+    preincubated assay_condition's midpoint against the direct assay_condition's, so predicting it
+    means
     predicting both curves; a model emitting a single pIC50 has nothing to compare.
     Returns None rather than raising for those, since the regression track is still a
     valid run.

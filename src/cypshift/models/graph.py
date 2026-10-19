@@ -61,8 +61,9 @@ logger = logging.getLogger(__name__)
 #: chemprop's finiteness mask zeroes the irrelevant task, so the two scales never mix.
 VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
-#: The preincubated dose-response arm's assay tag (see cypshift.data.assembly.ASSAYS), the
-#: second arm predict_is_time_dependent compares against the direct one.
+#: The preincubated dose-response assay_condition's assay tag (see cypshift.data.assembly.ASSAYS),
+#: the
+#: second assay_condition predict_is_time_dependent compares against the direct one.
 TDI_ASSAY = "tdi_drc"
 
 #: CheMeleon: a D-MPNN message-passing encoder pretrained on 100M molecules, published on
@@ -447,13 +448,14 @@ class GraphNetwork:
         return PredictiveDistribution(self._samples_at_assay(smiles, SCORED_ASSAY), self.endpoints)
 
     def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
-        """Call is_TDI by comparing the direct and preincubated arms the graph predicts.
+        """Call is_TDI by comparing the direct and preincubated assay_conditions the graph predicts.
 
 
         Same two-views-of-one-object idea as the curve model: condition the one trunk on the
         direct and the ``tdi_drc`` (preincubated) assay, then apply the organisers' shift rule
-        with the model's own swept thresholds. Only meaningful when the preincubated arm was
-        trained (``sources.tdi_arm``); run_cv scores TDI only in that case.
+        with the model's own swept thresholds. Only meaningful when the preincubated assay_condition
+        was
+        trained (``sources.tdi_assay_condition``); run_cv scores TDI only in that case.
         """
         direct = self._samples_at_assay(smiles, SCORED_ASSAY).mean(axis=0)
         preincubated = self._samples_at_assay(smiles, TDI_ASSAY).mean(axis=0)

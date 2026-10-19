@@ -141,7 +141,7 @@ class TestAssayMetadata:
         challenge = {a: ASSAY_METADATA[a] for a in ASSAYS[:3]}
         assert len(set(challenge.values())) == len(challenge)
 
-    def test_only_the_tdi_arm_preincubates(self):
+    def test_only_the_tdi_assay_condition_preincubates(self):
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
         assert preincubated == {"tdi_drc"}
 

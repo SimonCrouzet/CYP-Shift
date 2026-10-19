@@ -16,7 +16,7 @@
   },
   "sources": {
     "screen": true,
-    "tdi_arm": false,
+    "tdi_assay_condition": false,
     "chembl": false,
     "sair": false,
     "octant": false,

@@ -50,7 +50,7 @@ CONDITIONING_STRATEGIES = (
 #: How the curve model makes its output depend on the enzyme. This is a *structural*
 #: choice rather than an encoding, which is why it is a separate axis.
 #:
-#: ``heads`` gives one output head per (enzyme, arm) -- maximally flexible, but a head
+#: ``heads`` gives one output head per (enzyme, assay_condition) -- maximally flexible, but a head
 #: is an index, so an enzyme outside the scored set trains parameters that are then
 #: discarded and nothing pretrains. ``descriptor`` uses one shared head given a vector
 #: describing the enzyme's pocket, which is less free per enzyme but lets an auxiliary
@@ -172,9 +172,9 @@ class SourcesConfig:
 
     #: The single-concentration screen (17,504 censored readings).
     screen: bool = True
-    #: The preincubated (TDI) arm -- needed for the classification track, costly for the
+    #: The preincubated (TDI) assay_condition -- needed for the classification track, costly for the
     #: regression one, so off by default.
-    tdi_arm: bool = False
+    tdi_assay_condition: bool = False
     #: ChEMBL auxiliary potencies.
     chembl: bool = False
     #: SAIR auxiliary potencies (needs data/external/sair.parquet).
@@ -213,11 +213,11 @@ class ConditioningConfig:
 
 @dataclass
 class MultifidelityConfig:
-    #: Whether to train on the preincubated arm as well as the direct one.
+    #: Whether to train on the preincubated assay_condition as well as the direct one.
     #:
     #: Off by default, which is a choice about which leaderboard a run is aimed at
-    #: rather than a judgement that the arm is useless. Including it is what makes the
-    #: classification track work at all -- without it the curve model's second arm
+    #: rather than a judgement that the assay_condition is useless. Including it is what makes the
+    #: classification track work at all -- without it the curve model's second assay_condition
     #: trains on nothing and predicts "no" for every compound, MCC 0.0 -- but it costs
     #: 0.033 to 0.061 macro ST-RAE on the regression track at every weight tried, more
     #: than every improvement measured so far put together.
@@ -251,15 +251,16 @@ class NeuralConfig:
     batch_size: int = 256
     learning_rate: float = 1e-3
     forward_passes: int = 30
-    #: is_TDI decision thresholds for its direct-vs-preincubated arm comparison; our swept
-    #: heuristic (cypshift.models.tdi), not a challenge constant. Needs sources.tdi_arm.
+    #: is_TDI decision thresholds for its direct-vs-preincubated assay_condition comparison; our
+    #: swept
+    #: heuristic (cypshift.models.tdi), not a challenge constant. Needs sources.tdi_assay_condition.
     tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
     tdi_assay_floor: float = TDI_FLOOR_DEFAULT
 
 
 @dataclass
 class CurveConfig:
-    """The dose-response curve model, which predicts curve parameters per arm."""
+    """The dose-response curve model, which predicts curve parameters per assay_condition."""
 
     hidden: int = 256
     dropout: float = 0.2
@@ -278,7 +279,8 @@ class CurveConfig:
     #: inhibited fraction. One measurement with no replicate does not support a tight
     #: bound, and stating a tighter one would let the screen overrule fitted curves.
     screen_noise: float = 0.1
-    #: The model's is_TDI decision thresholds on its predicted arm shift; our heuristic, not
+    #: The model's is_TDI decision thresholds on its predicted assay_condition shift; our heuristic,
+    #: not
     #: a challenge constant (see cypshift.models.tdi). Swept, since the best threshold on
     #: noisy predicted shifts need not equal the one that defined the labels.
     tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
@@ -316,8 +318,9 @@ class GraphConfig:
     #: Swept, off by default.
     auxiliary_response: bool = False
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
-    #: direct and preincubated (tdi_drc) arms. Default to the organisers' rule (config.py);
-    #: swept. Only used when sources.tdi_arm trained the preincubated arm.
+    #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
+    #: (config.py);
+    #: swept. Only used when sources.tdi_assay_condition trained the preincubated assay_condition.
     tdi_shift_threshold: float = TDI_SHIFT_DEFAULT
     tdi_assay_floor: float = TDI_FLOOR_DEFAULT
 

@@ -12,7 +12,8 @@ ranking (Spearman) transfers to the leaderboard even though the ST-RAE level doe
   families are apples-to-apples; a few aux-stack variants check whether octant+tox21 helps
   the stronger models too. The mammal embedding stays challenge-only because its cache does
   not cover the aux compounds; CheMeleon carries the pretrained-encoder-with-aux combination.
-* TDI -- the dose-response curve model under each conditioning strategy (detached per-arm
+* TDI -- the dose-response curve model under each conditioning strategy (detached
+per-assay_condition
   heads, a shared head on an enzyme descriptor, FiLM), scored by MCC out of fold.
 * Submissions -- the best regression config (lowest mean macro ST-RAE) and the best TDI
   config (highest mean macro MCC) are each refit on all training data and written to
@@ -200,12 +201,12 @@ REGRESSION: dict[str, dict] = {
         "model.objective": "expectile",
         "model.objective_tau": 0.6,
     },
-    # Trains the preincubated arm so the graph serves the TDI track too (scored by MCC),
+    # Trains the preincubated assay_condition so the graph serves the TDI track too (scored by MCC),
     # the regression+classification link over one architecture.
     "graph_chemeleon_tdi": {
         "model.kind": "graph",
         "model.graph.pretraining": "chemeleon",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
     },
     # --- Neural MLP (GPU) ---
     "neural": {"model.kind": "neural"},
@@ -257,44 +258,44 @@ REGRESSION: dict[str, dict] = {
 }
 
 #: The TDI track: the dose-response curve model under each conditioning strategy, with the
-#: preincubated arm on so its two arms can be compared into an is_TDI call.
+#: preincubated assay_condition on so its two assay_conditions can be compared into an is_TDI call.
 TDI: dict[str, dict] = {
     "curve_heads": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
     },
     "curve_descriptor": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "descriptor",
     },
     "curve_film": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "film",
     },
     "curve_heads_ionization": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "features.use_ionization_geometry": True,
     },
     "curve_heads_tdishift_15": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "model.curve.tdi_shift_threshold": 0.15,
     },
     "curve_heads_tdishift_50": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "model.curve.tdi_shift_threshold": 0.5,
     },
     "curve_heads_losstau_60": {
         "model.kind": "curve",
-        "sources.tdi_arm": True,
+        "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "model.curve.loss_tau": 0.6,
     },
@@ -368,7 +369,11 @@ REGRESSION = dict(sorted(REGRESSION.items(), key=_gpu_first))
 TDI.update(
     _ofat(
         "curve",
-        {"model.kind": "curve", "sources.tdi_arm": True, "model.curve.conditioning": "heads"},
+        {
+            "model.kind": "curve",
+            "sources.tdi_assay_condition": True,
+            "model.curve.conditioning": "heads",
+        },
         CURVE_HP,
     )
 )

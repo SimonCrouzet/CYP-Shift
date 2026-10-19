@@ -30,7 +30,7 @@ parameters:
   model.kind:
     value: curve
 
-  # heads is the baseline: one output head per enzyme and arm, no descriptor involved.
+  # heads is the baseline: one output head per enzyme and assay_condition, no descriptor involved.
   # descriptor concatenates a pocket vector, which a linear head reduces to a constant
   # per-enzyme offset -- measured at standard deviation 0.0000 across molecules. film
   # multiplies instead, so the enzyme can change how a molecular feature is used.

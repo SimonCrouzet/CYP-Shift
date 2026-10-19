@@ -8,7 +8,7 @@ import torch
 from cypshift.config import ISOFORMS
 from cypshift.data.assembly import build_observations
 from cypshift.models.curve import (
-    ARMS,
+    ASSAY_CONDITIONS,
     DESCRIBED_CONDITIONING,
     EMAX,
     EMAX_OFFSET,
@@ -162,10 +162,10 @@ def test_the_screen_saturates_for_potent_compounds():
     assert responses[3] - responses[2] < 0.1 * (responses[2] - responses[1])
 
 
-def test_the_two_arms_are_separate_curves():
+def test_the_two_assay_conditions_are_separate_curves():
     model = _model().fit(_observations())
-    direct = model.predict_pic50(SMILES[:5], arm=ARMS[0])
-    preincubated = model.predict_pic50(SMILES[:5], arm=ARMS[1])
+    direct = model.predict_pic50(SMILES[:5], assay_condition=ASSAY_CONDITIONS[0])
+    preincubated = model.predict_pic50(SMILES[:5], assay_condition=ASSAY_CONDITIONS[1])
     assert not np.allclose(direct, preincubated)
 
 
@@ -176,7 +176,7 @@ def test_parameter_order_is_what_the_loss_assumes():
 def test_an_observation_only_reaches_the_head_it_observed():
     """The property the whole decomposition rests on.
 
-    A measurement on one enzyme, in one arm, must produce gradient in that head alone.
+    A measurement on one enzyme, in one assay_condition, must produce gradient in that head alone.
     If it leaked into the others, a CYP2C9 reading would drag CYP2D6 -- which is
     exactly wrong, since the two recognise opposite charges: an acid helps at CYP2C9
     and hurts at CYP2D6, and a basic amine does the reverse.
@@ -184,11 +184,11 @@ def test_an_observation_only_reaches_the_head_it_observed():
     from cypshift.models.curve import CurveNetwork, curve_loss
 
     torch.manual_seed(0)
-    network = CurveNetwork(n_features=8, n_targets=4, n_arms=2, hidden=16, dropout=0.0)
+    network = CurveNetwork(n_features=8, n_targets=4, n_assay_conditions=2, hidden=16, dropout=0.0)
     predicted = network(torch.randn(1, 8))
 
-    observed_target, observed_arm = 1, 0
-    parameters = predicted[:, observed_target, observed_arm]
+    observed_target, observed_assay_condition = 1, 0
+    parameters = predicted[:, observed_target, observed_assay_condition]
     loss = curve_loss(
         parameters,
         observation_kind=torch.tensor([0]),
@@ -203,7 +203,7 @@ def test_an_observation_only_reaches_the_head_it_observed():
         for index, head in enumerate(network.heads)
         if head.weight.grad is not None and head.weight.grad.abs().sum() > 0
     ]
-    assert touched == [observed_target * 2 + observed_arm]
+    assert touched == [observed_target * 2 + observed_assay_condition]
 
 
 def test_a_screen_row_and_a_curve_row_constrain_different_things():
@@ -274,7 +274,7 @@ class TestFilmConditioning:
         network = self._network("film")
         with torch.no_grad():
             output = network(torch.randn(8, 32))
-        # every enzyme and arm sees the same unmodulated representation at init
+        # every enzyme and assay_condition sees the same unmodulated representation at init
         assert torch.allclose(output[:, 0, 0], output[:, 1, 1], atol=1e-6)
 
     def test_concatenating_a_descriptor_only_shifts_every_molecule_alike(self):

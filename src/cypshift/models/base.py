@@ -174,7 +174,8 @@ def active_stages(observations: pd.DataFrame, stages: list[ResolvedStage]) -> li
     """Drop stages with no rows this run; fall back to one pooled stage if all are empty.
 
     A curriculum can name a facet a given run does not populate -- ``distant_aux`` when no
-    auxiliary source is on, or the TDI assay when its arm is off. Such stages are skipped
+    auxiliary source is on, or the TDI assay when its assay_condition is off. Such stages are
+    skipped
     rather than training on nothing, and if every stage is empty the model still trains
     once over whatever is present, so a run never produces an unfitted model.
     """

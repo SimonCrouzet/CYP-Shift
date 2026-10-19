@@ -82,14 +82,14 @@ class SourceWeights:
     """How far each source is trusted, relative to a fitted dose-response curve.
 
     A screen pseudo-label carries the calibration residual on top of the assay's own
-    noise, so it is down-weighted rather than excluded. The TDI arm is a real curve
+    noise, so it is down-weighted rather than excluded. The TDI assay_condition is a real curve
     but measures a different condition, so it informs the shared representation
     without being treated as a direct-inhibition measurement.
     """
 
     dose_response: float = 1.0
     screen_pseudo_label: float = 0.3
-    tdi_arm: float = 0.5
+    tdi_assay_condition: float = 0.5
 
 
 #: Module-level default, so the frozen instance is shared rather than rebuilt per call.
@@ -146,7 +146,7 @@ def build_observations(
         inhibition: The dose-response direct-inhibition training set.
         screen_labels: Calibrated pseudo-labels from
             :func:`cypshift.data.screen.pseudo_labels`, or None to omit them.
-        tdi: The time-dependent inhibition arm, or None to omit it.
+        tdi: The time-dependent inhibition assay_condition, or None to omit it.
         weights: Relative trust in each source.
 
     Returns:
@@ -171,7 +171,9 @@ def build_observations(
             )
         )
     if tdi is not None:
-        sources.append(_from_wide(tdi, "tdi_drc", "{isoform}_pIC50_TDI_condition", weights.tdi_arm))
+        sources.append(
+            _from_wide(tdi, "tdi_drc", "{isoform}_pIC50_TDI_condition", weights.tdi_assay_condition)
+        )
 
     observations = pd.concat(sources, ignore_index=True)[list(OBSERVATION_COLUMNS)]
     summary = observations.groupby(["assay", "target"]).size().unstack(fill_value=0)
@@ -194,7 +196,8 @@ def build_observations(
 #:
 #: A concentration column was tried and removed: the screen value was measured
 #: (``concentration_M`` is 4.95049505e-05 throughout that table) but the dose-response
-#: arms carry no concentration column, so the -4.0 used for them was invented, and it was
+#: assay_conditions carry no concentration column, so the -4.0 used for them was invented, and it
+#: was
 #: a deterministic function of ``dose_response`` anyway.
 ASSAY_METADATA = {
     #                          preincubated  dose_response  luminescent  aggregate

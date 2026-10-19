@@ -214,16 +214,16 @@ def submit(
     ``Molecule_Name`` and ``SMILES``, and the labels stay with the organisers.
 
     ``--track`` picks which leaderboard the run is for, and the two want different
-    models. The classification track needs the preincubated arm in training, without
-    which a curve model answers "no" for every compound and scores MCC 0.0; that arm
+    models. The classification track needs the preincubated assay_condition in training, without
+    which a curve model answers "no" for every compound and scores MCC 0.0; that assay_condition
     costs about 0.04 macro ST-RAE on the regression track at every weight tried. Since
     the tracks are scored separately there is no reason to compromise -- run this twice.
 
     Each track writes exactly the columns its leaderboard wants, always led by
     ``SMILES`` and ``Molecule_Name``: the four pIC50 columns for regression, the two
     ``is_TDI`` booleans for classification. The classification track therefore needs a
-    model that can produce TDI calls -- the label compares the preincubated arm's
-    midpoint against the direct arm's, so a model emitting one pIC50 has nothing to
+    model that can produce TDI calls -- the label compares the preincubated assay_condition's
+    midpoint against the direct assay_condition's, so a model emitting one pIC50 has nothing to
     compare and the command refuses rather than write an invalid file.
     """
     _configure_logging(verbose)
@@ -234,19 +234,23 @@ def submit(
     # data from config.data.directory, so it must match the train/test directory or a run
     # can silently combine unrelated inputs.
     config.data.directory = str(directory)
-    # The classification track needs the preincubated arm, so require it rather than
+    # The classification track needs the preincubated assay_condition, so require it rather than
     # silently flipping the regression track's off: the submitted recipe stays the one that
-    # was validated, and a config that deliberately kept the arm on for regression is honoured.
-    if track == "classification" and not config.sources.tdi_arm:
-        logger.info("classification track needs the preincubated arm; enabling sources.tdi_arm")
-        config.sources.tdi_arm = True
+    # was validated, and a config that deliberately kept the assay_condition on for regression is
+    # honoured.
+    if track == "classification" and not config.sources.tdi_assay_condition:
+        logger.info(
+            "classification track needs the preincubated assay_condition; "
+            "enabling sources.tdi_assay_condition"
+        )
+        config.sources.tdi_assay_condition = True
     config.validate()
 
     train = load("inhibition", directory)
     test = load("test", directory)
     logger.info("training on all %d compounds, predicting %d", len(train), len(test))
 
-    # Full-data fit: only the blinded-test compounds are kept out of the TDI arm.
+    # Full-data fit: only the blinded-test compounds are kept out of the TDI assay_condition.
     observations, screen_model = assemble_training_data(
         config, train, exclude_names=set(test["Molecule_Name"])
     )
@@ -303,7 +307,7 @@ def loss_ablation(
     """Train one architecture on each candidate objective and report every metric.
 
     A single-variable sweep: same network, same data, same split, same scoring, with
-    only the training objective changing. Every metric is reported for every arm
+    only the training objective changing. Every metric is reported for every assay_condition
     regardless of which one it trained on, since a model tuned for one can easily be
     worse on another and that trade is the thing worth seeing.
     """

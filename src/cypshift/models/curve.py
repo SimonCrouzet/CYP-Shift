@@ -56,9 +56,9 @@ N_PARAMETERS = 3
 SCREEN_PC = 4.305
 
 #: Arms. Each is its own curve, not a displacement of the other.
-ARMS = ("direct", "preincubated")
+ASSAY_CONDITIONS = ("direct", "preincubated")
 
-#: How the network is made to depend on which enzyme and arm a row came from.
+#: How the network is made to depend on which enzyme and assay_condition a row came from.
 CONDITIONING = ("heads", "descriptor", "film")
 
 #: The strategies needing a descriptor row per enzyme.
@@ -101,13 +101,14 @@ def inhibition_at(parameters: torch.Tensor, pc: float | torch.Tensor) -> torch.T
 
 
 class CurveNetwork(nn.Module):
-    """Shared trunk over molecular features, emitting curve parameters per enzyme and arm.
+    """Shared trunk over molecular features, emitting curve parameters per enzyme and
+    assay_condition.
 
-    Two ways to make the output depend on which enzyme and arm a row belongs to, and
+    Two ways to make the output depend on which enzyme and assay_condition a row belongs to, and
     which is better is an empirical question rather than a settled one:
 
     ``heads``
-        One output head per (enzyme, arm). Maximally flexible, and the variant with
+        One output head per (enzyme, assay_condition). Maximally flexible, and the variant with
         industrial-scale validation in multi-task property prediction. But a head is an
         index: an enzyme outside the scored set trains parameters that are thrown away,
         so nothing pretrains.
@@ -142,7 +143,7 @@ class CurveNetwork(nn.Module):
         self,
         n_features: int,
         n_targets: int,
-        n_arms: int = 2,
+        n_assay_conditions: int = 2,
         hidden: int = 256,
         dropout: float = 0.2,
         conditioning: str = "heads",
@@ -156,7 +157,11 @@ class CurveNetwork(nn.Module):
         if conditioning in DESCRIBED_CONDITIONING and descriptors is None:
             raise ValueError(f"{conditioning} conditioning needs one descriptor row per enzyme")
 
-        self.n_targets, self.n_arms, self.conditioning = n_targets, n_arms, conditioning
+        self.n_targets, self.n_assay_conditions, self.conditioning = (
+            n_targets,
+            n_assay_conditions,
+            conditioning,
+        )
         self.trunk = nn.Sequential(
             nn.Linear(n_features, hidden),
             nn.ReLU(),
@@ -168,14 +173,14 @@ class CurveNetwork(nn.Module):
         width = hidden // 2
         if conditioning == "heads":
             self.heads = nn.ModuleList(
-                [nn.Linear(width, N_PARAMETERS) for _ in range(n_targets * n_arms)]
+                [nn.Linear(width, N_PARAMETERS) for _ in range(n_targets * n_assay_conditions)]
             )
         elif conditioning == "descriptor":
             self.register_buffer("descriptors", descriptors)
-            self.head = nn.Linear(width + descriptors.shape[1] + n_arms, N_PARAMETERS)
+            self.head = nn.Linear(width + descriptors.shape[1] + n_assay_conditions, N_PARAMETERS)
         else:
             self.register_buffer("descriptors", descriptors)
-            self.modulation = nn.Linear(descriptors.shape[1] + n_arms, 2 * width)
+            self.modulation = nn.Linear(descriptors.shape[1] + n_assay_conditions, 2 * width)
             # Zeroed so the layer emits no scale and no shift at the start. With the
             # +1 in forward() that makes the modulation the identity, so training
             # begins from the unconditioned model rather than from noise injected into
@@ -185,26 +190,30 @@ class CurveNetwork(nn.Module):
             self.head = nn.Linear(width, N_PARAMETERS)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns ``(batch, n_targets, n_arms, 3)``."""
+        """Returns ``(batch, n_targets, n_assay_conditions, 3)``."""
         shared = self.trunk(x)
         if self.conditioning == "heads":
             stacked = torch.stack([head(shared) for head in self.heads], dim=1)
-            return stacked.view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
+            return stacked.view(-1, self.n_targets, self.n_assay_conditions, N_PARAMETERS)
 
-        # One shared head, evaluated once per (enzyme, arm).
+        # One shared head, evaluated once per (enzyme, assay_condition).
         outputs = []
         for target in range(self.n_targets):
-            for arm in range(self.n_arms):
-                arm_code = torch.zeros(len(shared), self.n_arms, device=shared.device)
-                arm_code[:, arm] = 1.0
+            for assay_condition in range(self.n_assay_conditions):
+                assay_condition_code = torch.zeros(
+                    len(shared), self.n_assay_conditions, device=shared.device
+                )
+                assay_condition_code[:, assay_condition] = 1.0
                 described = self.descriptors[target].expand(len(shared), -1)
-                condition = torch.cat([described, arm_code], dim=1)
+                condition = torch.cat([described, assay_condition_code], dim=1)
                 if self.conditioning == "descriptor":
                     outputs.append(self.head(torch.cat([shared, condition], dim=1)))
                 else:
                     scale, shift = self.modulation(condition).chunk(2, dim=1)
                     outputs.append(self.head((1.0 + scale) * shared + shift))
-        return torch.stack(outputs, dim=1).view(-1, self.n_targets, self.n_arms, N_PARAMETERS)
+        return torch.stack(outputs, dim=1).view(
+            -1, self.n_targets, self.n_assay_conditions, N_PARAMETERS
+        )
 
 
 def curve_loss(
@@ -242,7 +251,7 @@ def curve_loss(
 
 
 class CurveModel:
-    """Predicts a dose-response curve per compound, enzyme and arm."""
+    """Predicts a dose-response curve per compound, enzyme and assay_condition."""
 
     name = "curve"
     #: Required by :class:`cypshift.models.base.Model`. The curve model also predicts
@@ -276,7 +285,8 @@ class CurveModel:
     ) -> None:
         self.conditioning = conditioning
         # The model's own is_TDI decision thresholds, applied to its (noisy) predicted
-        # arm shift. They default to the organisers' label rule (a 2-fold, 0.301-log shift
+        # assay_condition shift. They default to the organisers' label rule (a 2-fold, 0.301-log
+        # shift
         # above a 4.0 assay floor) but are swept, since the threshold that best recovers the
         # labels from predicted shifts need not equal the one that defines them.
         self.tdi_shift_threshold = tdi_shift_threshold
@@ -361,7 +371,9 @@ class CurveModel:
         target_index = torch.tensor(
             [self.targets.index(t) for t in usable["target"]], dtype=torch.long
         )
-        arm_index = torch.tensor((usable["assay"] == "tdi_drc").to_numpy(int), dtype=torch.long)
+        assay_condition_index = torch.tensor(
+            (usable["assay"] == "tdi_drc").to_numpy(int), dtype=torch.long
+        )
         kind = torch.tensor(is_screen.astype(int), dtype=torch.long)
         lower_t = torch.tensor(lower, dtype=torch.float32)
         upper_t = torch.tensor(upper, dtype=torch.float32)
@@ -378,7 +390,7 @@ class CurveModel:
         self._model = CurveNetwork(
             features.shape[1],
             len(self.targets),
-            len(ARMS),
+            len(ASSAY_CONDITIONS),
             self.hidden,
             self.dropout,
             conditioning=self.conditioning,
@@ -413,7 +425,7 @@ class CurveModel:
                     optimiser.zero_grad()
                     predicted = self._model(features[molecule_index[batch]])
                     rows = torch.arange(len(batch))
-                    parameters = predicted[rows, target_index[batch], arm_index[batch]]
+                    parameters = predicted[rows, target_index[batch], assay_condition_index[batch]]
                     loss = curve_loss(
                         parameters,
                         kind[batch],
@@ -448,7 +460,7 @@ class CurveModel:
         return self
 
     def _curves(self, smiles: list[str]) -> NDArray[np.float64]:
-        """Curve parameters, shape ``(passes, compounds, targets, arms, 3)``."""
+        """Curve parameters, shape ``(passes, compounds, targets, assay_conditions, 3)``."""
         if self._model is None:
             raise RuntimeError("model is not fitted")
         self._model.train()
@@ -460,7 +472,7 @@ class CurveModel:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """The regression track's prediction, satisfying the shared model interface.
 
-        The midpoint of the direct arm's curve, one column per enzyme, with the
+        The midpoint of the direct assay_condition's curve, one column per enzyme, with the
         Monte Carlo dropout passes kept as the member axis so the spread reaches the
         interval machinery rather than being averaged away here.
 
@@ -469,7 +481,7 @@ class CurveModel:
         never scored -- every run through the pipeline died at prediction.
         """
         curves = self._curves(smiles)
-        direct = curves[:, :, :, ARMS.index("direct"), PIC50]
+        direct = curves[:, :, :, ASSAY_CONDITIONS.index("direct"), PIC50]
         # self.targets may be wider than the scored four when auxiliary enzymes were
         # trained on; select the scored endpoints in their canonical order.
         columns = [self.targets.index(e.split("_")[0]) for e in REGRESSION_ENDPOINTS]
@@ -477,23 +489,30 @@ class CurveModel:
             samples=direct[:, :, columns], endpoints=tuple(REGRESSION_ENDPOINTS)
         )
 
-    def predict_pic50(self, smiles: list[str], arm: str = "direct") -> NDArray[np.float64]:
+    def predict_pic50(
+        self, smiles: list[str], assay_condition: str = "direct"
+    ) -> NDArray[np.float64]:
         """The curve's midpoint, which is what the regression track asks for."""
-        return self._curves(smiles).mean(axis=0)[:, :, ARMS.index(arm), PIC50]
+        return self._curves(smiles).mean(axis=0)[
+            :, :, ASSAY_CONDITIONS.index(assay_condition), PIC50
+        ]
 
     def predict_response(
-        self, smiles: list[str], pc: float = SCREEN_PC, arm: str = "direct"
+        self, smiles: list[str], pc: float = SCREEN_PC, assay_condition: str = "direct"
     ) -> NDArray[np.float64]:
         """Inhibited fraction at any concentration, read off the predicted curve."""
-        curves = torch.from_numpy(self._curves(smiles).mean(axis=0)[:, :, ARMS.index(arm)])
+        curves = torch.from_numpy(
+            self._curves(smiles).mean(axis=0)[:, :, ASSAY_CONDITIONS.index(assay_condition)]
+        )
         return inhibition_at(curves, pc).numpy()
 
     def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
-        """Call is_TDI from the two arms' curves, using the model's decision thresholds."""
+        """Call is_TDI from the two assay_conditions' curves, using the model's decision
+        thresholds."""
         floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
         curves = self._curves(smiles).mean(axis=0)
-        direct = curves[:, :, ARMS.index("direct"), PIC50]
-        preincubated = curves[:, :, ARMS.index("preincubated"), PIC50]
+        direct = curves[:, :, ASSAY_CONDITIONS.index("direct"), PIC50]
+        preincubated = curves[:, :, ASSAY_CONDITIONS.index("preincubated"), PIC50]
         return np.where(
             direct > floor,
             (preincubated - direct) > shift,

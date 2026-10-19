@@ -8,10 +8,26 @@ set as the other models and only adapts its dimensionality -- without needing Ta
 from cypshift.models.tfm import TabularFoundationModel
 
 SMILES = [
-    "CCO", "c1ccccc1", "CC(=O)O", "CCN(CC)CC", "c1ccncc1", "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
-    "CN1C=NC2=C1C(=O)N(C(=O)N2C)C", "CC(=O)Oc1ccccc1C(=O)O", "C1CCCCC1", "CCCCCCCC",
-    "c1ccc2ccccc2c1", "OCC1OC(O)C(O)C(O)C1O", "CC(N)C(=O)O", "c1ccc(cc1)O",
-    "ClCCl", "FC(F)F", "CCOCC", "CC#N", "C=CC=C", "CC(C)=O",
+    "CCO",
+    "c1ccccc1",
+    "CC(=O)O",
+    "CCN(CC)CC",
+    "c1ccncc1",
+    "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
+    "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+    "CC(=O)Oc1ccccc1C(=O)O",
+    "C1CCCCC1",
+    "CCCCCCCC",
+    "c1ccc2ccccc2c1",
+    "OCC1OC(O)C(O)C(O)C1O",
+    "CC(N)C(=O)O",
+    "c1ccc(cc1)O",
+    "ClCCl",
+    "FC(F)F",
+    "CCOCC",
+    "CC#N",
+    "C=CC=C",
+    "CC(C)=O",
 ]
 
 
