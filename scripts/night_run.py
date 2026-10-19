@@ -291,6 +291,48 @@ REGRESSION: dict[str, dict] = {
         "features.molecular_embedding": "mammal",
         **OCT_TOX,
     },
+    # TabPFN's PCA width. The feature-set sweep varies which blocks TabPFN sees but leaves
+    # the compression fixed at 500; vary it on the default (fingerprint) set, where PCA bites.
+    "tfm_pca250": {"model.kind": "tfm", "model.tfm.pca_components": 250},
+    "tfm_pca1000": {"model.kind": "tfm", "model.tfm.pca_components": 1000},
+    # --- Auxiliary selection: how far out the binding-site distance reaches, and how a
+    #     relative's weight falls off. Never swept before. These bite only with a cross-enzyme
+    #     source on, so they sit on graph+ChEMBL (ChEMBL spans the CYP family): distance 0.0
+    #     admits only the scored enzymes' own rows, 1.5 adds seven CYPs, 3.0 adds seventeen. ---
+    "graph_chembl": {"model.kind": "graph", "sources.chembl": True},
+    "graph_chembl_dist0": {
+        "model.kind": "graph",
+        "sources.chembl": True,
+        "auxiliary.max_distance": 0.0,
+    },
+    "graph_chembl_dist3": {
+        "model.kind": "graph",
+        "sources.chembl": True,
+        "auxiliary.max_distance": 3.0,
+    },
+    "graph_chembl_dist3_target_lo": {
+        "model.kind": "graph",
+        "sources.chembl": True,
+        "auxiliary.max_distance": 3.0,
+        "auxiliary.target_weight": 0.3,
+    },
+    "graph_chembl_uniform": {
+        "model.kind": "graph",
+        "sources.chembl": True,
+        "auxiliary.weighting": "uniform",
+    },
+    # Down-weight the scored enzymes' own rows from the noisier outside assay on the best aux config.
+    "graph_octant_tox21_scored_lo": {"model.kind": "graph", **OCT_TOX, "auxiliary.scored_weight": 0.5},
+    # --- Screen weight: the single-concentration screen is on by default at weight 0.3; vary it. ---
+    "graph_screen_weight_lo": {"model.kind": "graph", "multifidelity.screen_weight": 0.1},
+    "graph_screen_weight_hi": {"model.kind": "graph", "multifidelity.screen_weight": 0.6},
+    # --- ECFP6 (radius 3) instead of the default ECFP4, on the fingerprint-reading families. ---
+    "boosted_octant_tox21_ecfp6": {**OCT_TOX, "features.fingerprint_radius": 3},
+    "neural_ecfp6": {"model.kind": "neural", "features.fingerprint_radius": 3},
+    # --- Conditioning strategies only the neural trunk implements (a learned (enzyme, assay)
+    #     table, and a per-condition affine calibration layer). The graph takes only one-hot. ---
+    "neural_cond_embedding": {"model.kind": "neural", "conditioning.strategy": "embedding"},
+    "neural_cond_calibration": {"model.kind": "neural", "conditioning.strategy": "calibration"},
 }
 
 #: The TDI track: the dose-response curve model under each conditioning strategy, with the
