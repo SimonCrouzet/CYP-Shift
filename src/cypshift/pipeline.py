@@ -127,6 +127,8 @@ def build_model(
             mechanism=config.features.use_mechanistic,
             ionization_geometry=config.features.use_ionization_geometry,
             ionization_cache=config.features.ionization_cache,
+            use_structure=config.sources.structure,
+            structure_cache=config.features.structure_cache,
             conditioning=config.conditioning.strategy,
             targets=targets,
             seed=config.data.seed,

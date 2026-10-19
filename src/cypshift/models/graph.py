@@ -58,6 +58,8 @@ from cypshift.features.molecular import featurise
 from cypshift.models.base import PredictiveDistribution
 from cypshift.models.shared import SCORED_ASSAY
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
+from cypshift.structure.cofold import STRUCTURE_FEATURE_NAMES
+from cypshift.structure.features import structure_block
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,8 @@ class GraphNetwork:
         mechanism: bool = False,
         ionization_geometry: bool = False,
         ionization_cache: str = "data/external/ionization/features.parquet",
+        use_structure: bool = False,
+        structure_cache: str = "data/structure",
         seed: int = 0,
     ) -> None:
         self.endpoints = endpoints
@@ -244,12 +248,19 @@ class GraphNetwork:
         #: Condition on which dataset each row came from (a source one-hot), so same-chemistry
         #: sources kept apart in assembly each get their own calibration. Swept.
         self.source_heads = source_heads
+        #: Append the Boltz-2 cofold structure block (affinity + heme-coordination pose) to the
+        #: conditioning. Needs sources.structure and a populated cache; NaN (uncofolded) is
+        #: imputed to zero since the network cannot take NaN. Swept.
+        self.use_structure = use_structure
+        self.structure_cache = structure_cache
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
         self._conditioning_sources = SOURCES if source_heads else None
         self._n_conditioning = n_condition_columns(
             conditioning, targets, self.assays, sources=self._conditioning_sources
         )
+        if use_structure:
+            self._n_conditioning += len(STRUCTURE_FEATURE_NAMES)
         # "mammal" pretraining appends the cached MAMMAL embedding to the readout's
         # conditioning slot (x_d) as fixed input features; widen the readout to fit it.
         self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
@@ -304,6 +315,11 @@ class GraphNetwork:
             continuous = (continuous - self._xd_centre) / self._xd_scale
         if continuous.shape[1]:
             conditioning = np.hstack([conditioning, continuous])
+        if self.use_structure:
+            # Cofold block is per-(target, SMILES); NaN (uncofolded) imputed to zero because
+            # the network, unlike a tree, cannot take NaN. Appended raw (not standardised).
+            structure = np.nan_to_num(structure_block(frame, Path(self.structure_cache)), nan=0.0)
+            conditioning = np.hstack([conditioning, structure]).astype(np.float32)
         points = []
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
