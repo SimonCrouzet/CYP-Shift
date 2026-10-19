@@ -134,6 +134,11 @@ def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
     patterns = {
         "n_basic_amines": BASIC_AMINE_SMARTS,
         "n_carboxylic_acids": CARBOXYLIC_ACID_SMARTS,
+        # Type-II heme-coordinating groups beyond the azoles: a pyridine-type aromatic N (a
+        # lone pair that ligates the iron), a nitrile, and an aniline-type aromatic amine.
+        "n_pyridine_n": "[n;X2;r6]",
+        "n_nitrile": "[NX1]#[CX2]",
+        "n_aniline_n": "[NX3;H1,H2]c",
     }
     frame = pd.DataFrame(
         {
@@ -149,6 +154,8 @@ def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
         [azole_coordinators(m) for m in molecules], dtype=np.float32
     )
     frame["has_basic_amine"] = (frame["n_basic_amines"] > 0).astype(np.float32)
+    # The azole flag stays as the strict type-II signal; the pyridine/nitrile/aniline counts
+    # above are the broader coordinators, left as counts for the model to weigh.
     frame["is_type_ii_candidate"] = (frame["n_heme_coordinating_n"] > 0).astype(np.float32)
     frame = pd.concat([frame, basic_amine_geometry(molecules)], axis=1)
     return frame

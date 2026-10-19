@@ -33,6 +33,14 @@ def test_type_ii_flag_fires_on_azole_rings_not_bare_pyridine():
     assert frame["is_type_ii_candidate"].tolist() == [1.0, 1.0, 0.0, 0.0]
 
 
+def test_heme_coordinator_counts_cover_pyridine_nitrile_aniline():
+    # Beyond the azole flag, the other type-II coordinators are counted as raw signal.
+    frame = mechanistic(["c1ccncc1", "N#Cc1ccccc1", "Nc1ccccc1", "CCO"])
+    assert frame["n_pyridine_n"].tolist() == [1.0, 0.0, 0.0, 0.0]
+    assert frame["n_nitrile"].tolist() == [0.0, 1.0, 0.0, 0.0]
+    assert frame["n_aniline_n"].tolist() == [0.0, 0.0, 1.0, 0.0]
+
+
 def test_azole_coordinator_count_scales_with_ring_nitrogens():
     # Coordinating nitrogens are the pyridine-type ones (no H). Imidazole has one,
     # 1,2,4-triazole two, tetrazole three.
