@@ -77,7 +77,10 @@ def _clean(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_auxiliary(
-    enzyme: str, challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE
+    enzyme: str,
+    challenge_smiles: pd.Series,
+    cache: Path = DEFAULT_CACHE,
+    dedup_mode: str = "canonical_smiles",
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Tox21 pIC50 rows for one enzyme.
 
@@ -95,7 +98,7 @@ def load_auxiliary(
         frame = _clean(download_assay(AID[enzyme]))
         frame.to_csv(path, index=False)
         logger.info("Tox21: cached %d %s compounds", len(frame), enzyme)
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Tox21: %d %s compounds after dedup", len(deduplicated), enzyme)
     return deduplicated

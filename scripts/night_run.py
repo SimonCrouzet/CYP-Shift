@@ -181,6 +181,13 @@ REGRESSION: dict[str, dict] = {
         "multifidelity.screen_strategy": "predicted_label",
     },
     "graph_octant_tox21": {"model.kind": "graph", **OCT_TOX},
+    # Same aux, but matched against the challenge by InChIKey connectivity block rather than
+    # exact canonical SMILES -- a coarser, more aggressive overlap removal.
+    "graph_octant_tox21_inchikey": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "data.dedup_mode": "inchikey_block",
+    },
     # Several sources that pool by chemistry (octant/tox21 luminescent, chembl/sair literature),
     # with vs without source-stratified conditioning that keeps them apart.
     "graph_all_aux": {

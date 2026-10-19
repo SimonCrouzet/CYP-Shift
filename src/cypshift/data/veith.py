@@ -164,6 +164,7 @@ def _clean(
 def load_auxiliary(
     enzyme: str,
     challenge_smiles: pd.Series,
+    dedup_mode: str = "canonical_smiles",
     cache: Path = DEFAULT_CACHE,
     include_inactives: bool = False,
     representation: str = "pic50",
@@ -196,7 +197,7 @@ def load_auxiliary(
         logger.info(
             "Veith: cached %d %s compounds (inactives=%s)", len(frame), enzyme, include_inactives
         )
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Veith: %d %s compounds after dedup", len(deduplicated), enzyme)
     return deduplicated

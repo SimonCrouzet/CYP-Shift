@@ -61,7 +61,10 @@ def _table(cache: Path) -> pd.DataFrame:
 
 
 def load_auxiliary(
-    enzyme: str, challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE
+    enzyme: str,
+    challenge_smiles: pd.Series,
+    cache: Path = DEFAULT_CACHE,
+    dedup_mode: str = "canonical_smiles",
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated reversible pIC50 rows for one enzyme.
 
@@ -78,13 +81,15 @@ def load_auxiliary(
     low, high = PIC50_RANGE
     clean = clean[(clean["value"] >= low) & (clean["value"] <= high)]
     clean = clean.groupby("SMILES", as_index=False)["value"].median()
-    deduplicated = deduplicate_against(clean, challenge_smiles)
+    deduplicated = deduplicate_against(clean, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Novartis: %d %s pIC50 rows after dedup", len(deduplicated), enzyme)
     return deduplicated
 
 
-def load_tdi(challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE) -> pd.DataFrame:
+def load_tdi(
+    challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE, dedup_mode: str = "canonical_smiles"
+) -> pd.DataFrame:
     """Challenge-deduplicated CYP3A4 time-dependent-inhibition rows.
 
     Returns ``SMILES``, ``log_kobs`` (the log10 inactivation rate) and ``tdi_class`` (the
@@ -100,4 +105,4 @@ def load_tdi(challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE) -> pd.Dat
         }
     )
     clean = clean[clean["SMILES"].notna() & np.isfinite(clean["log_kobs"])]
-    return deduplicate_against(clean, challenge_smiles)
+    return deduplicate_against(clean, challenge_smiles, dedup_mode)

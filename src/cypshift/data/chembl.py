@@ -142,24 +142,48 @@ def canonical(smiles: pd.Series) -> pd.Series:
     return smiles.map(one)
 
 
-def deduplicate_against(frame: pd.DataFrame, challenge_smiles: pd.Series) -> pd.DataFrame:
+def dedup_key(smiles: pd.Series, mode: str = "canonical_smiles") -> pd.Series:
+    """The identity a compound is matched by against the challenge set.
+
+    ``canonical_smiles`` matches exact structures; ``inchikey_block`` matches on the InChIKey's
+    first (connectivity) block, so salts, stereoisomers and charge/isotope variants of one
+    skeleton collapse together -- a coarser, more aggressive dedup.
+    """
+    if mode == "canonical_smiles":
+        return canonical(smiles)
+    from rdkit import Chem
+
+    def one(text: str) -> str | None:
+        molecule = Chem.MolFromSmiles(text)
+        return Chem.MolToInchiKey(molecule).split("-")[0] if molecule else None
+
+    return smiles.map(one)
+
+
+def deduplicate_against(
+    frame: pd.DataFrame, challenge_smiles: pd.Series, mode: str = "canonical_smiles"
+) -> pd.DataFrame:
     """Drop auxiliary compounds that also appear in the challenge set.
 
     Without this a compound measured in both is an auxiliary training row and a scored
-    label, and the model is rewarded for memorising it rather than for generalising.
+    label, and the model is rewarded for memorising it rather than for generalising. ``mode``
+    picks the matching identity (see :func:`dedup_key`).
     """
-    known = set(canonical(challenge_smiles).dropna())
+    known = set(dedup_key(challenge_smiles, mode).dropna())
     frame = frame.copy()
-    frame["canonical"] = canonical(frame["SMILES"])
-    overlap = frame["canonical"].isin(known)
+    frame["_dedup_key"] = dedup_key(frame["SMILES"], mode)
+    overlap = frame["_dedup_key"].isin(known)
     logger.info(
         "dropping %d of %d compounds also in the challenge set", int(overlap.sum()), len(frame)
     )
-    return frame.loc[~overlap & frame["canonical"].notna()].drop(columns="canonical")
+    return frame.loc[~overlap & frame["_dedup_key"].notna()].drop(columns="_dedup_key")
 
 
 def load_auxiliary(
-    enzyme: str, challenge_smiles: pd.Series, cache: Path = DEFAULT_CACHE
+    enzyme: str,
+    challenge_smiles: pd.Series,
+    cache: Path = DEFAULT_CACHE,
+    dedup_mode: str = "canonical_smiles",
 ) -> pd.DataFrame:
     """Cleaned, deduplicated pIC50 records for one auxiliary enzyme.
 
@@ -182,6 +206,6 @@ def load_auxiliary(
         frame = to_pic50(fetch_activities(chembl_id))
         frame.to_csv(path, index=False)
         logger.info("cached %d compounds for %s", len(frame), enzyme)
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     return deduplicated

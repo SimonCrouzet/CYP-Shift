@@ -483,7 +483,12 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
         for name in datasets:
             try:
-                loaded = all_loaders[name](enzyme, challenge, **extra_kwargs.get(name, {}))
+                loaded = all_loaders[name](
+                    enzyme,
+                    challenge,
+                    dedup_mode=config.data.dedup_mode,
+                    **extra_kwargs.get(name, {}),
+                )
             except Exception as error:  # noqa: BLE001 -- best-effort, but remember it raised
                 logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
                 raised[name] = str(error)

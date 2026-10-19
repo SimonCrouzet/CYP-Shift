@@ -86,6 +86,10 @@ GRAPH_PRETRAINING = ("none", "chemeleon", "mammal")
 #: assay (which the graph consumes through a separate head).
 QHTS_REPRESENTATIONS = ("pic50", "max_response")
 
+#: How auxiliary rows are matched against the challenge set for dedup: exact canonical SMILES,
+#: or the coarser InChIKey connectivity block.
+DEDUP_MODES = ("canonical_smiles", "inchikey_block")
+
 
 @dataclass
 class DataConfig:
@@ -94,6 +98,10 @@ class DataConfig:
     n_similarity_bins: int = 8
     n_matching_rounds: int = 3
     seed: int = 0
+    #: How auxiliary rows are matched against the challenge set to drop overlaps: exact
+    #: ``canonical_smiles`` (default) or the coarser ``inchikey_block`` (InChIKey connectivity
+    #: block, collapsing salts/stereoisomers). See cypshift.data.chembl.dedup_key. Swept.
+    dedup_mode: str = "canonical_smiles"
 
 
 @dataclass
@@ -491,6 +499,7 @@ class ExperimentConfig:
             (self.model.graph.ensemble, ENSEMBLE_STRATEGIES, "model.graph.ensemble"),
             (self.model.graph.pretraining, GRAPH_PRETRAINING, "model.graph.pretraining"),
             (self.sources.qhts_representation, QHTS_REPRESENTATIONS, "sources.qhts_representation"),
+            (self.data.dedup_mode, DEDUP_MODES, "data.dedup_mode"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:

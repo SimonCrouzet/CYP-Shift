@@ -33,6 +33,7 @@ OCTANT_ENZYME = "CYP3A4"
 def load_auxiliary(
     enzyme: str,
     challenge_smiles: pd.Series,
+    dedup_mode: str = "canonical_smiles",
     cache: Path = DEFAULT_TSV,
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Octant rows for one enzyme.
@@ -67,7 +68,7 @@ def load_auxiliary(
     frame["conf_low"] = frame["conf_low"].fillna(frame["value"])
     frame["conf_high"] = frame["conf_high"].fillna(frame["value"])
 
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Octant: %d CYP3A4 compounds after cleaning and dedup", len(deduplicated))
     return deduplicated
