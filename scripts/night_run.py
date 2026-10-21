@@ -495,15 +495,26 @@ REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
 REGRESSION.update(_feature_sweep("boosted_fs", {}))
 
 
+#: Name markers for the genuinely-untested config axes this run was reordered to measure
+#: first: auxiliary selection (ChEMBL max_distance / weighting / scored_weight), screen weight,
+#: the feature-set sweep, TabPFN PCA width, ECFP6, and the neural-only conditioning strategies.
+_UNTESTED_MARKERS = (
+    "chembl", "screen_weight", "scored_lo", "_fs_", "_pca", "ecfp6",
+    "cond_embedding", "cond_calibration",
+)  # fmt: skip
+
+
 def _gpu_first(item: tuple[str, dict]) -> int:
-    """Run order key: GPU families before CPU boosted. The GPU is the scarce resource in a
-    full-machine window and boosted can run any time on CPU, so the slow graph/neural/TFM
-    configs go first (after the quick reference), not after every boosted config."""
+    """Run order key. Untested axes first (so a reordered run returns their answers before the
+    known baselines), then the quick reference, then GPU families before CPU boosted -- the GPU
+    is the scarce resource in a full-machine window and boosted can run any time on CPU."""
     name, overrides = item
-    if name == "ref_submitted":
+    if any(marker in name for marker in _UNTESTED_MARKERS):
         return 0
+    if name == "ref_submitted":
+        return 1
     gpu = ("graph", "neural", "per_target_ensemble", "tfm")
-    return 1 if overrides.get("model.kind") in gpu else 2
+    return 2 if overrides.get("model.kind") in gpu else 3
 
 
 #: Reordered GPU-first so a full-machine run uses the GPU rather than spending hours on the
@@ -554,15 +565,21 @@ def run_identity() -> str:
 
 REV = run_identity()
 
+#: Earlier revisions whose completed results remain valid under this one. The reorder that
+#: front-loads the untested axes changes the run queue, not any config's behaviour, so configs
+#: already finished under 9102533 are carried over rather than re-trained. Clear this tuple to
+#: force a clean single-revision sweep.
+CARRY_REVS = ("9102533",)
+
 
 def already_done() -> set[tuple[str, str, int]]:
-    """Completed (phase, name, seed) at the current revision; failures are retried."""
+    """Completed (phase, name, seed) at this revision or a carried-over one; failures retried."""
     if not RESULTS.exists():
         return set()
     table = pd.read_csv(RESULTS)
     if "rev" not in table.columns or "status" not in table.columns:
         return set()  # pre-schema results from an earlier code era: re-run under this one
-    ok = table[(table["rev"] == REV) & (table["status"] == "ok")]
+    ok = table[table["rev"].isin({REV, *CARRY_REVS}) & (table["status"] == "ok")]
     return {(r.phase, r.name, int(r.seed)) for r in ok.itertuples()}
 
 
