@@ -367,6 +367,40 @@ REGRESSION: dict[str, dict] = {
         **OCT_TOX,
         "auxiliary.per_endpoint_budget": 1.0,
     },
+    # --- 2026-10-22 updated-review Tier C levers (graph), all graph-only or graph+aux. ---
+    # Raw measured log2 fold-change as its own screen response task (vs the inhibited fraction).
+    "graph_screen_log2fc": {
+        "model.kind": "graph",
+        "multifidelity.screen_strategy": "log2fc_response",
+    },
+    "graph_octant_tox21_screen_log2fc": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "multifidelity.screen_strategy": "log2fc_response",
+    },
+    # Screen fraction and qHTS max-response as simultaneous response tasks (the N-head panel).
+    "graph_screen_and_qhts_response": {
+        "model.kind": "graph",
+        "sources.veith": True,
+        "sources.qhts_representation": "max_response",
+        "multifidelity.screen_strategy": "response_head",
+    },
+    # Shared encoder, one value-task output head per target.
+    "graph_per_target_heads": {"model.kind": "graph", "model.graph.per_target_heads": True},
+    "graph_octant_tox21_per_target_heads": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "model.graph.per_target_heads": True,
+    },
+    # Wide readout FFN over the default encoder (the reference recipes' wide-FFN shape).
+    "graph_ffn1024": {"model.kind": "graph", "model.graph.ffn_hidden": 1024},
+    # Inverse-variance measurement weighting (precision-weighted labels).
+    "graph_inverse_variance": {"model.kind": "graph", "training.inverse_variance_weighting": True},
+    "graph_octant_tox21_inverse_variance": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "training.inverse_variance_weighting": True,
+    },
     # --- ECFP6 (radius 3) instead of the default ECFP4, on the fingerprint-reading families. ---
     "boosted_octant_tox21_ecfp6": {**OCT_TOX, "features.fingerprint_radius": 3},
     "neural_ecfp6": {"model.kind": "neural", "features.fingerprint_radius": 3},
@@ -417,6 +451,13 @@ TDI: dict[str, dict] = {
         "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "model.curve.loss_tau": 0.6,
+    },
+    # Deeper curve backbone under the same dose-response head (pluggable-backbone lever).
+    "curve_heads_deep": {
+        "model.kind": "curve",
+        "sources.tdi_assay_condition": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.trunk_depth": 4,
     },
 }
 
