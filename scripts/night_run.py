@@ -172,14 +172,11 @@ REGRESSION: dict[str, dict] = {
         "sources.veith": True,
         "sources.qhts_representation": "max_response",
     },
-    "graph_cond_descriptor": {"model.kind": "graph", "conditioning.strategy": "descriptor"},
+    # The graph only implements factorised/metadata conditioning and the extra_rows screen
+    # strategy; descriptor/film/predicted_label are neural-only, so those configs are dropped
+    # here rather than failing every run.
     "graph_cond_metadata": {"model.kind": "graph", "conditioning.strategy": "metadata"},
-    "graph_cond_film": {"model.kind": "graph", "conditioning.strategy": "film"},
     "graph_macro_balance": {"model.kind": "graph", "training.macro_balance": True},
-    "graph_screen_predicted_label": {
-        "model.kind": "graph",
-        "multifidelity.screen_strategy": "predicted_label",
-    },
     "graph_octant_tox21": {"model.kind": "graph", **OCT_TOX},
     # Same aux, but matched against the challenge by InChIKey connectivity block rather than
     # exact canonical SMILES -- a coarser, more aggressive overlap removal.
@@ -275,13 +272,9 @@ REGRESSION: dict[str, dict] = {
         "model.objective": "expectile",
         "model.objective_tau": 0.6,
     },
-    # --- Per-target ensemble (one learner per endpoint) ---
-    "per_target_ensemble": {"model.kind": "per_target_ensemble"},
-    "per_target_ensemble_absolute": {
-        "model.kind": "per_target_ensemble",
-        "model.objective": "absolute",
-    },
-    "per_target_ensemble_octant_tox21": {"model.kind": "per_target_ensemble", **OCT_TOX},
+    # Per-target ensemble (one learner per endpoint) has no builder in pipeline.build_model;
+    # its per-isoform hypothesis is already carried by graph_separated (separate_trunks), so
+    # its configs are dropped rather than failing every run.
     # --- Tabular foundation model (TabPFN, per-endpoint over dense features) ---
     # Needs TABPFN_TOKEN in the environment; without it these fail (recorded) and are skipped.
     "tfm": {"model.kind": "tfm"},
