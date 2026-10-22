@@ -36,8 +36,7 @@ logger = logging.getLogger("blend")
 BUNDLE_ROOT = Path("data/run_bundles")
 _DIR = re.compile(r"^reg_(?P<name>.+)_seed(?P<seed>\d+)$")
 #: ``equal`` averages; ``nnls`` least-squares to the point truth; ``st_rae`` fits the weights
-#: to the interval error the leaderboard actually scores, which is the objective the blend is
-#: meant to win on (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 2).
+#: to the soft-threshold interval error.
 METHODS = ("equal", "nnls", "st_rae")
 
 
@@ -127,9 +126,7 @@ def fit_weights(
 def per_endpoint_best(members: dict[str, pd.DataFrame]) -> dict[str, str]:
     """For each endpoint, the single member with the best per-endpoint out-of-fold ST-RAE.
 
-    The macro winner can hide an endpoint specialist -- CheMeleon for CYP2C9, absolute loss
-    for CYP2D6 -- so this nominates one per enzyme, which ``--per-endpoint`` then blends into
-    a specialist ensemble.
+    ``--per-endpoint`` uses this to build a per-endpoint specialist blend (one member each).
     """
     best = {}
     for endpoint in REGRESSION_ENDPOINTS:
@@ -159,8 +156,7 @@ def blend(
     ``endpoint_candidates`` restricts which members are eligible on a given enzyme (so one
     endpoint can be served by a specialist subset); members not listed get weight zero there.
     ``fit_mask`` (a boolean over the reference row order) restricts the rows the weights are
-    *fit* on, so they can be scored on the held-out complement rather than the data that fit
-    them -- the note's requirement that weights be assessed off the fitting data.
+    *fit* on, so the caller can score on the held-out complement.
     """
     all_names = list(members)
     truth = members[all_names[0]][
@@ -190,11 +186,16 @@ def blend(
         labelled = np.isfinite(y)
         fit_rows = labelled if fit_mask is None else (labelled & fit_mask)
         if not fit_rows.any():
-            # A sparse endpoint can be emptied by the fit/score split; fall back to all its
-            # labelled rows rather than failing to fit a weight for it.
-            fit_rows = labelled
-        w = fit_weights(preds[fit_rows], y[fit_rows], method, low[fit_rows], high[fit_rows])
-        weights[enzyme] = {n: round(float(wi), 3) for n, wi in zip(names, w, strict=False)}
+            # A sparse endpoint can be emptied by the fit/score split. Fall back to EQUAL
+            # weights (label-free) rather than fitting on all labelled rows, which would pull
+            # the held-out evaluation rows into the weight fit and defeat the split.
+            w = fit_weights(preds[labelled], y[labelled], "equal")
+        else:
+            w = fit_weights(preds[fit_rows], y[fit_rows], method, low[fit_rows], high[fit_rows])
+        # Full-precision weights: rounding here and then applying the rounded dict to the test
+        # submissions makes the exported blend differ from the one scored (they need not sum to
+        # one). Round only for display.
+        weights[enzyme] = {n: float(wi) for n, wi in zip(names, w, strict=False)}
         predictions[endpoint] = preds @ w
     return predictions, truth, weights
 
@@ -282,10 +283,32 @@ def main() -> None:
     rev = arguments.rev or latest_rev()
 
     available = load_members(rev, arguments.seed)
-    singles = rank_single(available)
+
+    # Establish the fit/score split FIRST, so every label-dependent choice -- member selection
+    # as much as weight fitting -- is made on the fitting side only. Selecting on the whole
+    # table and then restricting only the weight fit would let the held-out labels help pick
+    # the winner, and the "held-out" score would not be independent.
+    fit_mask = None
+    fit_names: set | None = None
+    held_names: set | None = None
+    if arguments.eval_holdout_frac > 0:
+        reference_names = next(iter(available.values()))["Molecule_Name"]
+        fit_mask = scaffold_fit_mask(
+            reference_names, arguments.directory, arguments.eval_holdout_frac, arguments.seed
+        )
+        fit_names = set(reference_names[fit_mask])
+        held_names = set(reference_names[~fit_mask])
+
+    def on_rows(members_dict: dict[str, pd.DataFrame], keep: set | None) -> dict[str, pd.DataFrame]:
+        if keep is None:
+            return members_dict
+        return {n: df[df["Molecule_Name"].isin(keep)] for n, df in members_dict.items()}
+
+    selectable = on_rows(available, fit_names)  # fit side only when evaluating held-out
+    singles = rank_single(selectable)
     endpoint_candidates: dict[str, list[str]] | None = None
     if arguments.per_endpoint:
-        best = per_endpoint_best(available)
+        best = per_endpoint_best(selectable)
         endpoint_candidates = {enzyme: [name] for enzyme, name in best.items()}
         chosen = list(dict.fromkeys(best.values()))
     elif arguments.endpoint_members:
@@ -320,21 +343,18 @@ def main() -> None:
         )
     members = {n: available[n] for n in chosen}
 
-    fit_mask = None
-    if arguments.eval_holdout_frac > 0:
-        reference_names = members[chosen[0]]["Molecule_Name"]
-        fit_mask = scaffold_fit_mask(
-            reference_names, arguments.directory, arguments.eval_holdout_frac, arguments.seed
-        )
     predictions, truth, weights = blend(members, arguments.method, endpoint_candidates, fit_mask)
     if fit_mask is not None:
-        # Score only the held-out rows, which the weights never saw.
+        # Score only the held-out rows, which the weights never saw, and compare against the
+        # best single member on those same rows -- not its full-table score.
         held = ~fit_mask
         truth = truth.loc[held]
         predictions = predictions.loc[held]
+        held_singles = rank_single(on_rows({n: available[n] for n in chosen}, held_names))
+        best_single, best_name = held_singles.min(), held_singles.idxmin()
+    else:
+        best_single, best_name = singles[chosen].min(), singles[chosen].idxmin()
     scores = score_submission(predictions, truth)
-    best_single = singles[chosen].min()
-    best_name = singles[chosen].idxmin()
     print(f"=== rev {rev}: blend of {len(members)} members ({arguments.method}) ===")
     print(f"members: {chosen}")
     print(
@@ -348,7 +368,7 @@ def main() -> None:
     )
     print("weights per endpoint:")
     for iso, w in weights.items():
-        print(f"  {iso}: {w}")
+        print(f"  {iso}: {{{', '.join(f'{n}: {v:.3f}' for n, v in w.items())}}}")
 
     if arguments.submissions and arguments.output:
         apply_to_submissions(arguments.submissions, weights, arguments.output)
