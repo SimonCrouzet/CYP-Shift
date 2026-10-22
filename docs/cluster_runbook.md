@@ -49,7 +49,7 @@ Validate a calibration or correction on the **analogue view** before trusting it
 
 ## Not in the sweep (separate jobs if wanted)
 
-- **CYP2D6 structure** — the Boltz cofold cache is near-empty. A GPU precompute to populate it unlocks `model.graph.use_structure` and gives the heme-coordination features real values. This is the untried structural lever for the weak endpoint.
+- **CYP2D6 structure** — the Boltz cofold cache is near-empty. A GPU precompute to populate it gives the heme-coordination features real values. Note that `sources.structure` is currently wired (and validated) only for the boosted model — `validate()` rejects it for the graph — so there is no `model.graph.use_structure` field today; enabling a graph structure experiment would need both the cache and lifting that restriction. This is the untried structural lever for the weak endpoint.
 - A heavy new family (Uni-Mol, graph transformer) is deprioritized: the research is consistent that family barely matters at this data scale, and the winners' edge was proprietary data.
 
 ## Reading the CV (from 4 submissions so far)

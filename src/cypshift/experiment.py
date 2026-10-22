@@ -70,11 +70,9 @@ AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
 #: How the single-concentration screen is folded in when ``sources.screen`` is on.
 #: ``extra_rows`` pools calibrated pseudo-labels (or, for the curve, the raw reading) onto
 #: the potency scale; ``predicted_label``/``embedding`` fit a screen_model feature column.
-#: ``response_head`` keeps the screen as the response it actually measured -- an inhibited
-#: fraction at one concentration -- and routes it to the graph's dedicated response head
-#: instead of compressing it onto a pIC50 through the isotonic map. The response head makes
-#: fewer mechanistic assumptions than forcing every screen point onto a fully specified Hill
-#: curve (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 4); graph only.
+#: ``response_head`` passes the screen reading as an inhibited fraction to the graph's
+#: response head (assay ``SCREEN_RESPONSE_ASSAY``) instead of mapping it to a pIC50 through
+#: the isotonic calibrator; graph only.
 SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding", "response_head")
 
 #: Molecular foundation-model embeddings that can be appended as a feature block. Each
@@ -186,19 +184,15 @@ class AuxiliaryConfig:
     #: inactive -- 6,822 against 1,776 active on CYP2D6 -- and keeping only the actives
     #: trains on a population biased toward hits, which the blinded test is not. Swept.
     include_qhts_inactives: bool = True
-    #: Keep the Tox21 P450-Glo re-screen's inactive compounds as censored low-potency rows
-    #: too. The Tox21 loader keeps only actives by default, so it cannot by itself supply the
-    #: missing inactive population the blinded test needs -- most acutely for CYP2D6, whose
-    #: screen pseudo-labels are almost all extrapolations. Off by default; swept
-    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5).
+    #: Keep the Tox21 P450-Glo re-screen's inactive compounds as censored rows at the assay's
+    #: highest tested concentration rather than dropping them (the loader keeps only actives by
+    #: default). Off by default; swept.
     tox21_include_inactives: bool = False
-    #: Fix each scored endpoint's auxiliary weight mass to this fraction of its own
-    #: challenge-label mass, so "adding a source" cannot silently change how much of the loss
-    #: the challenge labels own. ``0.0`` leaves the distance/source weights untouched (the
-    #: default); ``0.5`` caps a scored enzyme's near-auxiliary rows at half its challenge
-    #: weight, which is what lets sources be compared within a budget rather than by volume
-    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5). Applies to the
-    #: scored enzymes' own outside rows (near_aux); relatives keep the distance weighting.
+    #: Rescale each scored endpoint's near-auxiliary rows so their summed weight equals this
+    #: fraction of that endpoint's challenge-label weight. ``0.0`` leaves the distance/source
+    #: weights untouched (the default); ``0.5`` caps a scored enzyme's near-auxiliary rows at
+    #: half its challenge weight. Applies to the scored enzymes' own outside rows (near_aux);
+    #: relatives (distant_aux) keep the distance weighting. See pipeline.cap_per_endpoint_budget.
     per_endpoint_budget: float = 0.0
 
 
@@ -363,13 +357,11 @@ class GraphConfig:
     #: Condition on the row's source dataset (keeping same-chemistry sources apart rather than
     #: pooling them), so each source gets its own calibration on the shared trunk. Swept.
     source_heads: bool = False
-    #: One scored isoform to give a small isoform-specific adaptation block on top of the
-    #: shared readout, or ``"none"``. A gated low-rank residual MLP on the pooled
-    #: representation, active only for this isoform's rows, so the encoder stays shared and
-    #: cross-isoform transfer survives -- the middle ground between a single trunk and the
-    #: four separate trunks that already failed to improve macro. Meant for CYP2D6, whose
-    #: potency rides a different axis from the lipophilic three
-    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 6). Swept.
+    #: One scored isoform to give an isoform-specific adaptation block on top of the shared
+    #: readout, or ``"none"``. A residual MLP on the pooled representation whose output is added
+    #: to the value prediction, gated by that isoform's target one-hot so it is zero for every
+    #: other isoform; the encoder and the rest of the readout stay shared. Rejected with
+    #: ``separate_trunks``. Swept. See :class:`cypshift.models.graph._TargetAdaptedRegressionFFN`.
     adapt_target: str = "none"
     #: Hidden width of the per-isoform adaptation block; ignored when ``adapt_target`` is
     #: ``"none"``.
@@ -403,18 +395,14 @@ class ModelConfig:
     #: Asymmetry level for the ``expectile``/``pinball`` objectives; >0.5 errs high, which the
     #: soft-threshold metric rewards. Ignored by the other objectives. Swept.
     objective_tau: float = 0.5
-    #: Weight on a small squared point term added alongside the dead-zone soft-threshold
-    #: loss, so a prediction sitting anywhere inside a wide credible interval still feels a
-    #: gradient toward the fitted midpoint instead of drifting freely within the band. It is
-    #: applied only on reliable (uncensored, finite-interval) rows, and ``0.0`` leaves the
-    #: pure dead-zone loss untouched. Graph model only; swept
-    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 7).
+    #: Weight on a squared ``(pred - midpoint)**2`` term added to the soft-threshold loss on
+    #: uncensored rows (midpoint = (lower + upper) / 2). ``0.0`` leaves the dead-zone loss
+    #: untouched. Requires ``objective='soft_threshold'``; graph model only. Swept.
     point_loss_weight: float = 0.0
-    #: Weight on an interval-aware pairwise ranking term: within a batch, pairs whose
-    #: credible intervals do not overlap (so a true order exists) are penalised by a hinge
-    #: when the predictions order them the wrong way. Helps resolve activity cliffs the
-    #: dead-zone loss is blind to. ``0.0`` is off. Graph model only; swept, and the last lever
-    #: to reach for (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 7).
+    #: Weight on a within-batch pairwise hinge over value-task rows whose credible intervals are
+    #: disjoint: a pair ordered against its intervals is penalised by ``max(0, margin - gap)``,
+    #: weighted by the weaker row's observation weight. ``0.0`` is off. Requires
+    #: ``objective='soft_threshold'``; graph model only. Swept.
     ranking_loss_weight: float = 0.0
     n_members: int = 5
     boosted: BoostedConfig = field(default_factory=BoostedConfig)
@@ -654,6 +642,15 @@ class ExperimentConfig:
                 raise ValueError(
                     "model.graph.adapt_target needs the shared trunk; it is meaningless with "
                     "model.graph.separate_trunks=True"
+                )
+            point_or_rank = self.model.point_loss_weight > 0 or self.model.ranking_loss_weight > 0
+            if point_or_rank and self.model.objective != "soft_threshold":
+                # The point and ranking terms layer onto the soft-threshold loss only; _build
+                # ignores them under the other objectives, which would credit a run with a
+                # term it never applied.
+                raise ValueError(
+                    "model.point_loss_weight / ranking_loss_weight apply only to "
+                    f"model.objective='soft_threshold', not {self.model.objective!r}"
                 )
         if self.model.kind == "curve" and self.model.objective != "soft_threshold":
             raise ValueError(

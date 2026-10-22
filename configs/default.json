@@ -36,7 +36,7 @@
     "screen_strategy": "extra_rows",
     "screen_weight": 0.3,
     "tdi_weight": 0.5,
-    "surrogate_hidden": 16
+    "screen_model_hidden": 16
   },
   "auxiliary": {
     "max_distance": 1.5,
