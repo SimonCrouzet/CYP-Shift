@@ -8,8 +8,19 @@ encoder loads with the right shape, and an absent cache fails loudly rather than
 from pathlib import Path
 
 import pytest
+import torch
 
-from cypshift.models.graph import CHEMELEON_URL, GraphNetwork, chemeleon_message_passing
+from cypshift.models.graph import (
+    CHEMELEON_URL,
+    LOWER,
+    UPPER,
+    VALUE,
+    GraphNetwork,
+    RankingSoftThresholdLoss,
+    SoftThresholdLoss,
+    _TargetAdaptedRegressionFFN,
+    chemeleon_message_passing,
+)
 
 CHEMELEON_CACHE = Path("data/external/chemeleon/chemeleon_mp.pt")
 MAMMAL_CACHE = Path("data/external/embeddings/mammal.parquet")
@@ -90,3 +101,72 @@ def test_descriptor_blocks_widen_the_conditioning():
         targets=("CYP2D6",), physchem=True, mechanism=True, ionization_geometry=True
     )._n_conditioning
     assert wide > base
+
+
+def test_a_response_assay_grows_the_label_matrix_and_assay_vocabulary():
+    """A response head adds a fourth label column and joins the assay vocabulary; off by default."""
+    plain = GraphNetwork()
+    assert plain._n_label == 3
+    for assay in ("luminescent_max_response", "direct_inhibition_screen_response"):
+        head = GraphNetwork(response_assay=assay)
+        assert head._n_label == 4
+        assert assay in head.assays
+
+
+def test_adapter_correction_is_gated_to_its_target_row():
+    """The per-isoform adapter changes only the value task of its own target's rows."""
+    predictor = _TargetAdaptedRegressionFFN(
+        adapt_hidden=4, target_offset=2, target_index=1, n_tasks=3, input_dim=5, dropout=0.0
+    )
+    # The last layer initialises to zero, so make the adapter non-trivial to probe the gate.
+    for parameter in predictor.adapter.parameters():
+        torch.nn.init.constant_(parameter, 0.5)
+    z = torch.zeros(2, 5)
+    z[0, 2 + 1] = 1.0  # row 0: the adapted target's one-hot is on (gate = 1)
+    out = predictor(z)
+    base = predictor.ffn(z)  # output_transform is identity here
+    assert torch.allclose(out[1], base[1])  # gate off -> row unchanged
+    assert not torch.allclose(out[0, VALUE], base[0, VALUE])  # gate on -> value shifts
+    other = [t for t in range(3) if t != VALUE]
+    assert torch.allclose(out[0, other], base[0, other])  # only the value task moves
+
+
+def _bounds_targets(value: float, lower: float, upper: float) -> torch.Tensor:
+    row = torch.zeros(1, 3)
+    row[0, VALUE], row[0, LOWER], row[0, UPPER] = value, lower, upper
+    return row
+
+
+def test_point_term_pulls_inside_a_wide_band_but_spares_censored_rows():
+    """point_weight adds a midpoint pull on a reliable row, and nothing on a censored row."""
+    weights = torch.tensor([[1.0, 0.0, 0.0]])
+    reliable = _bounds_targets(0.0, -1.0, 1.0)  # midpoint 0, wide band
+    pred = torch.tensor([[0.5, 0.0, 0.0]])  # inside the band: dead-zone loss is zero
+    mask = torch.ones(1, 3, dtype=torch.bool)
+    off = SoftThresholdLoss(point_weight=0.0, task_weights=weights)
+    on = SoftThresholdLoss(point_weight=1.0, task_weights=weights)
+    assert float(off(pred, reliable, mask)) == pytest.approx(0.0, abs=1e-6)
+    assert float(on(pred, reliable, mask)) > 0.0
+    # A censored (one-sided) row carries the -1e4 lower sentinel and gets no point pull.
+    censored = _bounds_targets(0.0, -1e4, 1.0)
+    assert float(on(pred, censored, mask)) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_ranking_term_penalises_a_wrongly_ordered_disjoint_pair():
+    """A disjoint pair ranked the wrong way costs more than the dead-zone loss alone."""
+    weights = torch.tensor([[1.0, 0.0, 0.0]])
+    targets = torch.zeros(2, 3)
+    targets[0] = torch.tensor([0.05, 0.0, 0.1])  # truly the lower compound
+    targets[1] = torch.tensor([1.05, 1.0, 1.1])  # truly the higher compound
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    wrong = torch.zeros(2, 3)
+    wrong[:, VALUE] = torch.tensor([1.05, 0.05])  # predictions swapped: wrong order
+    base = SoftThresholdLoss(task_weights=weights)
+    ranked = RankingSoftThresholdLoss(ranking_weight=1.0, ranking_margin=0.5, task_weights=weights)
+    assert float(ranked(wrong, targets, mask)) > float(base(wrong, targets, mask))
+    # Correctly ordered predictions inside their own bands incur no ranking penalty.
+    right = torch.zeros(2, 3)
+    right[:, VALUE] = torch.tensor([0.05, 1.05])
+    assert float(ranked(right, targets, mask)) == pytest.approx(
+        float(base(right, targets, mask)), abs=1e-6
+    )

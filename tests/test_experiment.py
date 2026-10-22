@@ -155,6 +155,23 @@ class TestCapabilityContract:
             {"model.kind": "graph", "features.molecular_embedding": "mammal"},
             {"model.kind": "graph", "training.preset": "coarse_to_fine"},
             {"model.kind": "curve", "model.objective": "absolute"},
+            # The analysis-note avenues are graph-only, or mutually exclusive, so a run that
+            # could not apply the setting is refused rather than credited with it.
+            {"model.kind": "neural", "model.point_loss_weight": 0.5},
+            {"model.kind": "boosted", "model.ranking_loss_weight": 0.5},
+            {"model.kind": "boosted", "model.graph.adapt_target": "CYP2D6"},
+            {"model.kind": "boosted", "multifidelity.screen_strategy": "response_head"},
+            {
+                "model.kind": "graph",
+                "sources.veith": True,
+                "sources.qhts_representation": "max_response",
+                "multifidelity.screen_strategy": "response_head",
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.separate_trunks": True,
+                "model.graph.adapt_target": "CYP2D6",
+            },
         ],
     )
     def test_silently_ignored_combinations_are_rejected(self, overrides):
@@ -165,7 +182,17 @@ class TestCapabilityContract:
             config.validate()
 
     def test_supported_combinations_still_validate(self):
-        for overrides in ({"model.kind": "graph"}, {"sources.structure": True}):
+        for overrides in (
+            {"model.kind": "graph"},
+            {"sources.structure": True},
+            {"model.kind": "graph", "multifidelity.screen_strategy": "response_head"},
+            {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
+            {
+                "model.kind": "graph",
+                "model.point_loss_weight": 0.5,
+                "model.ranking_loss_weight": 0.5,
+            },
+        ):
             config = ExperimentConfig.load()
             for key, value in overrides.items():
                 config.override(key, value)
