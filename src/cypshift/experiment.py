@@ -554,21 +554,11 @@ class ExperimentConfig:
                 "sources.qhts_representation='max_response' needs a model that can consume it: "
                 "model.kind='graph' with sources.veith on"
             )
-        if self.multifidelity.screen_strategy == "response_head":
-            if self.model.kind != "graph":
-                raise ValueError(
-                    "multifidelity.screen_strategy='response_head' needs a model with a response "
-                    f"head: model.kind='graph', not {self.model.kind!r}"
-                )
-            if self.sources.qhts_representation == "max_response":
-                # Both would want the graph's single response column; keeping them mutually
-                # exclusive avoids conflating a qHTS max-response with a screen fraction on
-                # one head (two heads is a later experiment, not this one).
-                raise ValueError(
-                    "multifidelity.screen_strategy='response_head' and "
-                    "sources.qhts_representation='max_response' both claim the graph response "
-                    "head; enable only one"
-                )
+        if self.multifidelity.screen_strategy == "response_head" and self.model.kind != "graph":
+            raise ValueError(
+                "multifidelity.screen_strategy='response_head' needs a model with a response "
+                f"head: model.kind='graph', not {self.model.kind!r}"
+            )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
         if self.model.n_members < 1:

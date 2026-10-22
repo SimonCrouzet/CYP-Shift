@@ -164,12 +164,6 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "multifidelity.screen_strategy": "response_head"},
             {
                 "model.kind": "graph",
-                "sources.veith": True,
-                "sources.qhts_representation": "max_response",
-                "multifidelity.screen_strategy": "response_head",
-            },
-            {
-                "model.kind": "graph",
                 "model.graph.separate_trunks": True,
                 "model.graph.adapt_target": "CYP2D6",
             },
@@ -193,6 +187,13 @@ class TestCapabilityContract:
             {"model.kind": "graph"},
             {"sources.structure": True},
             {"model.kind": "graph", "multifidelity.screen_strategy": "response_head"},
+            # The screen fraction and the qHTS max-response now coexist (one response column each).
+            {
+                "model.kind": "graph",
+                "sources.veith": True,
+                "sources.qhts_representation": "max_response",
+                "multifidelity.screen_strategy": "response_head",
+            },
             {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
             {
                 "model.kind": "graph",

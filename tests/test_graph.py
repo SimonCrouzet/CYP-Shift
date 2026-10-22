@@ -123,9 +123,22 @@ def test_a_response_assay_grows_the_label_matrix_and_assay_vocabulary():
     plain = GraphNetwork()
     assert plain._n_label == 3
     for assay in ("luminescent_max_response", "direct_inhibition_screen_response"):
-        head = GraphNetwork(response_assay=assay)
+        head = GraphNetwork(response_assays=(assay,))
         assert head._n_label == 4
         assert assay in head.assays
+
+
+def test_several_response_assays_each_get_their_own_label_column_and_scale():
+    """Tier C step 1: the response heads coexist -- one label column per assay from RESPONSE on,
+    each on its own 0-1 scale, and both assays join the vocabulary and the loss weights."""
+    assays = ("luminescent_max_response", "direct_inhibition_screen_response")
+    net = GraphNetwork(response_assays=assays)
+    assert net._n_label == 3 + len(assays)
+    assert all(a in net.assays for a in assays)
+    assert net._resp_centre.shape == (len(assays),) and net._resp_spread.shape == (len(assays),)
+    # The loss weights are 1 on the value task, 0 on the two carriers, 1 on each response task.
+    weights = net._build().predictor.criterion.task_weights.squeeze()
+    assert weights.tolist() == [1.0, 0.0, 0.0, 1.0, 1.0]
 
 
 def test_adapter_correction_is_gated_to_its_target_row():

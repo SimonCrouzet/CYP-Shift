@@ -106,16 +106,16 @@ def build_model(
         from cypshift.models.graph import GraphNetwork, SeparatedTrunkGraph
 
         graph_cls = SeparatedTrunkGraph if config.model.graph.separate_trunks else GraphNetwork
-        # Which measurement, if any, the graph's response head trains on: a qHTS max-response
-        # (sources.qhts_representation) or the single-concentration screen fraction
-        # (multifidelity.screen_strategy='response_head'). They are mutually exclusive, so at
-        # most one assay reaches the head; None leaves the head off entirely.
+        # Which measurements the graph's response heads train on: a qHTS max-response
+        # (sources.qhts_representation) and/or the single-concentration screen fraction
+        # (multifidelity.screen_strategy='response_head'). They coexist -- each gets its own
+        # response column -- so the panel can carry both at once; an empty tuple leaves the
+        # response heads off entirely.
+        response_assays = []
         if config.sources.qhts_representation == "max_response":
-            response_assay = RESPONSE_ASSAY
-        elif config.multifidelity.screen_strategy == "response_head" and config.sources.screen:
-            response_assay = SCREEN_RESPONSE_ASSAY
-        else:
-            response_assay = None
+            response_assays.append(RESPONSE_ASSAY)
+        if config.multifidelity.screen_strategy == "response_head" and config.sources.screen:
+            response_assays.append(SCREEN_RESPONSE_ASSAY)
         return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
@@ -136,7 +136,7 @@ def build_model(
             adapt_target=config.model.graph.adapt_target,
             adapt_hidden=config.model.graph.adapt_hidden,
             ffn_hidden=config.model.graph.ffn_hidden,
-            response_assay=response_assay,
+            response_assays=tuple(response_assays),
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
             physchem=config.features.use_physicochemical,

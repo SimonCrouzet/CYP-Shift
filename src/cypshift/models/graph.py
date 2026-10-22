@@ -63,10 +63,11 @@ from cypshift.structure.features import structure_block
 
 logger = logging.getLogger(__name__)
 
-#: Label columns: the value, then the two carrier columns holding its bounds, and an
-#: optional fourth column for the qHTS max-response auxiliary head. Per-row routing is by
-#: NaN: a pIC50 row leaves RESPONSE NaN, a response row leaves VALUE/LOWER/UPPER NaN, and
-#: chemprop's finiteness mask zeroes the irrelevant task, so the two scales never mix.
+#: Label columns: the value, then the two carrier columns holding its bounds, then one column
+#: per response task (a qHTS max-response and/or the screen fraction) from RESPONSE onward.
+#: Per-row routing is by NaN: a pIC50 row leaves every response column NaN, a response row leaves
+#: VALUE/LOWER/UPPER and the other response columns NaN, and chemprop's finiteness mask zeroes the
+#: irrelevant tasks, so the scales never mix. RESPONSE is the index of the first response column.
 VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
 
@@ -154,7 +155,9 @@ class SoftThresholdLoss(ChempropMetric):
                 loss[:, VALUE] + self.point_weight * reliable * (prediction - midpoint) ** 2
             )
         if targets.shape[1] > RESPONSE:
-            loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
+            # Every response task (columns RESPONSE onward) keeps a plain squared error; chemprop's
+            # finiteness mask zeroes the columns a given row does not carry.
+            loss[:, RESPONSE:] = (preds[:, RESPONSE:] - targets[:, RESPONSE:]) ** 2
         return loss
 
 
@@ -265,7 +268,8 @@ class _AsymmetricValueLoss(ChempropMetric):
         loss = torch.zeros_like(targets)
         loss[:, VALUE] = self._per_row(preds[:, VALUE], targets[:, VALUE])
         if targets.shape[1] > RESPONSE:
-            loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
+            # Every response task keeps a plain squared error (masked per row by chemprop).
+            loss[:, RESPONSE:] = (preds[:, RESPONSE:] - targets[:, RESPONSE:]) ** 2
         return loss
 
 
@@ -360,7 +364,7 @@ class GraphNetwork:
         adapt_target: str = "none",
         adapt_hidden: int = 64,
         ffn_hidden: int = 0,
-        response_assay: str | None = None,
+        response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         physchem: bool = False,
@@ -373,15 +377,17 @@ class GraphNetwork:
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
-        # The response head is trained on its own assay (a qHTS max-response or a screen
-        # fraction, named by response_assay), so that assay joins the conditioning vocabulary
-        # when it is on and the label matrix grows a fourth column for it.
-        self.response_assay = response_assay
-        self.auxiliary_response = response_assay is not None
+        # Each response task is trained on its own assay (a qHTS max-response and/or a screen
+        # fraction); every such assay joins the conditioning vocabulary and the label matrix
+        # grows one column per response task (from the RESPONSE index onward). They coexist,
+        # each on its own column and its own 0-1 scale, so the panel can carry several
+        # measurements at once rather than one.
+        self.response_assays = tuple(response_assays)
+        self.auxiliary_response = bool(self.response_assays)
         self.tdi_shift_threshold = tdi_shift_threshold
         self.tdi_assay_floor = tdi_assay_floor
-        self.assays = (*assays, response_assay) if self.auxiliary_response else assays
-        self._n_label = N_LABEL_COLUMNS + 1 if self.auxiliary_response else N_LABEL_COLUMNS
+        self.assays = (*assays, *self.response_assays)
+        self._n_label = N_LABEL_COLUMNS + len(self.response_assays)
         self.conditioning = conditioning
         self.hidden = hidden
         self.depth = depth
@@ -455,10 +461,10 @@ class GraphNetwork:
             self._n_conditioning += descriptor_block(["CCO"]).shape[1]
         self._centre = 0.0
         self._spread = 1.0
-        #: Separate standardisation for the response task, so its 0-1 scale is not forced
-        #: onto the pIC50 centre/spread.
-        self._resp_centre = 0.0
-        self._resp_spread = 1.0
+        #: Per-response-task standardisation (one entry per self.response_assays), so each task's
+        #: own 0-1 scale is not forced onto the pIC50 centre/spread or onto another task's.
+        self._resp_centre = np.zeros(len(self.response_assays))
+        self._resp_spread = np.ones(len(self.response_assays))
         #: Standardisation of the appended continuous x_d blocks (embedding, descriptors),
         #: fitted on retained training; the one-hot conditioning is left raw.
         self._xd_centre: np.ndarray | None = None
@@ -493,9 +499,13 @@ class GraphNetwork:
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
                 y = np.full(self._n_label, np.nan)
-                if self.auxiliary_response and record["assay"] == self.response_assay:
-                    # A response row: fill only the response task, leave pIC50 tasks NaN.
-                    y[RESPONSE] = (float(record["value"]) - self._resp_centre) / self._resp_spread
+                if self.auxiliary_response and record["assay"] in self.response_assays:
+                    # A response row: fill only its own response column, leave the pIC50 tasks and
+                    # the other response columns NaN, each on its own standardisation.
+                    task = self.response_assays.index(record["assay"])
+                    y[RESPONSE + task] = (
+                        float(record["value"]) - self._resp_centre[task]
+                    ) / self._resp_spread[task]
                 else:
                     value = float(record["value"])
                     lower = float(record["conf_low"]) if np.isfinite(record["conf_low"]) else value
@@ -542,7 +552,7 @@ class GraphNetwork:
         # Every objective installs an explicit criterion with these weights: leaving it None
         # gave chemprop's default MSE over all tasks, which trained the carrier columns and
         # made "absolute" an MSE run rather than MAE.
-        weights = torch.tensor([[1.0, 0.0, 0.0] + ([1.0] if self.auxiliary_response else [])])
+        weights = torch.tensor([[1.0, 0.0, 0.0] + [1.0] * len(self.response_assays)])
         if self.loss == "soft_threshold":
             # The point and ranking augmentations layer onto the dead-zone loss; the ranking
             # hinge needs the batch, so it is a distinct criterion when it is switched on.
@@ -599,20 +609,17 @@ class GraphNetwork:
         usable = observations[np.isfinite(observations["value"])].reset_index(drop=True)
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
-        # The pIC50 rows set one centre/spread for the value and its two bound columns;
-        # the response rows (a different 0-1 scale) are standardised separately.
-        is_response = (
-            usable["assay"] == self.response_assay
-            if self.auxiliary_response
-            else np.zeros(len(usable), dtype=bool)
-        )
+        # The pIC50 rows set one centre/spread for the value and its two bound columns; each
+        # response task's rows (a different 0-1 scale) are standardised separately, per assay.
+        is_response = usable["assay"].isin(self.response_assays).to_numpy()
         pic50 = usable.loc[~is_response, "value"].to_numpy(float)
         self._centre = float(pic50.mean())
         self._spread = float(pic50.std()) or 1.0
-        if is_response.any():
-            response = usable.loc[is_response, "value"].to_numpy(float)
-            self._resp_centre = float(response.mean())
-            self._resp_spread = float(response.std()) or 1.0
+        for task, assay in enumerate(self.response_assays):
+            rows = usable.loc[usable["assay"] == assay, "value"].to_numpy(float)
+            if rows.size:
+                self._resp_centre[task] = float(rows.mean())
+                self._resp_spread[task] = float(rows.std()) or 1.0
         # Fit the continuous-x_d standardisation on the retained training rows, before the
         # datapoints apply it.
         continuous = self._continuous_blocks(usable["SMILES"].tolist())
