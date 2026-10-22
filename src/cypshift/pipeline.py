@@ -643,11 +643,16 @@ def save_run_bundle(
     submission: pd.DataFrame,
     scores: pd.DataFrame,
 ) -> None:
-    """Write an immutable record of one holdout run: per-compound out-of-fold predictions
-    alongside their truth, plus the resolved config and scores.
+    """Write one run's per-compound out-of-fold predictions, truth, resolved config and scores.
 
-    This is what later pairing, blending and calibration need -- the predictions per
-    compound on a shared holdout, not just the aggregate score. Written atomically.
+    This is what later pairing, blending and calibration need -- the predictions per compound
+    on a shared holdout, not just the aggregate score. The files are written in place into
+    ``bundle_path`` (not atomically, and the directory is not cleared first), so a re-run with
+    a different config can leave mixed artifacts; the caller namespaces the path by revision to
+    avoid that. The bundle records the pooled predictions and the full config (so seed, folds
+    and every knob are recoverable), but not per-fold or per-member predictions, a data hash,
+    or any fitted calibrator/blend parameters -- those must be recorded separately to replay a
+    nested postprocessing choice.
     """
     bundle_path.mkdir(parents=True, exist_ok=True)
     truth_columns = ["Molecule_Name"]
@@ -840,8 +845,10 @@ def _score_tdi_out_of_fold(predictions: pd.DataFrame, directory: Path) -> pd.Dat
     """Score pooled out-of-fold is_TDI flags against the TDI labels.
 
     ``predictions`` is a frame of ``Molecule_Name`` plus the two is_TDI columns, pooled from
-    every fold. It is scored over whatever compounds carry a TDI label, which is a different
-    (and smaller) set than the direct-labelled training compounds.
+    every fold. The folds are over the direct-labelled training set, so the predictions -- and
+    therefore this MCC -- cover only the direct-labelled compounds that also carry a TDI label,
+    not the full TDI label universe: a compound with a TDI label but no direct curve can train
+    but never receives an out-of-fold classification prediction here.
     """
     labels = load("tdi", directory)
     shared = predictions.merge(
