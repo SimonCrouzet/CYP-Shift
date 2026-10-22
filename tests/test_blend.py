@@ -35,6 +35,36 @@ def _member(pred_offsets: dict[str, float]) -> pd.DataFrame:
     return frame
 
 
+def test_blend_fits_on_named_rows_regardless_of_member_order():
+    """Review #3: the fit split is keyed by Molecule_Name, not by position. A member whose rows
+    are shuffled on disk must not shift which molecules the weights are fit on."""
+    names = SHARED_NAMES
+    first_half, second_half = set(names[: N // 2]), set(names[N // 2 :])
+    enzyme = REGRESSION_ENDPOINTS[0].split("_")[0]
+
+    def _exact_on(exact: set[str]) -> pd.DataFrame:
+        frame = pd.DataFrame({"Molecule_Name": names})
+        for endpoint in REGRESSION_ENDPOINTS:
+            truth = SHARED_TRUTH[endpoint]
+            frame[endpoint] = truth
+            frame[f"{endpoint}_conf_low"] = truth - 0.1
+            frame[f"{endpoint}_conf_high"] = truth + 0.1
+            off = np.array([0.0 if n in exact else 3.0 for n in names])
+            frame[f"{endpoint}_pred"] = truth + off
+        return frame
+
+    low = _exact_on(first_half)  # exact on the first half of molecules, far off on the rest
+    high = _exact_on(second_half).sample(frac=1.0, random_state=1).reset_index(drop=True)
+    members = {"low": low, "high": high}  # "high"'s rows are shuffled
+
+    # Fitting on the first-half names favours "low" there; fitting on the second-half flips it.
+    # A positional mask over the shuffled "high" would have selected the wrong molecules.
+    _, _, first = blend(members, "nnls", fit_names=first_half)
+    _, _, second = blend(members, "nnls", fit_names=second_half)
+    assert first[enzyme]["low"] > first[enzyme]["high"]
+    assert second[enzyme]["high"] > second[enzyme]["low"]
+
+
 def test_fit_weights_equal_is_uniform():
     stack = RNG.normal(size=(20, 3))
     weights = fit_weights(stack, RNG.normal(size=20), "equal")
@@ -94,13 +124,13 @@ def test_endpoint_candidates_restrict_which_member_serves_an_endpoint():
     assert np.allclose(predictions[endpoint].to_numpy(), expected.to_numpy())
 
 
-def test_fit_mask_restricts_the_rows_the_weights_are_fit_on():
-    """With a fit mask, every compound still gets a blended prediction (scoring is the caller's)."""
+def test_fit_names_restrict_the_rows_the_weights_are_fit_on():
+    """With a fit-name subset, every compound still gets a blended prediction (scoring is the
+    caller's)."""
     a = _member(dict.fromkeys(REGRESSION_ENDPOINTS, 0.0))
     b = _member(dict.fromkeys(REGRESSION_ENDPOINTS, 2.0))
-    mask = np.zeros(len(a), dtype=bool)
-    mask[: len(a) // 2] = True
-    predictions, truth, _ = blend({"A": a, "B": b}, "st_rae", fit_mask=mask)
+    fit_names = set(SHARED_NAMES[: N // 2])
+    predictions, truth, _ = blend({"A": a, "B": b}, "st_rae", fit_names=fit_names)
     assert len(predictions) == len(a)
     assert predictions[list(REGRESSION_ENDPOINTS)].to_numpy().shape == (len(a), 4)
 
@@ -121,14 +151,13 @@ def _split_member(good_first: bool) -> pd.DataFrame:
     return frame
 
 
-def test_fit_mask_fits_weights_on_the_fitting_rows_only():
+def test_fit_names_fit_weights_on_the_fitting_rows_only():
     """The weights must reflect only the fitting rows: a member accurate on the fit half but
     wrong on the held half should still win the weight."""
     fit_winner = _split_member(good_first=True)  # accurate on the first (fit) half
     held_winner = _split_member(good_first=False)  # accurate only on the held half
-    mask = np.zeros(N, dtype=bool)
-    mask[: N // 2] = True  # fit = first half
-    _, _, weights = blend({"fit": fit_winner, "held": held_winner}, "st_rae", fit_mask=mask)
+    fit_names = set(SHARED_NAMES[: N // 2])  # fit = first half
+    _, _, weights = blend({"fit": fit_winner, "held": held_winner}, "st_rae", fit_names=fit_names)
     for endpoint in REGRESSION_ENDPOINTS:
         w = weights[endpoint.split("_")[0]]
         assert w["fit"] > w["held"]

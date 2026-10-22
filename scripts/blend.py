@@ -149,14 +149,16 @@ def blend(
     members: dict[str, pd.DataFrame],
     method: str,
     endpoint_candidates: dict[str, list[str]] | None = None,
-    fit_mask: np.ndarray | None = None,
+    fit_names: set[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Fit per-endpoint weights; return the blended predictions, the truth frame, and weights.
 
     ``endpoint_candidates`` restricts which members are eligible on a given enzyme (so one
     endpoint can be served by a specialist subset); members not listed get weight zero there.
-    ``fit_mask`` (a boolean over the reference row order) restricts the rows the weights are
-    *fit* on, so the caller can score on the held-out complement.
+    ``fit_names`` (a set of ``Molecule_Name``) restricts the rows the weights are *fit* on, so
+    the caller can score on the held-out complement. It is keyed by name, not by position: the
+    mask is rebuilt from this frame's own molecule order, so it stays aligned however the
+    members were ordered on disk (predictions are already joined by name below).
     """
     all_names = list(members)
     truth = members[all_names[0]][
@@ -165,6 +167,7 @@ def blend(
             *[c for e in REGRESSION_ENDPOINTS for c in (e, f"{e}_conf_low", f"{e}_conf_high")],
         ]
     ].copy()
+    fit_mask = None if fit_names is None else truth["Molecule_Name"].isin(fit_names).to_numpy()
     predictions = truth[["Molecule_Name"]].copy()
     weights = {}
     for endpoint in REGRESSION_ENDPOINTS:
@@ -343,11 +346,13 @@ def main() -> None:
         )
     members = {n: available[n] for n in chosen}
 
-    predictions, truth, weights = blend(members, arguments.method, endpoint_candidates, fit_mask)
-    if fit_mask is not None:
+    predictions, truth, weights = blend(members, arguments.method, endpoint_candidates, fit_names)
+    if fit_names is not None:
         # Score only the held-out rows, which the weights never saw, and compare against the
-        # best single member on those same rows -- not its full-table score.
-        held = ~fit_mask
+        # best single member on those same rows -- not its full-table score. Select the held
+        # rows by name off the returned truth frame, so this matches the by-name fit mask blend
+        # built internally rather than a positional complement that could point at other rows.
+        held = truth["Molecule_Name"].isin(held_names).to_numpy()
         truth = truth.loc[held]
         predictions = predictions.loc[held]
         held_singles = rank_single(on_rows({n: available[n] for n in chosen}, held_names))
