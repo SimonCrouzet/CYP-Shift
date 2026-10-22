@@ -366,6 +366,10 @@ class GraphConfig:
     #: Hidden width of the per-isoform adaptation block; ignored when ``adapt_target`` is
     #: ``"none"``.
     adapt_hidden: int = 64
+    #: Hidden width of the readout FFN, set independently of the message-passing width
+    #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
+    #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
+    ffn_hidden: int = 0
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);

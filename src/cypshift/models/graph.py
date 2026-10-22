@@ -359,6 +359,7 @@ class GraphNetwork:
         source_heads: bool = False,
         adapt_target: str = "none",
         adapt_hidden: int = 64,
+        ffn_hidden: int = 0,
         response_assay: str | None = None,
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -403,6 +404,8 @@ class GraphNetwork:
         #: One scored isoform to give a gated, isoform-specific adaptation block, or "none".
         self.adapt_target = adapt_target
         self.adapt_hidden = adapt_hidden
+        #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
+        self.ffn_hidden = ffn_hidden
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -565,6 +568,8 @@ class GraphNetwork:
         else:
             raise ValueError(f"unknown objective {self.loss!r}")
         input_dim = message_passing.output_dim + self._n_conditioning
+        # Readout FFN width, set independently of the encoder width; 0 keeps chemprop's default.
+        ffn_kwargs = {} if self.ffn_hidden <= 0 else {"hidden_dim": self.ffn_hidden}
         if self.adapt_target != "none":
             # The target one-hot is the first block of the conditioning, which fingerprint()
             # places right after the encoder output, so its gate column sits at
@@ -577,6 +582,7 @@ class GraphNetwork:
                 input_dim=input_dim,
                 criterion=criterion,
                 dropout=self.dropout,
+                **ffn_kwargs,
             )
         else:
             predictor = cpnn.RegressionFFN(
@@ -584,6 +590,7 @@ class GraphNetwork:
                 input_dim=input_dim,
                 criterion=criterion,
                 dropout=self.dropout,
+                **ffn_kwargs,
             )
         return cpmodels.MPNN(message_passing, cpnn.MeanAggregation(), predictor)
 

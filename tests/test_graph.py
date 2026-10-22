@@ -38,6 +38,19 @@ def test_chemeleon_encoder_loads_with_its_published_width():
     assert encoder.output_dim == 2048  # CheMeleon's published hidden width
 
 
+def _ffn_hidden_width(model) -> int:
+    """The readout FFN's first hidden width (first Linear's out_features)."""
+    linears = [m for m in model.predictor.ffn.modules() if m.__class__.__name__ == "Linear"]
+    return linears[0].out_features
+
+
+def test_ffn_hidden_sets_the_readout_width_independently_of_the_encoder():
+    """model.graph.ffn_hidden widens the readout FFN without touching the message-passing width;
+    0 keeps chemprop's default (300)."""
+    assert _ffn_hidden_width(GraphNetwork(ffn_hidden=777)._build()) == 777
+    assert _ffn_hidden_width(GraphNetwork()._build()) == 300  # default, unset
+
+
 @pytest.mark.skipif(not CHEMELEON_CACHE.exists(), reason="CheMeleon encoder not downloaded")
 def test_freeze_toggle_controls_encoder_gradients():
     """pretraining_finetune=False freezes the CheMeleon encoder; the default trains it."""

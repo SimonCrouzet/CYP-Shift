@@ -135,6 +135,7 @@ def build_model(
             source_heads=config.model.graph.source_heads,
             adapt_target=config.model.graph.adapt_target,
             adapt_hidden=config.model.graph.adapt_hidden,
+            ffn_hidden=config.model.graph.ffn_hidden,
             response_assay=response_assay,
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
