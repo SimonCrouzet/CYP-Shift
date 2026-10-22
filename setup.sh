@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Build the cypshift environment and run the preflight check.
+# Prepare the cypshift environment for a run, checking first and installing only what is missing.
 #
-# Creates (or updates) the conda env from environment.yml, installs the package with every
-# runtime extra, then runs scripts/check_env.py. Idempotent: re-running updates in place.
+# Launch it and follow the output: it finds a conda frontend, ensures the env exists, installs
+# the package only when an import probe shows it missing, then runs the visual preflight
+# (scripts/check_env.py) which ends in READY / NOT READY and the launch command.
 #
-#   ./setup.sh                      # env name "cypshift" via conda/mamba on PATH
-#   CONDA_EXE=micromamba ./setup.sh # force a particular conda frontend
-#   ENV_PREFIX=/mnt/wsl/ext/envs/cypshift ./setup.sh   # install into a prefix, not a named env
-#   EXTRAS=nn,tfm ./setup.sh        # install a subset of extras instead of the full dev set
-#   ./setup.sh --fetch              # also download the core challenge data into data/raw
+#   ./setup.sh                       # env "cypshift" via conda/mamba on PATH
+#   ./setup.sh --fetch               # also download the core challenge data into data/raw
+#   ENV_PREFIX=/scratch/envs/cypshift ./setup.sh   # install into a prefix on local disk
+#   EXTRAS=nn,tfm ./setup.sh         # install a subset of extras instead of the full dev set
+#   FORCE_UPDATE=1 ./setup.sh        # rebuild the env from environment.yml even if it exists
+#   FORCE_INSTALL=1 ./setup.sh       # reinstall the package even if the import probe passes
 #
 # Flags after `setup.sh` are forwarded to check_env.py (e.g. --fetch, --data-dir).
 
@@ -19,55 +21,87 @@ ENV_NAME="${ENV_NAME:-cypshift}"
 ENV_PREFIX="${ENV_PREFIX:-}"
 EXTRAS="${EXTRAS:-dev}"
 
-# Pick a conda frontend: explicit CONDA_EXE, else mamba, micromamba, or conda on PATH.
-pick_conda() {
-    if [[ -n "${CONDA_EXE:-}" ]] && command -v "${CONDA_EXE}" >/dev/null 2>&1; then
-        echo "${CONDA_EXE}"; return
-    fi
-    for candidate in mamba micromamba conda; do
-        if command -v "${candidate}" >/dev/null 2>&1; then echo "${candidate}"; return; fi
-    done
-    echo ""
-}
+# Visual marks, on only for an interactive terminal with NO_COLOR unset.
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    BOLD=$'\e[1m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; RESET=$'\e[0m'
+else
+    BOLD=; GREEN=; YELLOW=; RED=; RESET=
+fi
+ok()   { printf '  %s✓%s %s\n' "${GREEN}" "${RESET}" "$1"; }
+warn() { printf '  %s⚠%s %s\n' "${YELLOW}" "${RESET}" "$1"; }
+err()  { printf '  %s✗%s %s\n' "${RED}" "${RESET}" "$1"; }
+step() { printf '\n%s%s%s\n' "${BOLD}" "$1" "${RESET}"; }
 
-CONDA="$(pick_conda)"
+# --- conda frontend ---------------------------------------------------------
+step "conda frontend"
+CONDA=""
+if [[ -n "${CONDA_EXE:-}" ]] && command -v "${CONDA_EXE}" >/dev/null 2>&1; then
+    CONDA="${CONDA_EXE}"
+else
+    for candidate in mamba micromamba conda; do
+        command -v "${candidate}" >/dev/null 2>&1 && { CONDA="${candidate}"; break; }
+    done
+fi
 if [[ -z "${CONDA}" ]]; then
-    echo "ERROR: no conda/mamba/micromamba on PATH. Install one, or set CONDA_EXE." >&2
+    err "no conda/mamba/micromamba on PATH -- install one, or set CONDA_EXE"
     exit 1
 fi
-echo ">>> conda frontend: ${CONDA}"
+ok "using ${CONDA}"
 
-# Target the env by prefix (-p) or by name (-n). A prefix lets the cluster place the env on
-# fast local storage instead of the home directory.
 if [[ -n "${ENV_PREFIX}" ]]; then
     TARGET=(-p "${ENV_PREFIX}")
     PY="${ENV_PREFIX}/bin/python"
-    echo ">>> env prefix: ${ENV_PREFIX}"
 else
     TARGET=(-n "${ENV_NAME}")
-    PY=""   # resolved after creation via `conda run`
-    echo ">>> env name: ${ENV_NAME}"
+    PY=""
 fi
 
-# Create the env if absent, else update it in place from environment.yml.
-if "${CONDA}" env list | grep -qE "(^|[[:space:]/])${ENV_PREFIX:-${ENV_NAME}}([[:space:]]|$)"; then
-    echo ">>> env exists; updating from environment.yml"
+env_exists() {
+    if [[ -n "${ENV_PREFIX}" ]]; then
+        [[ -x "${ENV_PREFIX}/bin/python" ]]
+    else
+        "${CONDA}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"
+    fi
+}
+
+# --- environment ------------------------------------------------------------
+step "environment (${ENV_PREFIX:-${ENV_NAME}})"
+if env_exists && [[ -z "${FORCE_UPDATE:-}" ]]; then
+    ok "env present (FORCE_UPDATE=1 to rebuild from environment.yml)"
+elif env_exists; then
+    warn "FORCE_UPDATE set -- updating env from environment.yml"
     "${CONDA}" env update "${TARGET[@]}" -f environment.yml --prune
+    ok "env updated"
 else
-    echo ">>> creating env from environment.yml"
+    warn "env absent -- creating from environment.yml"
     "${CONDA}" env create "${TARGET[@]}" -f environment.yml
+    ok "env created"
 fi
 
 # Resolve the env's python for a named env (prefix path is already known).
 if [[ -z "${PY}" ]]; then
     PY="$("${CONDA}" run "${TARGET[@]}" python -c 'import sys; print(sys.executable)')"
 fi
-echo ">>> env python: ${PY}"
+ok "python: ${PY}"
 
-# environment.yml installs `-e .[dev]` via its pip section, but reinstall the requested extras
-# explicitly so EXTRAS=nn,tfm (a lighter cluster install) is honoured on an update.
-echo ">>> installing cypshift[${EXTRAS}]"
-"${PY}" -m pip install -e ".[${EXTRAS}]"
+# --- package ----------------------------------------------------------------
+# Probe the modules the requested extras must provide for a run; install only if any are
+# missing, so a satisfied env is not reinstalled on every launch.
+step "package cypshift[${EXTRAS}]"
+PROBE=(cypshift)
+case ",${EXTRAS}," in *,dev,*|*,nn,*) PROBE+=(torch chemprop);; esac
+case ",${EXTRAS}," in *,dev,*|*,tfm,*) PROBE+=(tabpfn);; esac
 
-echo ">>> preflight"
+if [[ -z "${FORCE_INSTALL:-}" ]] && "${PY}" -c \
+    "import importlib,sys; [importlib.import_module(m) for m in sys.argv[1:]]" "${PROBE[@]}" \
+    >/dev/null 2>&1; then
+    ok "already installed (${PROBE[*]}); skipping pip (FORCE_INSTALL=1 to reinstall)"
+else
+    warn "installing -e .[${EXTRAS}]"
+    "${PY}" -m pip install -e ".[${EXTRAS}]"
+    ok "installed"
+fi
+
+# --- preflight --------------------------------------------------------------
+step "preflight"
 "${PY}" scripts/check_env.py "$@"

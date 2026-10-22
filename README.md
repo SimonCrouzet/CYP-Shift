@@ -422,6 +422,19 @@ data/              inputs (gitignored)
 ## ⚙️ Setup
 
 ```bash
+./setup.sh          # create/check the env, install only what is missing, run the preflight
+./setup.sh --fetch  # the above, and download the core challenge data into data/raw
+```
+
+`setup.sh` finds a conda frontend, ensures the `cypshift` env exists, installs the package
+only when an import probe shows it missing (so a ready env is not reinstalled), then runs
+the visual preflight below. Knobs: `ENV_PREFIX=<path>` installs into a prefix on local disk,
+`EXTRAS=nn,tfm` installs a subset, `FORCE_UPDATE=1` rebuilds the env, `FORCE_INSTALL=1`
+reinstalls the package.
+
+The equivalent by hand:
+
+```bash
 mamba env create -f environment.yml && mamba activate cypshift
 pip install -e ".[dev]"     # everything, including the deep-learning stack
 ```
@@ -429,6 +442,19 @@ pip install -e ".[dev]"     # everything, including the deep-learning stack
 `dev` pulls in every runtime extra, so the full test suite runs. To install only what
 a given model needs, use the extras directly: the package alone gives the boosted
 model, and `.[nn]` adds the neural, graph and curve models.
+
+### Preflight
+
+`scripts/check_env.py` reports — with ✓/⚠/✗ marks — the interpreter, required and optional
+packages with versions, CUDA, the core and auxiliary data caches, and the TABPFN/HF tokens,
+then prints `READY` / `NOT READY` and the launch command. It exits non-zero only when the
+core (challenge data + always-required packages) is missing; optional packages and the
+`data/external` auxiliary caches gate only their own config families.
+
+```bash
+python scripts/check_env.py          # check an already-built env
+python scripts/check_env.py --fetch  # download the core challenge files first
+```
 
 ### Two environments
 

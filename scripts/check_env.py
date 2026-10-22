@@ -52,16 +52,41 @@ CORE_DATA = [
 # The TDI track file; its absence disables only the TDI phase.
 TDI_DATA = ["cyp-challenge-TRAIN_TDI.csv"]
 
+# ANSI colour, on only for an interactive terminal and when NO_COLOR is unset.
+_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
-def _mark(ok: bool, warn: bool = False) -> str:
-    return "OK  " if ok else ("WARN" if warn else "MISS")
+
+def _c(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
+# status -> coloured glyph. "ok" green, "warn" yellow, "miss" red.
+_GLYPH = {
+    "ok": _c("32", "✓"),  # green check
+    "warn": _c("33", "⚠"),  # yellow warning sign
+    "miss": _c("31", "✗"),  # red cross
+}
+
+
+def line(status: str, text: str) -> None:
+    print(f"  {_GLYPH[status]} {text}")
+
+
+def section(title: str) -> None:
+    print("\n" + _c("1", title))  # bold
+
+
+def _status(ok: bool, warn_if_missing: bool = False) -> str:
+    return "ok" if ok else ("warn" if warn_if_missing else "miss")
 
 
 def check_python() -> bool:
     ok = sys.version_info[:2] >= MIN_PYTHON
     want = ".".join(map(str, MIN_PYTHON))
     have = ".".join(map(str, sys.version_info[:3]))
-    print(f"[{_mark(ok)}] python {have} (need >= {want}) at {sys.executable}")
+    section("interpreter")
+    line(_status(ok), f"python {have} (need >= {want})")
+    print(f"    {sys.executable}")
     return ok
 
 
@@ -80,17 +105,17 @@ def _try_import(import_name: str, dist_name: str) -> str | None:
 def check_packages() -> tuple[list[str], list[str]]:
     """Report every package; return (missing required imports, missing optional imports)."""
     missing_required, missing_optional = [], []
-    print("\npackages (required):")
+    section("packages (required)")
     for import_name, dist_name in REQUIRED_PACKAGES:
         version = _try_import(import_name, dist_name)
-        print(f"  [{_mark(version is not None)}] {import_name:16} {version or '-'}")
+        line(_status(version is not None), f"{import_name:16} {version or '-'}")
         if version is None:
             missing_required.append(import_name)
-    print("\npackages (optional backends):")
+    section("packages (optional backends)")
     for import_name, dist_name, unlocks in OPTIONAL_PACKAGES:
         version = _try_import(import_name, dist_name)
-        mark = _mark(version is not None, warn=True)
-        print(f"  [{mark}] {import_name:16} {version or '-':10} {unlocks}")
+        message = f"{import_name:16} {version or '-':10} {unlocks}"
+        line(_status(version is not None, warn_if_missing=True), message)
         if version is None:
             missing_optional.append(import_name)
     return missing_required, missing_optional
@@ -98,17 +123,19 @@ def check_packages() -> tuple[list[str], list[str]]:
 
 def check_cuda() -> bool:
     """Report CUDA availability; a CPU-only node runs the GPU families, only far slower."""
+    section("GPU")
     try:
         import torch
     except Exception:  # noqa: BLE001
-        print("\n[WARN] torch not importable; GPU families unavailable")
+        line("warn", "torch not importable; GPU families unavailable")
         return False
     available = torch.cuda.is_available()
     count = torch.cuda.device_count() if available else 0
     name = torch.cuda.get_device_name(0) if available else "none"
-    print(f"\n[{_mark(available, warn=True)}] CUDA available={available} devices={count} ({name})")
+    message = f"CUDA available={available} devices={count} ({name})"
+    line(_status(available, warn_if_missing=True), message)
     if not available:
-        print("       GPU families (graph/neural/curve/tfm) will run on CPU -- hours become days")
+        print("    GPU families (graph/neural/curve/tfm) will run on CPU -- hours become days")
     return available
 
 
@@ -118,15 +145,15 @@ def _present(path: Path) -> bool:
 
 def check_data(data_dir: Path, external: Path) -> bool:
     """Report core and auxiliary data; return True when the core challenge files are present."""
-    print(f"\ncore challenge data ({data_dir}):")
+    section(f"core challenge data ({data_dir})")
     core_ok = True
     for filename in CORE_DATA:
         present = (data_dir / filename).exists()
-        print(f"  [{_mark(present)}] {filename}")
+        line(_status(present), filename)
         core_ok = core_ok and present
     for filename in TDI_DATA:
         present = (data_dir / filename).exists()
-        print(f"  [{_mark(present, warn=True)}] {filename} (TDI track)")
+        line(_status(present, warn_if_missing=True), f"{filename} (TDI track)")
 
     # Each auxiliary cache gates only the config families whose name carries its source.
     aux = {
@@ -140,21 +167,21 @@ def check_data(data_dir: Path, external: Path) -> bool:
         "chemeleon weights": external / "chemeleon" / "chemeleon_mp.pt",
         "ionization": external / "ionization" / "features.parquet",
     }
-    print(f"\nauxiliary data / caches ({external}):")
+    section(f"auxiliary data / caches ({external})")
     for label, path in aux.items():
-        print(f"  [{_mark(_present(path), warn=True)}] {label:18} {path}")
+        line(_status(_present(path), warn_if_missing=True), f"{label:18} {path}")
     return core_ok
 
 
 def check_tokens() -> None:
     """Report the environment tokens some families need; all are optional."""
-    print("\nenvironment tokens:")
+    section("environment tokens")
     tfm_token = bool(os.environ.get("TABPFN_TOKEN"))
     tfm_note = "set" if tfm_token else "unset (tfm configs fail+skip)"
-    print(f"  [{_mark(tfm_token, warn=True)}] TABPFN_TOKEN {tfm_note}")
+    line(_status(tfm_token, warn_if_missing=True), f"TABPFN_TOKEN {tfm_note}")
     hf = bool(os.environ.get("HF_TOKEN") or os.environ.get("HF_HOME"))
     hf_note = "set" if hf else "unset (only needed to (re)generate embeddings)"
-    print(f"  [{_mark(hf, warn=True)}] HF_TOKEN / HF_HOME {hf_note}")
+    line(_status(hf, warn_if_missing=True), f"HF_TOKEN / HF_HOME {hf_note}")
 
 
 def fetch_core(data_dir: Path) -> None:
@@ -183,23 +210,24 @@ def main(argv: list[str] | None = None) -> int:
         try:
             fetch_core(arguments.data_dir)
         except Exception as error:  # noqa: BLE001 -- report, do not crash the preflight
-            print(f"\n[WARN] --fetch failed: {error}")
+            print(f"  {_GLYPH['warn']} --fetch failed: {error}")
 
     core_ok = check_data(arguments.data_dir, arguments.external)
     check_tokens()
 
     # cypshift itself must import, or none of the scripts run.
     package_ok = _try_import("cypshift", "cypshift") is not None
-    print(f"\n[{_mark(package_ok)}] cypshift importable")
+    section("package")
+    line(_status(package_ok), "cypshift importable")
 
     ready = python_ok and not missing_required and core_ok and package_ok
-    print("\n" + ("=" * 60))
+    print("\n" + ("=" * 64))
     if ready:
-        print("READY: core dependencies and challenge data present. Launch:")
+        print(_c("1;32", "READY") + " -- core dependencies and challenge data present. Launch:")
         print("  CYP_WORKERS=8 CYP_MEMBERS=1 python scripts/night_run.py")
-        print("Auxiliary/embedding families above marked MISS will fail+skip per config.")
+        print("Auxiliary/embedding families marked above will fail+skip per config.")
     else:
-        print("NOT READY. Fix the MISS lines above before launching:")
+        print(_c("1;31", "NOT READY") + " -- fix the red lines above before launching:")
         if not python_ok:
             print(f"  - interpreter older than {'.'.join(map(str, MIN_PYTHON))}")
         if missing_required:
