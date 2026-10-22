@@ -235,6 +235,73 @@ def similarity_matched_holdout(
     return mask
 
 
+def analogue_holdout(
+    train_smiles: Sequence[str],
+    holdout_fraction: float = 0.1,
+    min_similarity: float = 0.4,
+    n_bits: int = DEFAULT_N_BITS,
+    radius: int = DEFAULT_RADIUS,
+    seed: int = 0,
+) -> NDArray[np.bool_]:
+    """Hold out analogues of retained anchors, the way the blinded test was built.
+
+    The scaffold split guards against near-duplicate leakage, and the similarity-matched
+    split reproduces the test set's *distance* profile, but neither reproduces the test's
+    *construction*: a handful of measured reference hits with ten purchased analogues apiece,
+    scored while their anchor stays known. This builds exactly that second view. It walks
+    compounds from the most to the least locally crowded, and for each one not yet placed it
+    keeps that compound as a retained anchor and sends its still-unplaced neighbours above
+    ``min_similarity`` to the holdout, until the holdout reaches ``holdout_fraction``. The
+    model is then scored on compounds that sit near a retained anchor -- the analogue regime
+    the calibration and local-correction experiments live or die in -- and, because scoring
+    drops unmeasured endpoints, only genuinely observed labels are judged.
+
+    Args:
+        train_smiles: Training compounds to split.
+        holdout_fraction: Share of the training set to hold out as analogues.
+        min_similarity: A neighbour joins an anchor's holdout only above this Tanimoto, so a
+            compound with no real analogue is never forced into a spurious pair.
+        n_bits, radius: Fingerprint geometry (ECFP4-equivalent by default).
+        seed: Fixes the anchor walk where similarities tie.
+
+    Returns:
+        Boolean mask over ``train_smiles``, true where a compound is a held-out analogue.
+    """
+    rng = np.random.default_rng(seed)
+    fingerprints = morgan_fingerprints(train_smiles, radius=radius, n_bits=n_bits)
+    n = len(fingerprints)
+    n_holdout = int(round(holdout_fraction * n))
+    crowding = leave_one_out_max_similarity(fingerprints)
+    # Most locally crowded first; a seeded jitter breaks ties without a systematic bias.
+    order = np.argsort(-(crowding + rng.uniform(0, 1e-9, size=n)))
+
+    placed = np.zeros(n, dtype=bool)  # anchor or already-held-out
+    holdout = np.zeros(n, dtype=bool)
+    for anchor in order:
+        if placed[anchor] or holdout.sum() >= n_holdout:
+            if holdout.sum() >= n_holdout:
+                break
+            continue
+        placed[anchor] = True  # the anchor itself stays retained
+        similarities = np.array(
+            DataStructs.BulkTanimotoSimilarity(fingerprints[anchor], fingerprints)
+        )
+        neighbours = np.flatnonzero((similarities >= min_similarity) & ~placed)
+        # Closest analogues first, so the budget buys the tightest pairs.
+        for neighbour in neighbours[np.argsort(-similarities[neighbours])]:
+            if holdout.sum() >= n_holdout:
+                break
+            holdout[neighbour] = True
+            placed[neighbour] = True
+    logger.info(
+        "analogue holdout: %d of %d compounds held out as analogues (target %d)",
+        int(holdout.sum()),
+        n,
+        n_holdout,
+    )
+    return holdout
+
+
 def similarity_profile_gap(
     holdout_similarity: NDArray[np.float64], target_similarity: NDArray[np.float64]
 ) -> dict[str, float]:
