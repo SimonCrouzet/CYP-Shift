@@ -657,6 +657,30 @@ class ExperimentConfig:
                 "the curve model uses its own dose-response loss; model.objective="
                 f"{self.model.objective!r} would be ignored"
             )
+        if self.model.kind == "tfm":
+            # The tabular backend has no sample weights, censoring or objective, and trains only
+            # on the uncensored reference-assay rows (see TabularFoundationModel.fit). Reject the
+            # settings that would be accepted and then ignored or dropped.
+            if self.model.objective != "soft_threshold":
+                raise ValueError(
+                    "model.kind='tfm' has no training objective; model.objective is ignored"
+                )
+            if self.training.macro_balance or self.training.preset is not None:
+                raise ValueError(
+                    "model.kind='tfm' ignores sample weights and the training curriculum"
+                )
+            if self.sources.tdi_assay_condition:
+                raise ValueError("model.kind='tfm' cannot use the preincubated assay_condition")
+            auxiliary_on = [
+                name
+                for name in ("chembl", "sair", "octant", "veith", "tox21", "novartis")
+                if getattr(self.sources, name)
+            ]
+            if auxiliary_on:
+                raise ValueError(
+                    "model.kind='tfm' trains only on reference-assay rows; the auxiliary "
+                    f"sources {auxiliary_on} would be dropped"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

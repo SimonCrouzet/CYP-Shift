@@ -28,6 +28,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
+from cypshift.data.assembly import REFERENCE_ASSAY
 from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.models.base import PredictiveDistribution
 
@@ -132,8 +133,21 @@ class TabularFoundationModel:
         self._reducer = Pipeline(steps).fit(raw)
 
     def fit(self, observations: pd.DataFrame) -> "TabularFoundationModel":
-        """Fit one regressor per endpoint on that endpoint's labelled rows."""
+        """Fit one regressor per endpoint on that endpoint's uncensored reference-assay rows.
+
+        The backend has no sample weights, no censoring and no assay conditioning, so its
+        supported training view is the uncensored reference-assay (direct dose-response) rows
+        only: screen pseudo-labels, the preincubated assay and auxiliary assays would otherwise
+        enter as interchangeable, equally-weighted measurements. The pipeline rejects the
+        settings that would add such rows for this model (see ExperimentConfig.validate).
+        """
         usable = observations[np.isfinite(observations["value"])]
+        if "assay" in usable.columns:
+            usable = usable[usable["assay"] == REFERENCE_ASSAY]
+        if "is_censored" in usable.columns:
+            usable = usable[~usable["is_censored"].astype(bool)]
+        if usable.empty:
+            raise ValueError("no uncensored reference-assay rows to fit the tabular model on")
         self._fit_reducer(usable["SMILES"].drop_duplicates().tolist())
         for isoform in self.targets:
             rows = usable[usable["target"] == isoform]

@@ -5,6 +5,9 @@ set as the other models and only adapts its dimensionality -- without needing Ta
 (the per-endpoint fit, which downloads weights and wants a token, is not exercised here).
 """
 
+import numpy as np
+import pandas as pd
+
 from cypshift.models.tfm import TabularFoundationModel
 
 SMILES = [
@@ -68,3 +71,46 @@ def test_dense_only_feature_set_drops_the_fingerprint():
     width = model._features(SMILES).shape[1]
     assert width == model._raw_features(SMILES).shape[1]  # passthrough, no PCA
     assert width < 256  # the 256 fingerprint bits are absent
+
+
+class _Recorder:
+    """A stand-in regressor that records the labels it was fit on (no TabPFN)."""
+
+    def fit(self, features, y):
+        self.y = np.asarray(y, dtype=float)
+        return self
+
+    def predict(self, features):
+        return np.zeros(len(features))
+
+
+def test_fit_uses_only_uncensored_reference_assay_rows(monkeypatch):
+    """F09 guard: screen pseudo-labels, censored rows and other assays are dropped from the fit,
+    so the tabular model trains only on uncensored reference-assay measurements."""
+    recorder = _Recorder()
+    model = TabularFoundationModel(n_bits=64, pca_components=10_000)
+    monkeypatch.setattr(model, "_regressor", lambda: recorder)
+
+    def row(smiles, assay, value, censored=False):
+        return {
+            "SMILES": smiles,
+            "target": "CYP1A2",
+            "assay": assay,
+            "value": value,
+            "conf_low": value,
+            "conf_high": value,
+            "weight": 1.0,
+            "is_censored": censored,
+        }
+
+    observations = pd.DataFrame(
+        [
+            row("CCO", "direct_inhibition_drc", 5.0),
+            row("c1ccccc1", "direct_inhibition_drc", 6.0),
+            row("CCN", "direct_inhibition_screen", 9.0),  # screen pseudo-label: dropped
+            row("CCO", "tdi_drc", 8.0),  # preincubated assay: dropped
+            row("CC(=O)O", "direct_inhibition_drc", 3.0, censored=True),  # censored: dropped
+        ]
+    )
+    model.fit(observations)
+    assert sorted(recorder.y.tolist()) == [5.0, 6.0]

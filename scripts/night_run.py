@@ -280,11 +280,8 @@ REGRESSION: dict[str, dict] = {
     # Needs TABPFN_TOKEN in the environment; without it these fail (recorded) and are skipped.
     "tfm": {"model.kind": "tfm"},
     "tfm_mammal": {"model.kind": "tfm", "features.molecular_embedding": "mammal"},
-    "tfm_mammal_octant_tox21": {
-        "model.kind": "tfm",
-        "features.molecular_embedding": "mammal",
-        **OCT_TOX,
-    },
+    # (tfm + auxiliary sources is rejected: the tabular model trains only on reference-assay
+    # rows and would drop them, so there is no tfm_*_octant_tox21 config.)
     # TabPFN's PCA width. The feature-set sweep varies which blocks TabPFN sees but leaves
     # the compression fixed at 500; vary it on the default (fingerprint) set, where PCA bites.
     "tfm_pca250": {"model.kind": "tfm", "model.tfm.pca_components": 250},
