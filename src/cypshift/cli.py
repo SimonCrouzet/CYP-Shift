@@ -196,7 +196,10 @@ def baseline(
 @app.command()
 def submit(
     output: Annotated[Path, typer.Argument(help="Where to write the submission CSV.")],
-    directory: Path = DEFAULT_DATA_DIR,
+    directory: Annotated[
+        Path | None,
+        typer.Option(help="Data root; defaults to the config's data.directory."),
+    ] = None,
     config_path: Annotated[
         Path | None,
         typer.Option("--config", help="Experiment config; defaults to configs/default.json."),
@@ -230,9 +233,11 @@ def submit(
     if track not in ("regression", "classification"):
         raise typer.BadParameter('track must be "regression" or "classification"')
     config = ExperimentConfig.load(config_path) if config_path else ExperimentConfig.load()
-    # Resolve a single data root: assemble_training_data reads the screen/TDI/exclusion
-    # data from config.data.directory, so it must match the train/test directory or a run
-    # can silently combine unrelated inputs.
+    # Resolve a single data root: an explicit --directory wins, otherwise the config's own
+    # directory is honoured rather than silently overwritten by the CLI default. The resolved
+    # path is then used for both config.data.directory (which assemble_training_data reads for
+    # the screen/TDI/exclusion data) and the train/test loads, so they cannot diverge.
+    directory = Path(directory) if directory is not None else Path(config.data.directory)
     config.data.directory = str(directory)
     # The classification track needs the preincubated assay_condition, so require it rather than
     # silently flipping the regression track's off: the submitted recipe stays the one that
