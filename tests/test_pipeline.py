@@ -424,3 +424,23 @@ def test_save_run_bundle_writes_oof_predictions_and_metadata(tmp_path):
     assert f"{REGRESSION_ENDPOINTS[0]}_pred" in oof.columns  # prediction beside truth
     meta = _json.loads((bundle / "run.json").read_text())
     assert "config" in meta and "scores" in meta
+
+
+def test_r2_decomposition_joins_predictions_by_molecule_not_position():
+    """F01 guard: the pooled-CV submission is in fold order, so the decomposition must join on
+    Molecule_Name. Perfect predictions supplied in reverse row order still score R2 = 1."""
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.pipeline import _log_r2_decomposition
+
+    names = ["a", "b", "c", "d"]
+    values = [4.0, 5.0, 6.0, 7.0]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    submission = pd.DataFrame({"Molecule_Name": names[::-1]})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = values
+        evaluation[f"{endpoint}_conf_low"] = values
+        evaluation[f"{endpoint}_conf_high"] = values
+        submission[endpoint] = values[::-1]  # perfect once joined by ID, catastrophic positionally
+    table = _log_r2_decomposition(submission, evaluation)
+    for endpoint in REGRESSION_ENDPOINTS:
+        assert table.loc[endpoint.split("_")[0], "r2"] == pytest.approx(1.0)

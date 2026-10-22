@@ -385,15 +385,12 @@ def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:
 def cap_per_endpoint_budget(
     auxiliary: pd.DataFrame, retained: pd.DataFrame, budget: float
 ) -> pd.DataFrame:
-    """Rescale each scored enzyme's near-auxiliary rows to a weight budget set by its own labels.
+    """Rescale each scored enzyme's near-auxiliary rows to ``budget`` times its label weight.
 
-    "Adding a source" otherwise changes three things at once -- chemistry, assay mix, and how
-    much of the loss the challenge labels still own. Pinning a scored enzyme's own outside
-    rows (``near_aux``) to ``budget`` times its challenge-label mass fixes the last of those,
-    so sources can be compared within a budget rather than by how many rows they happen to
-    bring (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5). Relatives
-    (``distant_aux``) are left on their distance weighting -- they do not map to one scored
-    endpoint -- and an enzyme with no near-auxiliary rows is left untouched.
+    For each scored enzyme, multiplies its ``near_aux`` rows' weights by a common factor so
+    their sum equals ``budget`` times the enzyme's challenge-label count (challenge rows carry
+    dose_response weight 1.0). Relatives (``distant_aux``) are left on their distance weighting;
+    an enzyme with no near-auxiliary rows is left untouched.
     """
     out = auxiliary.copy()
     for enzyme in ISOFORMS:
@@ -861,25 +858,36 @@ def _score_tdi_out_of_fold(predictions: pd.DataFrame, directory: Path) -> pd.Dat
     return score_classification(predicted, truth)
 
 
-def _log_r2_decomposition(submission: pd.DataFrame, evaluation: pd.DataFrame) -> None:
+def _log_r2_decomposition(submission: pd.DataFrame, evaluation: pd.DataFrame) -> pd.DataFrame:
     """Log R² split into its ranking ceiling and the spread and offset it loses.
 
     Ranking (rho) transfers from this holdout to the blinded test; the spread and offset
     terms do not, since the holdout's potency distribution differs from the test's. The
     split says which part of a change is a real modelling gain rather than a calibration
     the holdout cannot vouch for.
+
+    The predictions are joined to the truth by ``Molecule_Name`` first: under cross-validation
+    the pooled submission is in fold order, not the training-table order, so a positional mask
+    would pair each prediction with the wrong compound.
     """
+    merged = evaluation[["Molecule_Name", *REGRESSION_ENDPOINTS]].merge(
+        submission[["Molecule_Name", *REGRESSION_ENDPOINTS]],
+        on="Molecule_Name",
+        suffixes=("", "_pred"),
+        validate="one_to_one",
+    )
     rows = {}
     for endpoint in REGRESSION_ENDPOINTS:
-        measured = evaluation[endpoint].notna().to_numpy()
+        measured = merged[endpoint].notna().to_numpy()
         rows[endpoint.split("_")[0]] = r2_decomposition(
-            evaluation.loc[measured, endpoint].to_numpy(float),
-            submission.loc[measured, endpoint].to_numpy(float),
+            merged.loc[measured, endpoint].to_numpy(float),
+            merged.loc[measured, f"{endpoint}_pred"].to_numpy(float),
         )
     table = pd.DataFrame(rows).T[
         ["rho", "spread_ratio", "offset", "r2", "ranking_ceiling", "spread_loss", "offset_loss"]
     ]
     logger.info("R² decomposition (rho transfers; spread/offset do not):\n%s", table.round(3))
+    return table
 
 
 def score_tdi(model: object, evaluation: pd.DataFrame, directory: Path) -> pd.DataFrame | None:
