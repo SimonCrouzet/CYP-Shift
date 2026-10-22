@@ -35,7 +35,6 @@ from torch import nn
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.conditioning import describe_all
 from cypshift.features.assembly import molecular_feature_matrix
-from cypshift.features.molecular import physicochemical
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -343,8 +342,11 @@ class CurveModel:
             molecular_embedding=self.molecular_embedding,
         ).astype(np.float32)
         if fit:
-            n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
-            self._scaler = BlockScaler(self.n_bits, n_dense).fit(matrix)
+            # Count block = the Morgan fingerprint (absent when use_fingerprint is off); every
+            # column after it is a dense descriptor to standardise (physchem, mechanistic,
+            # screen_model, ionization, embedding), not physchem alone.
+            n_count = self.n_bits if self.use_fingerprint else 0
+            self._scaler = BlockScaler(n_count, matrix.shape[1] - n_count).fit(matrix)
         if self._scaler is None:
             raise RuntimeError("model is not fitted")
         return torch.from_numpy(self._scaler.transform(matrix))
@@ -374,6 +376,12 @@ class CurveModel:
         target_index = torch.tensor(
             [self.targets.index(t) for t in usable["target"]], dtype=torch.long
         )
+        # The curve has exactly two assay conditions: preincubated (tdi_drc) and direct. Every
+        # non-tdi assay -- the direct curves, the screen, and all auxiliary assays (octant,
+        # veith/tox21, chembl/sair, novartis) -- maps to the direct condition, so auxiliary
+        # rows enter without a per-assay offset of their own. Curve-with-auxiliary is therefore
+        # a different measurement-model assumption than the per-assay conditioning the graph and
+        # boosted paths apply, not the same auxiliary conditioning.
         assay_condition_index = torch.tensor(
             (usable["assay"] == "tdi_drc").to_numpy(int), dtype=torch.long
         )

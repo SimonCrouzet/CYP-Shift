@@ -235,8 +235,14 @@ class BoostedTrees:
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
-        lower = np.where(usable["is_censored"].to_numpy(bool), -1e4, lower)
+        is_censored = usable["is_censored"].to_numpy(bool)
+        lower = np.where(is_censored, -1e4, lower)
         weight = usable["weight"].to_numpy(float)
+        if self.loss in ("squared", "absolute", "expectile", "pinball"):
+            # These objectives fit toward the point ``value``, which for a censored row is the
+            # clip, not a measurement; drop those rows (weight 0, so they leave the offset and
+            # every stage's gradient). soft_threshold keeps them, reading the bound from lower.
+            weight = np.where(is_censored, 0.0, weight)
 
         # A custom objective starts boosting from zero rather than from the label mean,
         # so predictions are offset by it and the trees learn the residual.

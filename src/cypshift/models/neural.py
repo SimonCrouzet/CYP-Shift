@@ -91,6 +91,11 @@ def soft_threshold_loss(
 
 OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
 
+#: Objectives that train toward the point ``value``; a censored row has no point target for
+#: them (its value is a clip), so it is excluded. ``soft_threshold`` reads the one-sided bound
+#: from the carriers and keeps censored rows.
+_POINT_OBJECTIVES = ("squared", "absolute", "expectile", "pinball")
+
 
 def _objective(
     name: str,
@@ -428,8 +433,12 @@ class NeuralNetwork:
         descriptor after it -- physchem, mechanistic, screen_model, ionization and embedding --
         rather than physchem alone, which left the appended continuous blocks unscaled."""
         if fit:
+            # The count block is the Morgan fingerprint, which is absent when use_fingerprint is
+            # off; counting its columns then would log1p the leading dense descriptors (and turn
+            # a negative descriptor into NaN).
+            n_count = self.n_bits if self.use_fingerprint else 0
             self._scaler = BlockScaler(
-                n_count_columns=self.n_bits, n_dense_columns=molecular.shape[1] - self.n_bits
+                n_count_columns=n_count, n_dense_columns=molecular.shape[1] - n_count
             )
             self._scaler.fit(molecular)
         if self._scaler is None:
@@ -449,14 +458,22 @@ class NeuralNetwork:
 
         features, condition = self._encode(usable, usable["SMILES"].tolist(), fit=True)
         value = usable["value"].to_numpy(float)
+        is_censored = usable["is_censored"].to_numpy(bool)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
-        lower = np.where(usable["is_censored"].to_numpy(bool), -UNBOUNDED, lower)
+        lower = np.where(is_censored, -UNBOUNDED, lower)
+
+        weight = usable["weight"].to_numpy(float)
+        if self.loss in _POINT_OBJECTIVES:
+            # A two-sided point objective trains toward ``value``, which for a censored row is
+            # the clip, not a measurement; drop those rows from it (weight 0). The one-sided
+            # soft-threshold objective keeps them, reading the bound from lower/upper.
+            weight = np.where(is_censored, 0.0, weight)
 
         lower_t = torch.tensor(lower, dtype=torch.float32)
         upper_t = torch.tensor(upper, dtype=torch.float32)
         value_t = torch.tensor(value, dtype=torch.float32)
-        weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
+        weight_t = torch.tensor(weight, dtype=torch.float32)
 
         n_features = features.shape[1]
         n_cond = n_conditions(self.targets, self.assays)
