@@ -110,7 +110,8 @@ REGRESSION: dict[str, dict] = {
     "boosted_fp2048": {"features.fingerprint_bits": 2048},
     "boosted_no_physchem": {"features.use_physicochemical": False},
     "boosted_no_mechanistic": {"features.use_mechanistic": False},
-    "boosted_cond_descriptor": {"conditioning.strategy": "descriptor"},
+    # (boosted + descriptor conditioning is rejected at build time -- a tree has no trunk to
+    # modulate -- so it is not a sweepable config; only the one-hot encodings apply.)
     "boosted_cond_metadata": {"conditioning.strategy": "metadata"},
     "boosted_screen_predicted_label": {"multifidelity.screen_strategy": "predicted_label"},
     "boosted_screen_embedding": {"multifidelity.screen_strategy": "embedding"},
@@ -314,19 +315,18 @@ REGRESSION: dict[str, dict] = {
         "sources.chembl": True,
         "auxiliary.weighting": "uniform",
     },
-    # Down-weight the scored enzymes' own rows from the noisier outside assay on the best aux config.
-    "graph_octant_tox21_scored_lo": {"model.kind": "graph", **OCT_TOX, "auxiliary.scored_weight": 0.5},
-    # --- Screen weight: the single-concentration screen is on by default at weight 0.3; vary it. ---
+    # Down-weight the scored enzymes' own outside-assay rows on the best aux config.
+    "graph_octant_tox21_scored_lo": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "auxiliary.scored_weight": 0.5,
+    },
+    # --- Screen weight: on by default at 0.3; vary it. ---
     "graph_screen_weight_lo": {"model.kind": "graph", "multifidelity.screen_weight": 0.1},
     "graph_screen_weight_hi": {"model.kind": "graph", "multifidelity.screen_weight": 0.6},
-    # --- 2026-10-22 analysis-note avenues
-    #     (notes/performance_analysis_and_next_steps_2026-10-22.md), each layered on the two
-    #     graph baselines to beat: plain graph (CV 0.809) and graph_octant_tox21 (CV 0.781,
-    #     the current best). All are graph-only or graph+aux. The post-sweep calibration,
-    #     blend and analogue-correction steps (avenues 1-3) act on the OOF bundles these
-    #     write, so they are in the runbook, not here. ---
-    # Avenue 4: the screen as the response it measured, routed to a response head, rather than
-    # an isotonic pseudo-label on the pIC50 scale.
+    # --- Graph levers on the plain-graph and octant+tox21 baselines; all graph-only or
+    #     graph+aux. See notes/performance_analysis_and_next_steps_2026-10-22.md. ---
+    # Screen routed to the response head instead of the isotonic pIC50 pseudo-label.
     "graph_screen_response": {
         "model.kind": "graph",
         "multifidelity.screen_strategy": "response_head",
@@ -336,16 +336,14 @@ REGRESSION: dict[str, dict] = {
         **OCT_TOX,
         "multifidelity.screen_strategy": "response_head",
     },
-    # Avenue 6: a gated CYP2D6-specific adaptation block on the shared trunk (the middle
-    # ground between one trunk and the four separate trunks that did not help).
+    # Gated CYP2D6-specific adaptation block on the shared trunk.
     "graph_adapt_2d6": {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
     "graph_octant_tox21_adapt_2d6": {
         "model.kind": "graph",
         **OCT_TOX,
         "model.graph.adapt_target": "CYP2D6",
     },
-    # Avenue 7: a midpoint point-pull and an interval-aware ranking hinge on the dead-zone
-    # loss, each at two weights, plus the pair together on the best baseline.
+    # Point-pull and interval-aware ranking terms on the soft-threshold loss, two weights each.
     "graph_point_loss_lo": {"model.kind": "graph", "model.point_loss_weight": 0.1},
     "graph_point_loss_hi": {"model.kind": "graph", "model.point_loss_weight": 0.5},
     "graph_ranking_loss_lo": {"model.kind": "graph", "model.ranking_loss_weight": 0.1},
@@ -356,8 +354,7 @@ REGRESSION: dict[str, dict] = {
         "model.point_loss_weight": 0.3,
         "model.ranking_loss_weight": 0.3,
     },
-    # Avenue 5: Tox21 inactives as censored rows, and a per-endpoint auxiliary weight budget,
-    # on the octant+tox21 baseline where tox21's near-auxiliary rows are present to act on.
+    # Tox21 censored inactives, and a per-endpoint auxiliary weight budget, on octant+tox21.
     "graph_octant_tox21_inactives": {
         "model.kind": "graph",
         **OCT_TOX,
@@ -611,12 +608,22 @@ def run_identity() -> str:
 
 
 REV = run_identity()
+if NUM_MEMBERS:
+    # The ensemble size changes the trained model and its scores, so it namespaces the results:
+    # a CYP_MEMBERS=1 screening run and a full-member run never share a bundle or a completion
+    # key, and neither silently reuses the other's results under the same git revision.
+    REV = f"{REV}-m{NUM_MEMBERS}"
 
 #: Earlier revisions whose completed results remain valid under this one. The reorder that
 #: front-loads the untested axes changes the run queue, not any config's behaviour, so configs
 #: already finished under 9102533 are carried over rather than re-trained. Clear this tuple to
 #: force a clean single-revision sweep.
 CARRY_REVS = ("9102533",)
+#: Carried-over results are used for resume, ranking and final selection alike (so an earlier
+#: winner stays eligible, not merely skipped). They are trusted only in a family-default run:
+#: a member-count override renames REV, and the carried bundles were trained at the family
+#: default, so mixing them in would compare different ensemble sizes.
+CARRIED: tuple[str, ...] = () if NUM_MEMBERS else CARRY_REVS
 
 
 def already_done() -> set[tuple[str, str, int]]:
@@ -626,7 +633,7 @@ def already_done() -> set[tuple[str, str, int]]:
     table = pd.read_csv(RESULTS)
     if "rev" not in table.columns or "status" not in table.columns:
         return set()  # pre-schema results from an earlier code era: re-run under this one
-    ok = table[table["rev"].isin({REV, *CARRY_REVS}) & (table["status"] == "ok")]
+    ok = table[table["rev"].isin({REV, *CARRIED}) & (table["status"] == "ok")]
     return {(r.phase, r.name, int(r.seed)) for r in ok.itertuples()}
 
 
@@ -705,9 +712,14 @@ def run_phase(phase: str, configs: dict[str, dict], seeds: list[int]) -> None:
 
 
 def _completed(phase: str | None = None) -> pd.DataFrame:
-    """Successful rows at the current revision, optionally for one phase."""
+    """Successful rows at the current revision or a carried-over one, optionally for one phase.
+
+    Carried revisions are included so ranking and the final automatic submission see the
+    earlier winners that ``already_done`` skipped re-running, rather than choosing among only
+    the configs that happened to run under the current revision.
+    """
     table = pd.read_csv(RESULTS)
-    table = table[(table["rev"] == REV) & (table["status"] == "ok")].copy()
+    table = table[table["rev"].isin({REV, *CARRIED}) & (table["status"] == "ok")].copy()
     table["macro_ST_RAE"] = table["macro_ST_RAE"].astype(float)
     return table if phase is None else table[table["phase"] == phase]
 
@@ -736,10 +748,17 @@ def ranked_mcc(phase: str) -> pd.DataFrame:
 
 
 def write_submission(track: str, overrides: dict, output: Path, config_path: Path) -> None:
-    """Refit the chosen config on all training data and write its blinded-test submission."""
+    """Refit the chosen config on all training data and write its blinded-test submission.
+
+    Applies the same ``CYP_MEMBERS`` / ``CYP_WORKERS`` the sweep used, so the written ensemble
+    matches the ranked recipe rather than reverting to the family default.
+    """
     config = ExperimentConfig.load()
     for key, value in overrides.items():
         config.override(key, value)
+    config.override("model.graph.num_workers", NUM_WORKERS)
+    if NUM_MEMBERS:
+        config.override("model.n_members", NUM_MEMBERS)
     config.validate()
     config.save(config_path)
     submit(output=output, config_path=config_path, track=track)
