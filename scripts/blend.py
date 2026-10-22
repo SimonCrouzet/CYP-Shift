@@ -26,15 +26,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import nnls
+from scipy.optimize import minimize, nnls
 
 from cypshift.config import MACRO_LABEL, REGRESSION_ENDPOINTS
+from cypshift.eval.metrics import soft_threshold_rae
 from cypshift.eval.scoring import score_submission
 
 logger = logging.getLogger("blend")
 BUNDLE_ROOT = Path("data/run_bundles")
 _DIR = re.compile(r"^reg_(?P<name>.+)_seed(?P<seed>\d+)$")
-METHODS = ("equal", "nnls")
+#: ``equal`` averages; ``nnls`` least-squares to the point truth; ``st_rae`` fits the weights
+#: to the interval error the leaderboard actually scores, which is the objective the blend is
+#: meant to win on (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 2).
+METHODS = ("equal", "nnls", "st_rae")
 
 
 def latest_rev() -> str:
@@ -79,19 +83,87 @@ def rank_single(members: dict[str, pd.DataFrame]) -> pd.Series:
     return pd.Series(scores).sort_values()
 
 
-def fit_weights(stack: np.ndarray, truth: np.ndarray, method: str) -> np.ndarray:
-    """Per-endpoint member weights. ``stack`` is (compounds, members) over labelled rows."""
-    if method == "equal":
-        return np.full(stack.shape[1], 1.0 / stack.shape[1])
-    weights, _ = nnls(stack, truth)  # non-negative least squares to the truth
-    total = weights.sum()
-    return weights / total if total > 0 else np.full(stack.shape[1], 1.0 / stack.shape[1])
+def fit_weights(
+    stack: np.ndarray,
+    truth: np.ndarray,
+    method: str,
+    low: np.ndarray | None = None,
+    high: np.ndarray | None = None,
+) -> np.ndarray:
+    """Per-endpoint member weights. ``stack`` is (compounds, members) over labelled rows.
+
+    ``equal`` averages, ``nnls`` is non-negative least squares to the point truth, and
+    ``st_rae`` minimises the soft-threshold interval error directly over the simplex of
+    non-negative weights summing to one -- the metric the leaderboard scores, which the
+    squared-error fit only approximates.
+    """
+    n_members = stack.shape[1]
+    uniform = np.full(n_members, 1.0 / n_members)
+    if method == "equal" or n_members == 1:
+        return uniform
+    if method == "nnls":
+        weights, _ = nnls(stack, truth)
+        total = weights.sum()
+        return weights / total if total > 0 else uniform
+    if method == "st_rae":
+        if low is None or high is None:
+            raise ValueError("st_rae weighting needs the credible bounds")
+
+        def objective(w: np.ndarray) -> float:
+            return soft_threshold_rae(truth, stack @ w, low, high)
+
+        result = minimize(
+            objective,
+            x0=uniform,
+            method="SLSQP",
+            bounds=[(0.0, 1.0)] * n_members,
+            constraints={"type": "eq", "fun": lambda w: w.sum() - 1.0},
+        )
+        total = float(result.x.sum())
+        return result.x / total if total > 0 else uniform
+    raise ValueError(f"unknown weighting method {method!r}")
 
 
-def blend(members: dict[str, pd.DataFrame], method: str) -> tuple[pd.DataFrame, dict]:
-    """Fit per-endpoint weights; return the blended predictions, the truth frame, and weights."""
-    names = list(members)
-    truth = members[names[0]][
+def per_endpoint_best(members: dict[str, pd.DataFrame]) -> dict[str, str]:
+    """For each endpoint, the single member with the best per-endpoint out-of-fold ST-RAE.
+
+    The macro winner can hide an endpoint specialist -- CheMeleon for CYP2C9, absolute loss
+    for CYP2D6 -- so this nominates one per enzyme, which ``--per-endpoint`` then blends into
+    a specialist ensemble.
+    """
+    best = {}
+    for endpoint in REGRESSION_ENDPOINTS:
+        scores = {}
+        for name, frame in members.items():
+            y = frame[endpoint].to_numpy()
+            pred = frame[f"{endpoint}_pred"].to_numpy()
+            keep = np.isfinite(y) & np.isfinite(pred)
+            scores[name] = soft_threshold_rae(
+                y[keep],
+                pred[keep],
+                frame[f"{endpoint}_conf_low"].to_numpy()[keep],
+                frame[f"{endpoint}_conf_high"].to_numpy()[keep],
+            )
+        best[endpoint.split("_")[0]] = min(scores, key=scores.get)
+    return best
+
+
+def blend(
+    members: dict[str, pd.DataFrame],
+    method: str,
+    endpoint_candidates: dict[str, list[str]] | None = None,
+    fit_mask: np.ndarray | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Fit per-endpoint weights; return the blended predictions, the truth frame, and weights.
+
+    ``endpoint_candidates`` restricts which members are eligible on a given enzyme (so one
+    endpoint can be served by a specialist subset); members not listed get weight zero there.
+    ``fit_mask`` (a boolean over the reference row order) restricts the rows the weights are
+    *fit* on, so they can be scored on the held-out complement rather than the data that fit
+    them -- the note's requirement that weights be assessed off the fitting data.
+    """
+    all_names = list(members)
+    truth = members[all_names[0]][
         [
             "Molecule_Name",
             *[c for e in REGRESSION_ENDPOINTS for c in (e, f"{e}_conf_low", f"{e}_conf_high")],
@@ -100,7 +172,9 @@ def blend(members: dict[str, pd.DataFrame], method: str) -> tuple[pd.DataFrame, 
     predictions = truth[["Molecule_Name"]].copy()
     weights = {}
     for endpoint in REGRESSION_ENDPOINTS:
-        # Align every member's prediction to the reference row order.
+        enzyme = endpoint.split("_")[0]
+        names = (endpoint_candidates or {}).get(enzyme, all_names)
+        # Align every candidate member's prediction to the reference row order.
         preds = np.column_stack(
             [
                 members[n]
@@ -111,13 +185,52 @@ def blend(members: dict[str, pd.DataFrame], method: str) -> tuple[pd.DataFrame, 
             ]
         )
         y = truth[endpoint].to_numpy()
+        low = truth[f"{endpoint}_conf_low"].to_numpy()
+        high = truth[f"{endpoint}_conf_high"].to_numpy()
         labelled = np.isfinite(y)
-        w = fit_weights(preds[labelled], y[labelled], method)
-        weights[endpoint.split("_")[0]] = {
-            n: round(float(wi), 3) for n, wi in zip(names, w, strict=False)
-        }
+        fit_rows = labelled if fit_mask is None else (labelled & fit_mask)
+        if not fit_rows.any():
+            # A sparse endpoint can be emptied by the fit/score split; fall back to all its
+            # labelled rows rather than failing to fit a weight for it.
+            fit_rows = labelled
+        w = fit_weights(preds[fit_rows], y[fit_rows], method, low[fit_rows], high[fit_rows])
+        weights[enzyme] = {n: round(float(wi), 3) for n, wi in zip(names, w, strict=False)}
         predictions[endpoint] = preds @ w
     return predictions, truth, weights
+
+
+def scaffold_fit_mask(
+    names: pd.Series, directory: Path, holdout_frac: float, seed: int
+) -> np.ndarray:
+    """A boolean over ``names`` marking rows used to *fit* the weights, grouped by scaffold.
+
+    Whole Bemis-Murcko scaffolds go to the fit or the score side together, so an analog
+    series never straddles the two and the held-out score is not flattered by a near-duplicate
+    whose weight was fit in-sample. SMILES come from the challenge training set, keyed by
+    Molecule_Name.
+    """
+    from cypshift.data.challenge import load
+    from cypshift.data.splits import murcko_scaffold
+
+    smiles_by_name = load("inhibition", directory).set_index("Molecule_Name")["SMILES"]
+    scaffolds = np.array(
+        [murcko_scaffold(smiles_by_name.loc[name]) for name in names], dtype=object
+    )
+    rng = np.random.default_rng(seed)
+    unique = list(dict.fromkeys(scaffolds))
+    rng.shuffle(unique)
+    score = np.zeros(len(names), dtype=bool)
+    target = int(round(holdout_frac * len(names)))
+    for scaffold in unique:
+        if score.sum() >= target:
+            break
+        score |= scaffolds == scaffold
+    logger.info(
+        "fit/score split: %d fit, %d score rows (scaffold-grouped)",
+        int((~score).sum()),
+        int(score.sum()),
+    )
+    return ~score
 
 
 def main() -> None:
@@ -133,9 +246,32 @@ def main() -> None:
         help="Blend the single best model from each family (graph/boosted/tfm/neural/curve) -- "
         "architecturally diverse members, which the challenge write-ups found beat more of a kind.",
     )
+    parser.add_argument(
+        "--per-endpoint",
+        action="store_true",
+        help="Give each endpoint the single member with the best per-endpoint OOF ST-RAE -- an "
+        "endpoint-specialist blend, rather than one macro winner for all four.",
+    )
+    parser.add_argument(
+        "--endpoint-members",
+        default=None,
+        help="Restrict the candidate members per endpoint, e.g. "
+        "'CYP2C9=graph_chemeleon|graph,CYP2D6=graph_abs'. Endpoints left out use every member.",
+    )
     # Equal-weight by default: fitting weights (nnls) overfits the small out-of-fold set and
     # the ADMET-challenge write-ups repeatedly found equal averaging beats stacking.
     parser.add_argument("--method", choices=METHODS, default="equal")
+    parser.add_argument(
+        "--eval-holdout-frac",
+        type=float,
+        default=0.0,
+        help="Fit the weights on a scaffold-grouped fraction of the OOF and SCORE on the held-out "
+        "complement, so the blend is assessed off the data its weights were fit on. 0 scores in "
+        "sample (the mild-stacking default).",
+    )
+    parser.add_argument(
+        "--directory", type=Path, default=Path("data/raw"), help="Challenge data dir."
+    )
     parser.add_argument(
         "--submissions",
         default=None,
@@ -147,7 +283,21 @@ def main() -> None:
 
     available = load_members(rev, arguments.seed)
     singles = rank_single(available)
-    if arguments.members:
+    endpoint_candidates: dict[str, list[str]] | None = None
+    if arguments.per_endpoint:
+        best = per_endpoint_best(available)
+        endpoint_candidates = {enzyme: [name] for enzyme, name in best.items()}
+        chosen = list(dict.fromkeys(best.values()))
+    elif arguments.endpoint_members:
+        endpoint_candidates = {}
+        for pair in arguments.endpoint_members.split(","):
+            enzyme, _, spec = pair.partition("=")
+            endpoint_candidates[enzyme.strip()] = [m.strip() for m in spec.split("|") if m.strip()]
+        chosen = list(dict.fromkeys(m for names in endpoint_candidates.values() for m in names))
+        missing = [m for m in chosen if m not in available]
+        if missing:
+            raise SystemExit(f"no bundle for: {missing}; have {list(available)[:10]}...")
+    elif arguments.members:
         chosen = [m.strip() for m in arguments.members.split(",")]
         missing = [m for m in chosen if m not in available]
         if missing:
@@ -165,10 +315,23 @@ def main() -> None:
     elif arguments.top_k:
         chosen = list(singles.head(arguments.top_k).index)
     else:
-        raise SystemExit("pass --members, --top-k, or --per-family")
+        raise SystemExit(
+            "pass --members, --top-k, --per-family, --per-endpoint, or --endpoint-members"
+        )
     members = {n: available[n] for n in chosen}
 
-    predictions, truth, weights = blend(members, arguments.method)
+    fit_mask = None
+    if arguments.eval_holdout_frac > 0:
+        reference_names = members[chosen[0]]["Molecule_Name"]
+        fit_mask = scaffold_fit_mask(
+            reference_names, arguments.directory, arguments.eval_holdout_frac, arguments.seed
+        )
+    predictions, truth, weights = blend(members, arguments.method, endpoint_candidates, fit_mask)
+    if fit_mask is not None:
+        # Score only the held-out rows, which the weights never saw.
+        held = ~fit_mask
+        truth = truth.loc[held]
+        predictions = predictions.loc[held]
     scores = score_submission(predictions, truth)
     best_single = singles[chosen].min()
     best_name = singles[chosen].idxmin()
