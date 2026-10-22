@@ -172,6 +172,12 @@ class TestCapabilityContract:
                 "model.graph.separate_trunks": True,
                 "model.graph.adapt_target": "CYP2D6",
             },
+            # The point/ranking terms layer onto the soft-threshold loss only.
+            {
+                "model.kind": "graph",
+                "model.objective": "squared",
+                "model.point_loss_weight": 0.5,
+            },
         ],
     )
     def test_silently_ignored_combinations_are_rejected(self, overrides):
