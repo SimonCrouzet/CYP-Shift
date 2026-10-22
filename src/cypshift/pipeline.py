@@ -366,9 +366,39 @@ def assemble_training_data(
         if "source" not in auxiliary.columns:
             auxiliary = auxiliary.assign(source="_pooled")
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
+    if config.training.inverse_variance_weighting:
+        observations = weight_by_inverse_variance(observations)
     if config.training.macro_balance:
         observations = balance_macro_weights(observations)
     return observations, screen_model
+
+
+def weight_by_inverse_variance(observations: pd.DataFrame, floor: float = 0.1) -> pd.DataFrame:
+    """Scale each two-sided measurement's weight by the inverse of its interval variance.
+
+    A measurement's credible-interval width is a precision proxy: a tight band is a confident
+    label and should pull harder than a wide one. The factor is ``1 / max(width/2, floor)**2``
+    (``floor`` caps the influence of an implausibly tight band), then renormalised so the total
+    weight of the affected rows is unchanged -- this redistributes weight by precision, it does
+    not inflate it. Censored (one-sided) rows and response-task rows, which have no two-sided
+    interval, are left untouched.
+    """
+    out = observations.copy()
+    low = out["conf_low"].to_numpy(float)
+    high = out["conf_high"].to_numpy(float)
+    width = high - low
+    censored = out["is_censored"].to_numpy(bool) if "is_censored" in out.columns else False
+    two_sided = np.isfinite(width) & (width >= 0) & ~np.asarray(censored)
+    if not two_sided.any():
+        return out
+    factor = 1.0 / np.maximum(width[two_sided] / 2.0, floor) ** 2
+    weight = out.loc[two_sided, "weight"].to_numpy(float)
+    rescaled = weight * factor
+    total = rescaled.sum()
+    if total > 0:
+        rescaled *= weight.sum() / total  # preserve the affected rows' total weight mass
+    out.loc[two_sided, "weight"] = rescaled
+    return out
 
 
 def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:

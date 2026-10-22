@@ -6,7 +6,12 @@ import pytest
 
 from cypshift.config import ISOFORMS
 from cypshift.experiment import ExperimentConfig
-from cypshift.pipeline import assemble_training_data, build_model, metrics_for_tracking
+from cypshift.pipeline import (
+    assemble_training_data,
+    build_model,
+    metrics_for_tracking,
+    weight_by_inverse_variance,
+)
 
 
 def _retained(n=30):
@@ -15,6 +20,26 @@ def _retained(n=30):
     for isoform in ISOFORMS:
         frame[f"{isoform}_pIC50_direct_inhibition"] = rng.uniform(3, 7, n)
     return pd.DataFrame(frame)
+
+
+def test_inverse_variance_weighting_upweights_tight_bands_and_preserves_the_mass():
+    """Tier C step 6: a narrower credible interval gets more weight than a wider one, censored
+    and response rows are left alone, and the total weight of the affected rows is preserved."""
+    obs = pd.DataFrame(
+        {
+            "value": [5.0, 5.0, 5.0, 0.3],
+            "conf_low": [4.9, 4.0, -1e4, np.nan],  # tight, wide, censored(one-sided), response
+            "conf_high": [5.1, 6.0, 5.2, np.nan],
+            "is_censored": [False, False, True, False],
+            "weight": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    out = weight_by_inverse_variance(obs)
+    assert out.loc[0, "weight"] > out.loc[1, "weight"]  # tight band pulls harder than the wide one
+    assert out.loc[2, "weight"] == 1.0  # censored: untouched
+    assert out.loc[3, "weight"] == 1.0  # response row (no two-sided interval): untouched
+    two_sided = [0, 1]  # the rows the reweighting touched
+    assert out.loc[two_sided, "weight"].sum() == pytest.approx(obs.loc[two_sided, "weight"].sum())
 
 
 def test_every_declared_model_kind_can_be_built():

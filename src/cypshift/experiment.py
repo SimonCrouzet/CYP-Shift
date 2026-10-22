@@ -498,6 +498,12 @@ class TrainingConfig:
     #: data-rich endpoints dominate a pooled fit. Effective now that the boosted objective
     #: applies row weights. Swept, off by default.
     macro_balance: bool = False
+    #: Weight each two-sided measurement by the inverse of its credible-interval variance, so a
+    #: tightly-measured label counts for more than a noisy one. Distinct from
+    #: ``auxiliary.weighting`` (enzyme relatedness): this is measurement precision. Redistributes
+    #: weight within the labelled rows (the total mass is preserved); censored and response rows
+    #: are left unchanged. See pipeline.weight_by_inverse_variance. Swept, off by default.
+    inverse_variance_weighting: bool = False
 
     def effective_stages(self) -> list[Stage]:
         """The curriculum to run: the named preset if set, otherwise the explicit stages."""
