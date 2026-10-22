@@ -374,6 +374,11 @@ class GraphConfig:
     #: Hidden width of the per-isoform adaptation block; ignored when ``adapt_target`` is
     #: ``"none"``.
     adapt_hidden: int = 64
+    #: Give every target its own value-task output head on the shared message-passing encoder
+    #: (shared trunk, independent output heads), rather than one shared readout conditioned by
+    #: the target one-hot. Distinct from ``separate_trunks`` (a separate encoder per isoform) and
+    #: from the adapter (one shared head plus a gated residual); rejected with either. Swept.
+    per_target_heads: bool = False
     #: Hidden width of the readout FFN, set independently of the message-passing width
     #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
     #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
@@ -638,6 +643,11 @@ class ExperimentConfig:
                     "model.graph.adapt_target is wired only into the graph model, not "
                     f"{self.model.kind!r}"
                 )
+            if self.model.graph.per_target_heads:
+                raise ValueError(
+                    "model.graph.per_target_heads is wired only into the graph model, not "
+                    f"{self.model.kind!r}"
+                )
         if self.model.kind == "graph":
             if self.features.molecular_embedding != "none":
                 raise ValueError(
@@ -673,6 +683,20 @@ class ExperimentConfig:
                 raise ValueError(
                     "model.graph.adapt_target needs the shared trunk; it is meaningless with "
                     "model.graph.separate_trunks=True"
+                )
+            if self.model.graph.per_target_heads and self.model.graph.separate_trunks:
+                # Both give each target its own value readout; separate_trunks does it with
+                # separate encoders, per_target_heads with separate heads on a shared one.
+                raise ValueError(
+                    "model.graph.per_target_heads needs the shared trunk; it is redundant with "
+                    "model.graph.separate_trunks=True"
+                )
+            if self.model.graph.per_target_heads and self.model.graph.adapt_target != "none":
+                # Both reshape the value readout on the shared trunk; running both would stack an
+                # adapter on top of per-target heads, crediting a run with two readout changes.
+                raise ValueError(
+                    "model.graph.per_target_heads and model.graph.adapt_target are alternative "
+                    "shared-trunk readouts; enable only one"
                 )
             point_or_rank = self.model.point_loss_weight > 0 or self.model.ranking_loss_weight > 0
             if point_or_rank and self.model.objective != "soft_threshold":

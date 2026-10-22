@@ -141,6 +141,38 @@ def test_several_response_assays_each_get_their_own_label_column_and_scale():
     assert weights.tolist() == [1.0, 0.0, 0.0, 1.0, 1.0]
 
 
+def test_per_target_heads_builds_one_value_head_per_target_on_a_shared_encoder():
+    """Tier C step 4: per_target_heads gives every target its own value-task output head on the
+    one shared message-passing encoder."""
+    from cypshift.models.graph import _PerTargetHeadsRegressionFFN
+
+    net = GraphNetwork(per_target_heads=True)
+    mpnn = net._build()
+    assert isinstance(mpnn.predictor, _PerTargetHeadsRegressionFFN)
+    assert len(mpnn.predictor.heads) == len(net.targets)  # one head per target
+
+
+def test_per_target_heads_selects_the_row_s_own_head_by_the_target_one_hot():
+    """The value prediction is the active target's head output; a different one-hot selects a
+    different head, while the carrier/response columns come from the shared ffn."""
+    net = GraphNetwork(per_target_heads=True)
+    predictor = net._build().predictor
+    offset = net._build().message_passing.output_dim
+    # Give the two heads distinct constant outputs so the selection is observable.
+    with torch.no_grad():
+        for index, head in enumerate(predictor.heads):
+            torch.nn.init.zeros_(head[0].weight)
+            torch.nn.init.zeros_(head[0].bias)
+            torch.nn.init.zeros_(head[2].weight)
+            torch.nn.init.constant_(head[2].bias, float(index + 1))
+    z = torch.zeros(2, predictor.input_dim)
+    z[0, offset + 0] = 1.0  # row 0 -> target 0's head (bias 1)
+    z[1, offset + 2] = 1.0  # row 1 -> target 2's head (bias 3)
+    value = predictor(z)[:, VALUE]
+    assert value[0].item() == pytest.approx(1.0)
+    assert value[1].item() == pytest.approx(3.0)
+
+
 def test_adapter_correction_is_gated_to_its_target_row():
     """The per-isoform adapter changes only the value task of its own target's rows."""
     predictor = _TargetAdaptedRegressionFFN(

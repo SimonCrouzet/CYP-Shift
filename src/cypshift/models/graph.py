@@ -333,6 +333,54 @@ class _TargetAdaptedRegressionFFN(cpnn.RegressionFFN):
     train_step = forward
 
 
+class _PerTargetHeadsRegressionFFN(cpnn.RegressionFFN):
+    """RegressionFFN with an independent value-task output head per target on the shared trunk.
+
+    The shared ``ffn`` still produces the carrier and response columns, but the value task is
+    read from a per-target head selected by that row's target one-hot: each target gets its own
+    small FFN on the shared encoder+conditioning ``Z``, so the readout is target-specific while
+    the message-passing encoder stays shared. Distinct from ``separate_trunks`` (a separate
+    encoder per isoform) and the adapter (one shared value head plus a gated residual); this is
+    the shared-trunk, independent-output-head arrangement. The target one-hot is the first
+    conditioning block, so it sits at ``target_offset : target_offset + n_targets`` in ``Z``.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_offset: int,
+        n_targets: int,
+        head_hidden: int = 128,
+        value_index: int = VALUE,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.target_offset = target_offset
+        self.n_targets = n_targets
+        self.value_index = value_index
+        self.heads = nn.ModuleList(
+            nn.Sequential(
+                nn.Linear(self.input_dim, head_hidden),
+                nn.ReLU(),
+                nn.Linear(head_hidden, 1),
+            )
+            for _ in range(n_targets)
+        )
+
+    def forward(self, Z: torch.Tensor) -> torch.Tensor:  # noqa: N803 -- chemprop's Predictor API
+        base = self.ffn(Z)
+        gates = Z[:, self.target_offset : self.target_offset + self.n_targets]  # (batch, targets)
+        per_target = torch.cat([head(Z) for head in self.heads], dim=1)  # (batch, targets)
+        # Each row's target one-hot selects its own head's value; the carrier/response columns
+        # keep the shared ffn's output.
+        value = (gates * per_target).sum(dim=1)
+        replaced = base.clone()
+        replaced[:, self.value_index] = value
+        return self.output_transform(replaced)
+
+    train_step = forward
+
+
 class GraphNetwork:
     """Chemprop D-MPNN conditioned on target and assay through its readout."""
 
@@ -363,6 +411,7 @@ class GraphNetwork:
         source_heads: bool = False,
         adapt_target: str = "none",
         adapt_hidden: int = 64,
+        per_target_heads: bool = False,
         ffn_hidden: int = 0,
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
@@ -410,6 +459,9 @@ class GraphNetwork:
         #: One scored isoform to give a gated, isoform-specific adaptation block, or "none".
         self.adapt_target = adapt_target
         self.adapt_hidden = adapt_hidden
+        #: Give every target its own value-task output head on the shared encoder (shared trunk,
+        #: independent heads), rather than one shared readout. Mutually exclusive with the adapter.
+        self.per_target_heads = per_target_heads
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
@@ -588,6 +640,18 @@ class GraphNetwork:
                 adapt_hidden=self.adapt_hidden,
                 target_offset=message_passing.output_dim,
                 target_index=self.targets.index(self.adapt_target),
+                n_tasks=self._n_label,
+                input_dim=input_dim,
+                criterion=criterion,
+                dropout=self.dropout,
+                **ffn_kwargs,
+            )
+        elif self.per_target_heads:
+            # Shared encoder, one value-task output head per target, gated by the target one-hot
+            # (the first conditioning block, placed right after the encoder output).
+            predictor = _PerTargetHeadsRegressionFFN(
+                target_offset=message_passing.output_dim,
+                n_targets=len(self.targets),
                 n_tasks=self._n_label,
                 input_dim=input_dim,
                 criterion=criterion,

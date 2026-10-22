@@ -168,10 +168,21 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "model.ranking_loss_weight": 0.5},
             {"model.kind": "boosted", "model.graph.adapt_target": "CYP2D6"},
             {"model.kind": "boosted", "multifidelity.screen_strategy": "response_head"},
+            {"model.kind": "boosted", "model.graph.per_target_heads": True},
             {
                 "model.kind": "graph",
                 "model.graph.separate_trunks": True,
                 "model.graph.adapt_target": "CYP2D6",
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.separate_trunks": True,
+                "model.graph.per_target_heads": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.adapt_target": "CYP2D6",
+                "model.graph.per_target_heads": True,
             },
             # The point/ranking terms layer onto the soft-threshold loss only.
             {
@@ -201,6 +212,7 @@ class TestCapabilityContract:
                 "multifidelity.screen_strategy": "response_head",
             },
             {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
+            {"model.kind": "graph", "model.graph.per_target_heads": True},
             {
                 "model.kind": "graph",
                 "model.point_loss_weight": 0.5,
