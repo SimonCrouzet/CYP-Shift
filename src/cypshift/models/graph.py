@@ -70,6 +70,12 @@ logger = logging.getLogger(__name__)
 VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
 
+#: Objectives whose value-task loss is a two-sided point penalty. A censored (one-sided) row
+#: has no single value for them to train toward -- its label is "at most this" -- so its point
+#: target is masked out under these, unlike the soft-threshold loss, whose dead-zone reads the
+#: one-sided bound from the carriers and so keeps the row.
+POINT_OBJECTIVES = ("absolute", "squared", "expectile", "pinball")
+
 #: A censored row carries ``lower = -1e4`` before standardisation (see ``_datapoints``), so
 #: after standardisation its LOWER carrier sits thousands of units below any real bound. The
 #: point and ranking augmentations use this to tell a one-sided censored reading from a real
@@ -119,12 +125,9 @@ class SoftThresholdLoss(ChempropMetric):
     two (the other is NaN upstream, so chemprop's finiteness mask zeroes it), so the losses
     never mix.
 
-    ``point_weight`` adds a small squared pull toward the fitted midpoint on reliable
-    (uncensored, two-sided) rows. The dead-zone loss is flat anywhere inside a credible
-    interval, so a prediction can drift freely within a wide band and feel no gradient; the
-    point term restores one without disturbing the metric the leaderboard scores, and it is
-    switched off (``0.0``) by default. Censored (one-sided) rows are excluded: their "value"
-    is a clipped endpoint, not a measured midpoint.
+    ``point_weight`` adds ``point_weight * (pred - midpoint)**2`` to the value-task loss on
+    uncensored rows (midpoint = (lower + upper) / 2); ``0.0`` disables it. Censored rows (lower
+    at the ``_CENSORED_LOWER_SENTINEL`` floor) are excluded from the point term.
     """
 
     def __init__(self, point_weight: float = 0.0, **kwargs: object) -> None:
@@ -147,9 +150,9 @@ class SoftThresholdLoss(ChempropMetric):
         if self.point_weight > 0.0:
             reliable = targets[:, LOWER] > _CENSORED_LOWER_SENTINEL
             midpoint = 0.5 * (targets[:, LOWER] + targets[:, UPPER])
-            loss[:, VALUE] = loss[:, VALUE] + self.point_weight * reliable * (
-                prediction - midpoint
-            ) ** 2
+            loss[:, VALUE] = (
+                loss[:, VALUE] + self.point_weight * reliable * (prediction - midpoint) ** 2
+            )
         if targets.shape[1] > RESPONSE:
             loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
         return loss
@@ -158,18 +161,16 @@ class SoftThresholdLoss(ChempropMetric):
 class RankingSoftThresholdLoss(SoftThresholdLoss):
     """Soft-threshold loss plus an interval-aware pairwise ranking hinge within each batch.
 
-    The dead-zone loss scores every compound independently and is blind to order: it cannot
-    tell that a near-duplicate pair was ranked the wrong way round across an activity cliff.
-    This adds a margin hinge over the pairs in a batch whose credible intervals do *not*
-    overlap -- the only pairs for which a true order is established -- penalising predictions
-    that order such a pair against its intervals. It is an additive regulariser on the value
-    task, scaled by ``ranking_weight`` (``0.0`` recovers the plain loss), and the last lever
-    the analysis note reaches for.
+    Over the value-task rows of a batch whose credible intervals are disjoint (the pairs with
+    a defined order), adds ``max(0, margin - gap)`` where ``gap`` is the predicted difference
+    in the intervals' order, weighted by the weaker row's observation weight. Scaled by
+    ``ranking_weight`` (``0.0`` recovers the plain loss).
 
-    The term is added in :meth:`update` rather than through the per-row loss tensor, because a
-    pairwise penalty is not a per-row quantity. It is normalised to a per-pair mean and then
-    put on the same scale as the summed per-row loss, so ``ranking_weight`` reads as a
-    relative weight regardless of batch size.
+    The term is added in :meth:`update`, not through the per-row loss tensor, because a
+    pairwise penalty is not a per-row quantity. It is normalised to a weighted per-pair mean
+    and multiplied by the eligible-row count, matching the scale of the summed per-row loss
+    that ``compute()`` divides by ``num_samples``, so ``ranking_weight`` is batch-size
+    independent.
     """
 
     def __init__(
@@ -192,28 +193,42 @@ class RankingSoftThresholdLoss(SoftThresholdLoss):
             return
         # chemprop passes the finiteness mask separately and has already replaced NaN targets
         # with zeros, so the value rows are mask[:, VALUE], not targets.isfinite(). Only rows
-        # with a real two-sided interval (not a censored one-sided floor) can be ordered.
+        # with a real two-sided interval (not a censored one-sided floor) can be ordered, and
+        # the ranking term honours the observation weights the rest of the loss does: a
+        # zero-weight row (a dropped source, a balanced-away endpoint) takes no part, and each
+        # pair counts by its weaker member's weight. Pairs are every disjoint-interval pair in
+        # the batch regardless of target/assay; restricting them to same-endpoint neighbours is
+        # a separate modelling choice the loss has no row identity to make here.
         if mask is None:
             return
-        value_mask = mask[:, VALUE] & (targets[:, LOWER] > _CENSORED_LOWER_SENTINEL)
+        row_weight = (
+            torch.ones(targets.shape[0], device=targets.device)
+            if weights is None
+            else weights.reshape(-1).to(targets.device)
+        )
+        value_mask = (
+            mask[:, VALUE] & (targets[:, LOWER] > _CENSORED_LOWER_SENTINEL) & (row_weight > 0.0)
+        )
         if int(value_mask.sum()) < 2:
             return
         pred = preds[value_mask, VALUE]
         lower = targets[value_mask, LOWER]
         upper = targets[value_mask, UPPER]
+        weight = row_weight[value_mask]
         # Pair (i, j) is ordered i<j exactly where upper_i < lower_j (the intervals are
-        # disjoint and i sits below j). Penalise when the predicted gap fails to clear the
-        # margin in that direction.
-        ordered = upper.unsqueeze(1) < lower.unsqueeze(0)  # (i, j): i strictly below j
-        n_pairs = int(ordered.sum())
-        if n_pairs == 0:
+        # disjoint and i sits below j), and its weight is the weaker row's. Penalise when the
+        # predicted gap fails to clear the margin in that direction.
+        ordered = (upper.unsqueeze(1) < lower.unsqueeze(0)).float()  # (i, j): i strictly below j
+        pair_weight = torch.minimum(weight.unsqueeze(1), weight.unsqueeze(0)) * ordered
+        total_pair_weight = pair_weight.sum()
+        if float(total_pair_weight) == 0.0:
             return
         gap = pred.unsqueeze(0) - pred.unsqueeze(1)  # (i, j): pred_j - pred_i
         hinge = torch.clamp(self.ranking_margin - gap, min=0.0)
-        penalty = (hinge * ordered).sum() / n_pairs
-        # Put the per-pair mean on the scale of the summed per-row loss compute() divides by
-        # num_samples, so ranking_weight stays a relative weight independent of batch size.
-        # Accumulate in place, matching the base class, so the metric's state buffer is kept.
+        penalty = (hinge * pair_weight).sum() / total_pair_weight
+        # Put the weighted per-pair mean on the scale of the summed per-row loss compute()
+        # divides by num_samples, so ranking_weight stays a relative weight independent of
+        # batch size. Accumulate in place, matching the base class, to keep the state buffer.
         self.total_loss += self.ranking_weight * penalty * value_mask.sum()
 
 
@@ -268,16 +283,13 @@ class PinballLoss(_AsymmetricValueLoss):
 class _TargetAdaptedRegressionFFN(cpnn.RegressionFFN):
     """RegressionFFN with a gated, isoform-specific residual on the value task.
 
-    One scored isoform gets a small MLP over the same input the shared readout sees (the
-    pooled graph representation concatenated with the conditioning vector), and its output is
-    added to the shared value prediction. The addition is gated by that isoform's target
-    one-hot -- which sits at a known offset in the input, since ``fingerprint`` concatenates
-    the conditioning after the encoder output and the target block comes first -- so the
-    correction is identically zero for every other isoform and for the auxiliary enzymes. The
-    encoder and the rest of the readout stay shared, which is the point: cross-isoform
-    transfer is preserved while one isoform (CYP2D6, whose potency rides a different axis)
-    gets capacity of its own. The adapter's last layer is initialised to zero, so training
-    starts from the unadapted readout and the correction has to earn itself.
+    An MLP over the predictor input ``Z`` (the pooled graph representation concatenated with
+    the conditioning vector) outputs a scalar added to the shared value prediction, multiplied
+    by the gate ``Z[:, target_offset + target_index]`` -- that isoform's target one-hot, which
+    ``fingerprint`` places at a fixed offset after the encoder output (the target block is the
+    first conditioning block). The gate is 0 for every other isoform and the auxiliary enzymes,
+    so their output is unchanged; the encoder and the rest of the readout are shared. The
+    adapter's last layer is zero-initialised, so it starts as a no-op.
     """
 
     def __init__(
@@ -482,11 +494,18 @@ class GraphNetwork:
                     upper = (
                         float(record["conf_high"]) if np.isfinite(record["conf_high"]) else value
                     )
-                    if bool(record.get("is_censored", False)):
+                    censored = bool(record.get("is_censored", False))
+                    if censored:
                         lower = -1e4
                     y[VALUE : UPPER + 1] = (
                         np.array([value, lower, upper], dtype=float) - self._centre
                     ) / self._spread
+                    if censored and self.loss in POINT_OBJECTIVES:
+                        # A two-sided point objective has no value to train a censored row
+                        # toward; NaN masks its value task so it is dropped rather than pulled
+                        # to the clip. The soft-threshold loss keeps it (its dead-zone reads the
+                        # one-sided bound from the carriers).
+                        y[VALUE] = np.nan
                 weight = float(record["weight"])
             else:
                 y = np.zeros(self._n_label)

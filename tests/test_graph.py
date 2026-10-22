@@ -7,6 +7,8 @@ encoder loads with the right shape, and an absent cache fails loudly rather than
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -170,3 +172,44 @@ def test_ranking_term_penalises_a_wrongly_ordered_disjoint_pair():
     assert float(ranked(right, targets, mask)) == pytest.approx(
         float(base(right, targets, mask)), abs=1e-6
     )
+
+
+def test_ranking_term_ignores_zero_weight_rows():
+    """F04 guard: a wrongly ordered pair of zero-weight rows creates no ranking penalty."""
+    weights = torch.tensor([[1.0, 0.0, 0.0]])
+    targets = torch.zeros(2, 3)
+    targets[0] = torch.tensor([0.05, 0.0, 0.1])
+    targets[1] = torch.tensor([1.05, 1.0, 1.1])
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    wrong = torch.zeros(2, 3)
+    wrong[:, VALUE] = torch.tensor([1.05, 0.05])  # wrong order
+    ranked = RankingSoftThresholdLoss(ranking_weight=1.0, ranking_margin=0.5, task_weights=weights)
+    base = SoftThresholdLoss(task_weights=weights)
+    zero = torch.zeros(2)
+    # With both rows at weight zero the ranking term must vanish (no gradient from nothing).
+    assert float(ranked(wrong, targets, mask, zero)) == pytest.approx(
+        float(base(wrong, targets, mask, zero)), abs=1e-6
+    )
+
+
+def test_censored_point_target_is_masked_under_point_objectives_only():
+    """F07 guard: a censored row keeps its value for the soft-threshold dead-zone but is NaN
+    (masked) for a two-sided point objective, which has no value to train it toward."""
+    frame = pd.DataFrame(
+        {
+            "Molecule_Name": ["c0"],
+            "SMILES": ["CCO"],
+            "target": ["CYP1A2"],
+            "assay": ["direct_inhibition_drc"],
+            "value": [4.0],
+            "conf_low": [4.0],
+            "conf_high": [4.0],
+            "weight": [1.0],
+            "is_censored": [True],
+            "source": ["challenge"],
+        }
+    )
+    soft = GraphNetwork(loss="soft_threshold")._datapoints(frame, labelled=True)
+    point = GraphNetwork(loss="absolute")._datapoints(frame, labelled=True)
+    assert np.isfinite(soft[0].y[VALUE])  # dead-zone keeps the one-sided bound
+    assert np.isnan(point[0].y[VALUE])  # the point objective drops the censored row
