@@ -52,6 +52,15 @@ Validate a calibration or correction on the **analogue view** before trusting it
 - **CYP2D6 structure** — the Boltz cofold cache is near-empty. A GPU precompute to populate it gives the heme-coordination features real values. Note that `sources.structure` is currently wired (and validated) only for the boosted model — `validate()` rejects it for the graph — so there is no `model.graph.use_structure` field today; enabling a graph structure experiment would need both the cache and lifting that restriction. This is the untried structural lever for the weak endpoint.
 - A heavy new family (Uni-Mol, graph transformer) is deprioritized: the research is consistent that family barely matters at this data scale, and the winners' edge was proprietary data.
 
+## Entrypoints use different validation schemes
+
+Do not compare numbers across these — they are not the same split:
+
+- `scripts/night_run.py` → `run_cv()`: stratified scaffold-grouped **5-fold CV** (every training compound predicted once out of fold). This is the cluster sweep and the numbers in `night_results.csv`.
+- `scripts/run_experiment.py`, `scripts/overnight_sweep.py`, and `pipeline.run()`: a single **similarity-matched holdout**, not CV.
+- `scripts/analogue_validation.py`: a single **analogue holdout** (retained anchors, their neighbours held out).
+- `scripts/postprocess_validation.py`: a **nested** outer holdout with inner-only calibration/correction fits — the only path that scores the postprocessors independently.
+
 ## Reading the CV (from 4 submissions so far)
 
 - scaffold-CV ranks configs in the right order (it correctly put graph below boosted, octant+tox21 below plain graph, both confirmed live), but is ~0.12–0.18 optimistic in absolute ST-RAE — never read the CV number as a live score.
