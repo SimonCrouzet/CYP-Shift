@@ -11,6 +11,7 @@ from cypshift.experiment import (
     CURVE_CONDITIONING,
     SCREEN_STRATEGIES,
     ExperimentConfig,
+    Stage,
 )
 
 OBSERVATIONS = pd.DataFrame(
@@ -203,3 +204,29 @@ class TestCapabilityContract:
             for key, value in overrides.items():
                 config.override(key, value)
             config.validate()  # no raise
+
+    @pytest.mark.parametrize(
+        "stage",
+        [
+            Stage(freeze_trunk=True),
+            Stage(epochs=5),
+            Stage(lr=1e-4),
+            Stage(assays=("direct_inhibition_drc",)),
+            Stage(data_spaces=("challenge",)),
+        ],
+    )
+    def test_graph_rejects_a_non_default_single_training_stage(self, stage):
+        # The graph factory never applies per-stage settings, so a single non-default stage
+        # would silently do nothing; validation rejects it rather than crediting a run with a
+        # curriculum it never ran.
+        config = ExperimentConfig.load()
+        config.override("model.kind", "graph")
+        config.training.stages = [stage]
+        with pytest.raises(ValueError, match="per-stage training settings"):
+            config.validate()
+
+    def test_graph_accepts_the_default_single_stage(self):
+        config = ExperimentConfig.load()
+        config.override("model.kind", "graph")
+        config.training.stages = [Stage()]
+        config.validate()  # the trivial pooled stage is what the graph actually runs
