@@ -19,6 +19,7 @@ from cypshift.models.curve import (
     CurveModel,
     CurveNetwork,
     assay_condition_index,
+    build_curve_trunk,
     inhibition_at,
 )
 
@@ -32,6 +33,32 @@ def test_screen_maps_to_the_preincubated_curve_condition():
     )
     assert assay_condition_index(assays).tolist() == [0, 1, 1, 0]
     assert ASSAY_CONDITIONS[1] == "preincubated"  # index 1 is the preincubated arm
+
+
+def test_curve_backbone_is_pluggable_and_the_head_reads_it():
+    """Follow-up B: an injected trunk (any features->width backbone) feeds the dose-response head
+    unchanged; the output shape is still (batch, targets, conditions, params)."""
+    n_features, width = 12, 7
+    trunk = torch.nn.Sequential(torch.nn.Linear(n_features, width), torch.nn.ReLU())
+    net = CurveNetwork(n_features, n_targets=len(ISOFORMS), trunk=trunk, trunk_output_dim=width)
+    assert net.trunk is trunk  # the injected backbone is used as-is
+    out = net(torch.zeros(3, n_features))
+    assert out.shape == (3, len(ISOFORMS), len(ASSAY_CONDITIONS), 3)
+
+
+def test_injected_trunk_requires_its_output_width():
+    with pytest.raises(ValueError, match="output width"):
+        CurveNetwork(12, n_targets=len(ISOFORMS), trunk=torch.nn.Identity())
+
+
+def test_trunk_depth_controls_the_default_backbone_layer_count():
+    """trunk_depth deepens the default backbone: depth hidden layers means depth Linear layers,
+    the last emitting hidden // 2 (the width the head reads)."""
+    deep = build_curve_trunk(n_features=16, hidden=32, dropout=0.1, depth=4)
+    linears = [m for m in deep if isinstance(m, torch.nn.Linear)]
+    assert len(linears) == 4
+    assert linears[-1].out_features == 16  # hidden // 2
+    assert build_curve_trunk(16, 32, 0.1, depth=1)(torch.zeros(2, 16)).shape == (2, 16)
 
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]

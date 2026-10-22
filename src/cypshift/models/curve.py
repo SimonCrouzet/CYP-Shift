@@ -116,6 +116,22 @@ def inhibition_at(parameters: torch.Tensor, pc: float | torch.Tensor) -> torch.T
     return emax * torch.sigmoid(_LN10 * hill * (pic50 - pc))
 
 
+def build_curve_trunk(n_features: int, hidden: int, dropout: float, depth: int = 2) -> nn.Module:
+    """The default curve backbone: an MLP from features to a ``hidden // 2`` representation.
+
+    ``depth`` is the number of hidden layers (>= 1). The first maps to ``hidden``; the last maps
+    to ``hidden // 2`` (the width the dose-response head reads); any in between stay at
+    ``hidden``. Deepening the backbone is the cheapest "different arch at the end" lever.
+    """
+    if depth < 1:
+        raise ValueError(f"curve trunk depth must be >= 1, got {depth}")
+    widths = [n_features] + [hidden] * (depth - 1) + [hidden // 2]
+    layers: list[nn.Module] = []
+    for in_dim, out_dim in zip(widths[:-1], widths[1:], strict=True):
+        layers += [nn.Linear(in_dim, out_dim), nn.ReLU(), nn.Dropout(dropout)]
+    return nn.Sequential(*layers)
+
+
 class CurveNetwork(nn.Module):
     """Shared trunk over molecular features, emitting curve parameters per enzyme and
     assay_condition.
@@ -164,6 +180,9 @@ class CurveNetwork(nn.Module):
         dropout: float = 0.2,
         conditioning: str = "heads",
         descriptors: torch.Tensor | None = None,
+        trunk: nn.Module | None = None,
+        trunk_output_dim: int | None = None,
+        trunk_depth: int = 2,
     ) -> None:
         super().__init__()
         if conditioning not in CONDITIONING:
@@ -178,15 +197,19 @@ class CurveNetwork(nn.Module):
             n_assay_conditions,
             conditioning,
         )
-        self.trunk = nn.Sequential(
-            nn.Linear(n_features, hidden),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
-        width = hidden // 2
+        # The curve is a backbone that maps features to a shared representation, then a
+        # dose-response head on top. The backbone is pluggable: pass ``trunk`` (with its output
+        # width ``trunk_output_dim``) to read any representation -- a deeper MLP, a pretrained
+        # encoder, a shared backbone from the best config -- and the head logic below is
+        # unchanged. The default is the built-in feature MLP.
+        if trunk is not None:
+            if trunk_output_dim is None:
+                raise ValueError("an injected trunk needs its output width (trunk_output_dim)")
+            self.trunk = trunk
+            width = trunk_output_dim
+        else:
+            self.trunk = build_curve_trunk(n_features, hidden, dropout, trunk_depth)
+            width = hidden // 2
         if conditioning == "heads":
             self.heads = nn.ModuleList(
                 [nn.Linear(width, N_PARAMETERS) for _ in range(n_targets * n_assay_conditions)]
@@ -285,6 +308,7 @@ class CurveModel:
         screen_model: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
+        trunk_depth: int = 2,
         epochs: int = 60,
         batch_size: int = 256,
         learning_rate: float = 1e-3,
@@ -329,6 +353,9 @@ class CurveModel:
         self.screen_model = screen_model
         self.hidden = hidden
         self.dropout = dropout
+        #: Hidden-layer count of the default curve backbone; deepen it for a larger-capacity
+        #: backbone under the same dose-response head.
+        self.trunk_depth = trunk_depth
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -422,6 +449,7 @@ class CurveModel:
             self.dropout,
             conditioning=self.conditioning,
             descriptors=descriptors,
+            trunk_depth=self.trunk_depth,
         )
         logger.info(
             "training curves on %d observations, %d of them screen readings",

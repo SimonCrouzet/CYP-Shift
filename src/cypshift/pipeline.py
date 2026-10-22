@@ -166,6 +166,7 @@ def build_model(
             mechanism=config.features.use_mechanistic,
             hidden=config.model.curve.hidden,
             dropout=config.model.curve.dropout,
+            trunk_depth=config.model.curve.trunk_depth,
             epochs=config.model.curve.epochs,
             batch_size=config.model.curve.batch_size,
             learning_rate=config.model.curve.learning_rate,

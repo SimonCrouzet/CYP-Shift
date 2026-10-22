@@ -313,6 +313,9 @@ class CurveConfig:
 
     hidden: int = 256
     dropout: float = 0.2
+    #: Hidden-layer count of the curve backbone (the MLP under the dose-response head). Deepening
+    #: it is the cheapest backbone-architecture lever; the head is unchanged. Swept.
+    trunk_depth: int = 2
     epochs: int = 60
     batch_size: int = 256
     learning_rate: float = 1e-3
