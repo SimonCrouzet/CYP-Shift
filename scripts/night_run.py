@@ -611,15 +611,16 @@ if NUM_MEMBERS:
     # key, and neither silently reuses the other's results under the same git revision.
     REV = f"{REV}-m{NUM_MEMBERS}"
 
-#: Earlier revisions whose completed results remain valid under this one. The reorder that
-#: front-loads the untested axes changes the run queue, not any config's behaviour, so configs
-#: already finished under 9102533 are carried over rather than re-trained. Clear this tuple to
-#: force a clean single-revision sweep.
-CARRY_REVS = ("9102533",)
-#: Carried-over results are used for resume, ranking and final selection alike (so an earlier
-#: winner stays eligible, not merely skipped). They are trusted only in a family-default run:
-#: a member-count override renames REV, and the carried bundles were trained at the family
-#: default, so mixing them in would compare different ensemble sizes.
+#: Earlier revisions whose completed results would remain valid under this one. Empty: the
+#: 9102533 bundles were trained before the current graph defaults (five members, not one) and
+#: before the point objectives masked censored rows, so a matching config *name* no longer
+#: proves a matching recipe -- carrying them would rank a stale single-member score beside the
+#: current five-member ones and then export a five-member submission. A carried revision is
+#: eligible only when its resolved recipe and the relevant training semantics match this one;
+#: until that check exists, carry nothing and run a clean single-revision sweep.
+CARRY_REVS: tuple[str, ...] = ()
+#: Carried-over results feed resume, ranking and final selection alike. A member-count override
+#: already renames REV, so a screening run never mixes with a family-default one either way.
 CARRIED: tuple[str, ...] = () if NUM_MEMBERS else CARRY_REVS
 
 
