@@ -58,6 +58,12 @@ RESPONSE_ASSAY = "luminescent_max_response"
 #: ``response_head`` screen strategy (graph only).
 SCREEN_RESPONSE_ASSAY = "direct_inhibition_screen_response"
 
+#: The same single-concentration screen as the raw measured log2 fold-change, untransformed
+#: (no inhibited-fraction squashing, no isotonic pIC50 map). Routed to a graph response head by
+#: the ``log2fc_response`` screen strategy, so the screen enters as a measurement in its own
+#: units. Also preincubated (the screen was run under the TDI condition).
+SCREEN_LOG2FC_ASSAY = "direct_inhibition_screen_log2fc"
+
 #: Proximity data_spaces, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
 #: relative or noisy outside dataset (``distant_aux``), a scored enzyme's own outside rows
@@ -240,8 +246,9 @@ ASSAY_METADATA = {
     RESPONSE_ASSAY: (0.0, 1.0, 1.0, 0.0),
     # The screen-response head reads the challenge's own single-concentration screen, so it
     # shares that assay's profile: preincubation (TDI) condition, single concentration, single
-    # lab, fluorogenic.
+    # lab, fluorogenic. The raw-log2FC head reads the same screen, so it shares the profile too.
     SCREEN_RESPONSE_ASSAY: (1.0, 0.0, 0.0, 0.0),
+    SCREEN_LOG2FC_ASSAY: (1.0, 0.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

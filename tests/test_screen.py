@@ -5,7 +5,12 @@ import pandas as pd
 import pytest
 
 from cypshift.config import ISOFORMS
-from cypshift.data.screen import ScreenCalibrator, pseudo_labels, to_wide
+from cypshift.data.screen import (
+    ScreenCalibrator,
+    pseudo_labels,
+    response_observations,
+    to_wide,
+)
 
 RNG = np.random.default_rng(0)
 
@@ -36,6 +41,25 @@ def _screen_and_curves(n=400, promoted=200):
     for column, isoform in enumerate(ISOFORMS):
         curves[f"{isoform}_pIC50_direct_inhibition"] = pic50[order, column]
     return screen, pd.DataFrame(curves)
+
+
+def test_response_observations_log2fc_keeps_the_raw_reading_unsquashed():
+    """Tier C step 2: kind='log2fc' emits the raw measured log2 fold-change with a symmetric
+    band in the same units, not the clipped [0,1] inhibited fraction."""
+    screen, _ = _screen_and_curves(n=40, promoted=20)
+    fraction = response_observations(screen, measurement_noise=0.1, kind="fraction")
+    log2fc = response_observations(
+        screen, measurement_noise=0.2, assay="direct_inhibition_screen_log2fc", kind="log2fc"
+    )
+    assert fraction["value"].between(0.0, 1.0).all()  # a squashed fraction
+    # The raw reading equals the source column and is not confined to [0, 1].
+    merged = log2fc.merge(
+        screen.rename(columns={"enzyme": "target"}), on=["Molecule_Name", "target"]
+    )
+    assert np.allclose(merged["value"], merged["log2fc_estimate"])
+    assert (log2fc["value"] < 0).any()  # potent compounds have negative fold-change
+    assert np.allclose(log2fc["conf_high"] - log2fc["conf_low"], 0.4)  # 2 * noise, unclipped
+    assert (log2fc["assay"] == "direct_inhibition_screen_log2fc").all()
 
 
 def test_wide_form_has_one_column_per_enzyme():

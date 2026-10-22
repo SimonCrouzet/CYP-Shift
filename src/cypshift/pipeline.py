@@ -15,6 +15,7 @@ from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPO
 from cypshift.data.assembly import (
     OBSERVATION_COLUMNS,
     RESPONSE_ASSAY,
+    SCREEN_LOG2FC_ASSAY,
     SCREEN_RESPONSE_ASSAY,
     SourceWeights,
     build_observations,
@@ -114,8 +115,11 @@ def build_model(
         response_assays = []
         if config.sources.qhts_representation == "max_response":
             response_assays.append(RESPONSE_ASSAY)
-        if config.multifidelity.screen_strategy == "response_head" and config.sources.screen:
-            response_assays.append(SCREEN_RESPONSE_ASSAY)
+        if config.sources.screen:
+            if config.multifidelity.screen_strategy == "response_head":
+                response_assays.append(SCREEN_RESPONSE_ASSAY)
+            elif config.multifidelity.screen_strategy == "log2fc_response":
+                response_assays.append(SCREEN_LOG2FC_ASSAY)
         return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
@@ -251,7 +255,7 @@ def supported_screen_strategy(kind: str) -> tuple[str, ...]:
     if kind == "curve":
         return ("extra_rows",)
     if kind == "graph":
-        return ("extra_rows", "response_head")
+        return ("extra_rows", "response_head", "log2fc_response")
     return SCREEN_STRATEGIES
 
 
@@ -322,13 +326,17 @@ def assemble_training_data(
     else:
         screen = load("screen", Path(config.data.directory))
         kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
-        if screen_strategy == "response_head":
-            # Keep the screen as the response it measured -- an inhibited fraction at one
-            # concentration -- and route it to the graph's response head (validated graph-only)
-            # under its own assay tag, so it informs the model without being compressed onto a
-            # pIC50 by the isotonic map first.
+        if screen_strategy in ("response_head", "log2fc_response"):
+            # Keep the screen as the response it measured and route it to a graph response head
+            # (validated graph-only) under its own assay tag, so it informs the model without
+            # being compressed onto a pIC50 by the isotonic map first. ``response_head`` sends
+            # the inhibited fraction; ``log2fc_response`` sends the raw measured log2 fold-change.
+            if screen_strategy == "response_head":
+                assay, kind = SCREEN_RESPONSE_ASSAY, "fraction"
+            else:
+                assay, kind = SCREEN_LOG2FC_ASSAY, "log2fc"
             base = build_observations(retained, tdi=tdi, weights=weights)
-            points = response_observations(kept, assay=SCREEN_RESPONSE_ASSAY)
+            points = response_observations(kept, assay=assay, kind=kind)
             points["weight"] = config.multifidelity.screen_weight
             if "source" not in points.columns:
                 points["source"] = "screen"

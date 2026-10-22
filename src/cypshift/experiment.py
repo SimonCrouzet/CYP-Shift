@@ -72,8 +72,16 @@ AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
 #: the potency scale; ``predicted_label``/``embedding`` fit a screen_model feature column.
 #: ``response_head`` passes the screen reading as an inhibited fraction to the graph's
 #: response head (assay ``SCREEN_RESPONSE_ASSAY``) instead of mapping it to a pIC50 through
-#: the isotonic calibrator; graph only.
-SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding", "response_head")
+#: the isotonic calibrator; graph only. ``log2fc_response`` is the same idea on the raw
+#: measured log2 fold-change (assay ``SCREEN_LOG2FC_ASSAY``), untransformed -- the screen as a
+#: measurement in its own units rather than a clipped fraction or a pseudo-pIC50; graph only.
+SCREEN_STRATEGIES = (
+    "extra_rows",
+    "predicted_label",
+    "embedding",
+    "response_head",
+    "log2fc_response",
+)
 
 #: Molecular foundation-model embeddings that can be appended as a feature block. Each
 #: (but ``none``) needs a precomputed cache from scripts/compute_embeddings.py.
@@ -554,10 +562,12 @@ class ExperimentConfig:
                 "sources.qhts_representation='max_response' needs a model that can consume it: "
                 "model.kind='graph' with sources.veith on"
             )
-        if self.multifidelity.screen_strategy == "response_head" and self.model.kind != "graph":
+        if self.multifidelity.screen_strategy in ("response_head", "log2fc_response") and (
+            self.model.kind != "graph"
+        ):
             raise ValueError(
-                "multifidelity.screen_strategy='response_head' needs a model with a response "
-                f"head: model.kind='graph', not {self.model.kind!r}"
+                f"multifidelity.screen_strategy={self.multifidelity.screen_strategy!r} needs a "
+                f"model with a response head: model.kind='graph', not {self.model.kind!r}"
             )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")

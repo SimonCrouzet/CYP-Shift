@@ -142,18 +142,23 @@ class TestAssayMetadata:
         assert len(set(challenge.values())) == len(challenge)
 
     def test_the_preincubated_assays_are_the_tdi_curve_and_the_screen(self):
-        # The organisers ran the primary single-concentration screen (and its response head)
-        # under the preincubation (TDI) condition, so all three carry preincubated=1.0; the
+        # The organisers ran the primary single-concentration screen (and its response/log2fc
+        # heads) under the preincubation (TDI) condition, so all carry preincubated=1.0; the
         # direct DRC and every auxiliary assay do not.
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
         assert preincubated == {
             "tdi_drc",
             "direct_inhibition_screen",
             "direct_inhibition_screen_response",
+            "direct_inhibition_screen_log2fc",
         }
 
     def test_only_the_screen_is_single_concentration(self):
         single = {a for a, v in ASSAY_METADATA.items() if v[1] == 0.0}
-        # The screen-response head reads the very same single-concentration screen, so it is
-        # single-concentration too, not a second exception to the rule.
-        assert single == {"direct_inhibition_screen", "direct_inhibition_screen_response"}
+        # The screen's response and raw-log2FC heads read the very same single-concentration
+        # screen, so they are single-concentration too, not further exceptions to the rule.
+        assert single == {
+            "direct_inhibition_screen",
+            "direct_inhibition_screen_response",
+            "direct_inhibition_screen_log2fc",
+        }
