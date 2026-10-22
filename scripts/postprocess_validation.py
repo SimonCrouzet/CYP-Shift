@@ -107,6 +107,19 @@ def _submission(names: pd.Series, values: np.ndarray) -> pd.DataFrame:
     return out
 
 
+def resolve_directory(config: ExperimentConfig, directory: Path | None) -> Path:
+    """Make ``config.data.directory`` the single data root, and return it.
+
+    The labels/test loads here and the screen/TDI/auxiliary de-duplication reads inside
+    ``assemble_training_data`` both key off ``config.data.directory``; a separate ``--directory``
+    default would split them. ``--directory``, when given, overrides the config so both sides
+    read the same root; otherwise the config's own directory stands.
+    """
+    if directory is not None:
+        config.override("data.directory", str(directory))
+    return Path(config.data.directory)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=None)
@@ -118,7 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inner-folds", type=int, default=5)
     parser.add_argument("--calibration-method", choices=CALIBRATION_METHODS, default="affine")
     parser.add_argument("--estimator", choices=ESTIMATORS, default="residual")
-    parser.add_argument("--directory", type=Path, default=Path("data/raw"))
+    parser.add_argument(
+        "--directory",
+        type=Path,
+        default=None,
+        help="Data root; overrides config.data.directory for every load (defaults to it).",
+    )
     arguments = parser.parse_args(argv)
 
     config = (
@@ -133,10 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         except json.JSONDecodeError:
             value = raw.strip()
         config.override(dotted.strip(), value)
+    directory = resolve_directory(config, arguments.directory)
     config.validate()
 
-    train = load("inhibition", arguments.directory)
-    test = load("test", arguments.directory)
+    train = load("inhibition", directory)
+    test = load("test", directory)
     test_names = set(test["Molecule_Name"])
 
     if arguments.outer == "analogue":
