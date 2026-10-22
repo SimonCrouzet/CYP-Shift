@@ -37,6 +37,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE = Path("data/external/tox21")
 
+#: The censoring bound for a compound the campaign called inactive, in pIC50. It is the
+#: assay's highest tested concentration, not the pIC50 plausibility filter: "no inhibition
+#: resolved up to the top dose" means IC50 >= that dose, i.e. pIC50 <= this. The NTP protocol
+#: table lists 115.1596 uM as the highest tested concentration for these five AIDs, so the
+#: bound is 6 - log10(115.1596) ~= 3.94, not the 3.0 plausibility floor. See
+#: https://www.ncbi.nlm.nih.gov/books/NBK592943/table/t-2-E.1/ .
+INACTIVE_PIC50_BOUND = 6.0 - np.log10(115.1596)
+
 #: PubChem assay id per isozyme. Only these enzymes are covered; any other returns empty.
 AID = {
     "CYP1A2": 1671199,
@@ -52,12 +60,10 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
 
     Keeps active compounds and takes the median ``Potency`` (AC50 in micromolar) across the
     replicate columns, so ``pIC50 = 6 - log10(median potency)``. With ``include_inactives``,
-    the compounds the campaign called inactive -- which carry no potency -- are kept too, as
-    censored rows pinned to the bottom of the pIC50 range: they say the one thing the assay
-    established, that the compound is not resolvably active, which is exactly the inactive
-    population the hit-biased curve set lacks. Without the flag they are dropped (the historic
-    behaviour), since turning a non-measurement into a point estimate injects an invented
-    value.
+    the compounds the campaign called inactive -- which carry no potency -- are kept as
+    censored rows (``is_censored=True``) with value :data:`INACTIVE_PIC50_BOUND`, i.e. an upper
+    bound on pIC50. Without the flag they are dropped (the historic behaviour), rather than
+    turned into an invented point estimate.
     """
     smiles_column = "PUBCHEM_EXT_DATASOURCE_SMILES"
     with_smiles = raw[raw[smiles_column].notna()]
@@ -81,17 +87,20 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
     if not include_inactives:
         return grouped
 
-    # Inactives: one censored row per compound at the pIC50 floor, excluding any compound that
-    # also has an active reading (the active measurement supersedes the detection-limit bound).
+    # Inactives: one censored row per compound at the highest-tested-concentration bound,
+    # excluding any compound that also has an active reading (the active measurement supersedes
+    # the detection-limit bound).
     inactive_smiles = set(
-        with_smiles.loc[
-            with_smiles["PUBCHEM_ACTIVITY_OUTCOME"] == "Inactive", smiles_column
-        ]
+        with_smiles.loc[with_smiles["PUBCHEM_ACTIVITY_OUTCOME"] == "Inactive", smiles_column]
     ) - set(grouped["SMILES"])
     if not inactive_smiles:
         return grouped
     censored = pd.DataFrame(
-        {"SMILES": sorted(inactive_smiles), "value": float(low), "is_censored": True}
+        {
+            "SMILES": sorted(inactive_smiles),
+            "value": float(INACTIVE_PIC50_BOUND),
+            "is_censored": True,
+        }
     )
     logger.info("Tox21: %d active, %d censored inactive compounds", len(grouped), len(censored))
     return pd.concat([grouped, censored], ignore_index=True)
@@ -114,7 +123,9 @@ def load_auxiliary(
     if enzyme not in AID:
         return pd.DataFrame(columns=["SMILES", "value", "is_censored", "target"])
     cache.mkdir(parents=True, exist_ok=True)
-    suffix = "_with_inactives" if include_inactives else ""
+    # The suffix versions the cache: "_cmax" marks the highest-tested-concentration inactive
+    # bound, so a cache written under the earlier plausibility-floor value is not reused.
+    suffix = "_with_inactives_cmax" if include_inactives else ""
     path = cache / f"tox21_{enzyme}{suffix}.csv"
     if path.exists():
         frame = pd.read_csv(path)
