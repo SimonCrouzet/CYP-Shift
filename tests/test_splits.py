@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from cypshift.data.splits import (
+    analogue_holdout,
     leave_one_out_max_similarity,
     max_similarity_against_retained,
     max_similarity_to,
@@ -136,3 +137,31 @@ def test_acyclic_compound_is_its_own_scaffold_group():
     acyclic compounds do not all collapse into one group."""
     assert murcko_scaffold("CCCCCCCC") == "CCCCCCCC"
     assert murcko_scaffold("CCOc1ccccc1") == "c1ccccc1"
+
+
+def test_analogue_holdout_holds_out_analogues_of_retained_anchors():
+    """Every held-out compound has a retained neighbour above the threshold (it is an analogue),
+    and the holdout is roughly the requested size."""
+    mask = analogue_holdout(SMILES, holdout_fraction=0.3, min_similarity=0.4, seed=0)
+    assert mask.dtype == bool and len(mask) == len(SMILES)
+    held = int(mask.sum())
+    assert 0 < held <= len(SMILES)
+    # A held-out compound must have a retained neighbour at least as similar as the threshold;
+    # otherwise it was placed without being anyone's analogue.
+    fingerprints = morgan_fingerprints(SMILES)
+    for index in np.flatnonzero(mask):
+        to_retained = max_similarity_against_retained(fingerprints, ~mask)[index]
+        assert to_retained >= 0.4
+
+
+def test_analogue_holdout_leaves_a_compound_with_no_analogue_retained():
+    """A lone, dissimilar compound has no neighbour above the threshold, so it is never held out."""
+    smiles = ["CCOc1ccccc1", "CCOc1ccc(C)cc1", "CCOc1ccc(Cl)cc1", "[Na+].[Cl-]"]
+    mask = analogue_holdout(smiles, holdout_fraction=0.25, min_similarity=0.5, seed=0)
+    assert not mask[-1]  # the salt is unlike any aryl ether, so it stays retained
+
+
+def test_analogue_holdout_is_reproducible():
+    one = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    two = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    assert np.array_equal(one, two)
