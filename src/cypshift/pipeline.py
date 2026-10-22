@@ -15,6 +15,7 @@ from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPO
 from cypshift.data.assembly import (
     OBSERVATION_COLUMNS,
     RESPONSE_ASSAY,
+    SCREEN_RESPONSE_ASSAY,
     SourceWeights,
     build_observations,
 )
@@ -105,9 +106,21 @@ def build_model(
         from cypshift.models.graph import GraphNetwork, SeparatedTrunkGraph
 
         graph_cls = SeparatedTrunkGraph if config.model.graph.separate_trunks else GraphNetwork
+        # Which measurement, if any, the graph's response head trains on: a qHTS max-response
+        # (sources.qhts_representation) or the single-concentration screen fraction
+        # (multifidelity.screen_strategy='response_head'). They are mutually exclusive, so at
+        # most one assay reaches the head; None leaves the head off entirely.
+        if config.sources.qhts_representation == "max_response":
+            response_assay = RESPONSE_ASSAY
+        elif config.multifidelity.screen_strategy == "response_head" and config.sources.screen:
+            response_assay = SCREEN_RESPONSE_ASSAY
+        else:
+            response_assay = None
         return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
+            point_loss_weight=config.model.point_loss_weight,
+            ranking_loss_weight=config.model.ranking_loss_weight,
             hidden=config.model.graph.hidden,
             depth=config.model.graph.depth,
             dropout=config.model.graph.dropout,
@@ -120,7 +133,9 @@ def build_model(
             pretraining_cache=config.model.graph.pretraining_cache,
             pretraining_finetune=config.model.graph.pretraining_finetune,
             source_heads=config.model.graph.source_heads,
-            auxiliary_response=config.sources.qhts_representation == "max_response",
+            adapt_target=config.model.graph.adapt_target,
+            adapt_hidden=config.model.graph.adapt_hidden,
+            response_assay=response_assay,
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
             physchem=config.features.use_physicochemical,
@@ -227,9 +242,15 @@ def supported_screen_strategy(kind: str) -> tuple[str, ...]:
 
     Refusing beats accepting the setting and quietly training without it, which would
     report a comparison that never happened.
+
+    The graph is the exception to its own "no screen_model" rule: it cannot take a
+    screen_model feature column, but it *can* take the screen as a response task through
+    ``response_head``, so that strategy is offered to it alongside ``extra_rows``.
     """
-    if kind in ("curve", "graph"):
+    if kind == "curve":
         return ("extra_rows",)
+    if kind == "graph":
+        return ("extra_rows", "response_head")
     return SCREEN_STRATEGIES
 
 
@@ -300,7 +321,18 @@ def assemble_training_data(
     else:
         screen = load("screen", Path(config.data.directory))
         kept = screen[screen["Molecule_Name"].isin(retained["Molecule_Name"])]
-        if config.model.kind == "curve":
+        if screen_strategy == "response_head":
+            # Keep the screen as the response it measured -- an inhibited fraction at one
+            # concentration -- and route it to the graph's response head (validated graph-only)
+            # under its own assay tag, so it informs the model without being compressed onto a
+            # pIC50 by the isotonic map first.
+            base = build_observations(retained, tdi=tdi, weights=weights)
+            points = response_observations(kept, assay=SCREEN_RESPONSE_ASSAY)
+            points["weight"] = config.multifidelity.screen_weight
+            if "source" not in points.columns:
+                points["source"] = "screen"
+            observations = pd.concat([base, points[base.columns]], ignore_index=True)
+        elif config.model.kind == "curve":
             # The curve model predicts a response, so the screen enters as the quantity
             # it actually measured -- an inhibited fraction at one concentration. No
             # calibration, and the units match what the loss compares against.
@@ -348,6 +380,40 @@ def balance_macro_weights(observations: pd.DataFrame) -> pd.DataFrame:
     factors = observations.loc[scored, "target"].map(scale).to_numpy()
     observations.loc[scored, "weight"] = observations.loc[scored, "weight"].to_numpy() * factors
     return observations
+
+
+def cap_per_endpoint_budget(
+    auxiliary: pd.DataFrame, retained: pd.DataFrame, budget: float
+) -> pd.DataFrame:
+    """Rescale each scored enzyme's near-auxiliary rows to a weight budget set by its own labels.
+
+    "Adding a source" otherwise changes three things at once -- chemistry, assay mix, and how
+    much of the loss the challenge labels still own. Pinning a scored enzyme's own outside
+    rows (``near_aux``) to ``budget`` times its challenge-label mass fixes the last of those,
+    so sources can be compared within a budget rather than by how many rows they happen to
+    bring (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5). Relatives
+    (``distant_aux``) are left on their distance weighting -- they do not map to one scored
+    endpoint -- and an enzyme with no near-auxiliary rows is left untouched.
+    """
+    out = auxiliary.copy()
+    for enzyme in ISOFORMS:
+        rows = (out["target"] == enzyme) & (out["data_space"] == "near_aux")
+        current = float(out.loc[rows, "weight"].sum())
+        if current <= 0:
+            continue
+        n_labels = int(retained[f"{enzyme}_pIC50_direct_inhibition"].notna().sum())
+        target_mass = budget * n_labels  # the challenge rows carry dose_response weight 1.0
+        scale = target_mass / current
+        out.loc[rows, "weight"] = out.loc[rows, "weight"].to_numpy() * scale
+        logger.info(
+            "per-endpoint budget: %s near-aux mass %.1f -> %.1f (%d challenge labels x %.2f)",
+            enzyme,
+            current,
+            target_mass,
+            n_labels,
+            budget,
+        )
+    return out
 
 
 def pool_same_assay(data: pd.DataFrame) -> pd.DataFrame:
@@ -481,7 +547,10 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
             if response_mode
             else {"include_inactives": config.auxiliary.include_qhts_inactives}
         )
-        extra_kwargs = {"veith": veith_kwargs}
+        extra_kwargs = {
+            "veith": veith_kwargs,
+            "tox21": {"include_inactives": config.auxiliary.tox21_include_inactives},
+        }
         by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
         for name in datasets:
             try:
@@ -552,6 +621,8 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     if not frames:
         return empty
     out = pd.concat(frames, ignore_index=True)
+    if config.auxiliary.per_endpoint_budget > 0:
+        out = cap_per_endpoint_budget(out, retained, config.auxiliary.per_endpoint_budget)
     # The realised inventory: how many rows actually entered, by source chemistry and
     # censoring, so a run is judged on what it trained on rather than on what it requested.
     inventory = (
@@ -600,9 +671,17 @@ def save_run_bundle(
 
 
 def run(
-    config: ExperimentConfig, bundle_path: Path | None = None
+    config: ExperimentConfig,
+    bundle_path: Path | None = None,
+    holdout_mask: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, PredictiveDistribution]:
-    """Fit the configured model and score it on the similarity-matched holdout.
+    """Fit the configured model and score it on a holdout.
+
+    By default the holdout is the similarity-matched one that reproduces the blinded test's
+    nearest-neighbour distance profile. Pass ``holdout_mask`` (a boolean over the training
+    rows, true where a compound is held out) to score a different view instead -- the
+    analogue view from :func:`cypshift.data.splits.analogue_holdout`, say -- without changing
+    anything else about the fit.
 
     With ``bundle_path`` set, an immutable run bundle (out-of-fold predictions, config and
     scores) is written there for later pairing, blending and calibration.
@@ -615,14 +694,21 @@ def run(
     train = load("inhibition", directory)
     test = load("test", directory)
 
-    mask = similarity_matched_holdout(
-        train["SMILES"].tolist(),
-        test["SMILES"].tolist(),
-        holdout_fraction=config.data.holdout_fraction,
-        n_bins=config.data.n_similarity_bins,
-        n_rounds=config.data.n_matching_rounds,
-        seed=config.data.seed,
-    )
+    if holdout_mask is None:
+        mask = similarity_matched_holdout(
+            train["SMILES"].tolist(),
+            test["SMILES"].tolist(),
+            holdout_fraction=config.data.holdout_fraction,
+            n_bins=config.data.n_similarity_bins,
+            n_rounds=config.data.n_matching_rounds,
+            seed=config.data.seed,
+        )
+    else:
+        mask = np.asarray(holdout_mask, dtype=bool)
+        if len(mask) != len(train):
+            raise ValueError(
+                f"holdout_mask has {len(mask)} rows but the training set has {len(train)}"
+            )
     retained, evaluation = train.loc[~mask], train.loc[mask]
     # Keep the held-out and blinded-test compounds out of the TDI assay_condition so their
     # preincubated

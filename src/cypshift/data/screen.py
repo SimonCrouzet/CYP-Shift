@@ -202,7 +202,11 @@ def inhibited_fraction(log2_fold_change: np.ndarray) -> np.ndarray:
     return np.clip(1.0 - np.power(2.0, log2_fold_change), 0.0, 1.0)
 
 
-def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) -> pd.DataFrame:
+def response_observations(
+    screen: pd.DataFrame,
+    measurement_noise: float = 0.1,
+    assay: str = "direct_inhibition_screen",
+) -> pd.DataFrame:
     """Screen readings as constraints on the curve, one row per compound and enzyme.
 
     Args:
@@ -210,6 +214,10 @@ def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) 
         measurement_noise: Half-width of the interval placed around each reading, as an
             inhibited fraction. A single well with no replicate does not support a
             tight bound.
+        assay: The assay tag stamped on each row. The default feeds the curve model, which
+            reads the screen as a point on the very curve it predicts; passing
+            :data:`cypshift.data.assembly.SCREEN_RESPONSE_ASSAY` instead routes the same
+            fractions to the graph's dedicated response head.
 
     Returns:
         Rows carrying the inhibited fraction and an interval around it, ready to be
@@ -227,7 +235,7 @@ def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) 
                     "Molecule_Name": block["Molecule_Name"].to_numpy(),
                     "SMILES": block["SMILES"].to_numpy(),
                     "target": isoform,
-                    "assay": "direct_inhibition_screen",
+                    "assay": assay,
                     "value": fraction,
                     "conf_low": np.clip(fraction - measurement_noise, 0.0, 1.0),
                     "conf_high": np.clip(fraction + measurement_noise, 0.0, 1.0),

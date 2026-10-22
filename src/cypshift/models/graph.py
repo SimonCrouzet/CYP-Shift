@@ -43,11 +43,11 @@ from chemprop import nn as cpnn
 from chemprop.nn.metrics import ChempropMetric
 from lightning import pytorch as pl
 from numpy.typing import NDArray
+from torch import nn
 
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import (
     ASSAYS,
-    RESPONSE_ASSAY,
     SOURCES,
     encode_conditions,
     n_condition_columns,
@@ -69,6 +69,12 @@ logger = logging.getLogger(__name__)
 #: chemprop's finiteness mask zeroes the irrelevant task, so the two scales never mix.
 VALUE, LOWER, UPPER, RESPONSE = 0, 1, 2, 3
 N_LABEL_COLUMNS = 3
+
+#: A censored row carries ``lower = -1e4`` before standardisation (see ``_datapoints``), so
+#: after standardisation its LOWER carrier sits thousands of units below any real bound. The
+#: point and ranking augmentations use this to tell a one-sided censored reading from a real
+#: (two-sided) credible interval, in standardised units where a real bound is within a few.
+_CENSORED_LOWER_SENTINEL = -100.0
 #: The preincubated dose-response assay_condition's assay tag (see cypshift.data.assembly.ASSAYS),
 #: the
 #: second assay_condition predict_is_time_dependent compares against the direct one.
@@ -109,9 +115,21 @@ class SoftThresholdLoss(ChempropMetric):
     """Soft-threshold absolute error on the value task, reading its bounds from carriers.
 
     With a fourth (RESPONSE) task present, it also returns a squared error there -- the
-    qHTS max-response auxiliary head. Each row carries only one of the two (the other is
-    NaN upstream, so chemprop's finiteness mask zeroes it), so the losses never mix.
+    qHTS max-response or screen-response auxiliary head. Each row carries only one of the
+    two (the other is NaN upstream, so chemprop's finiteness mask zeroes it), so the losses
+    never mix.
+
+    ``point_weight`` adds a small squared pull toward the fitted midpoint on reliable
+    (uncensored, two-sided) rows. The dead-zone loss is flat anywhere inside a credible
+    interval, so a prediction can drift freely within a wide band and feel no gradient; the
+    point term restores one without disturbing the metric the leaderboard scores, and it is
+    switched off (``0.0``) by default. Censored (one-sided) rows are excluded: their "value"
+    is a clipped endpoint, not a measured midpoint.
     """
+
+    def __init__(self, point_weight: float = 0.0, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.point_weight = point_weight
 
     def _calc_unreduced_loss(
         self,
@@ -126,9 +144,77 @@ class SoftThresholdLoss(ChempropMetric):
         below = torch.clamp(targets[:, LOWER] - prediction, min=0.0)
         loss = torch.zeros_like(targets)
         loss[:, VALUE] = above + below
+        if self.point_weight > 0.0:
+            reliable = targets[:, LOWER] > _CENSORED_LOWER_SENTINEL
+            midpoint = 0.5 * (targets[:, LOWER] + targets[:, UPPER])
+            loss[:, VALUE] = loss[:, VALUE] + self.point_weight * reliable * (
+                prediction - midpoint
+            ) ** 2
         if targets.shape[1] > RESPONSE:
             loss[:, RESPONSE] = (preds[:, RESPONSE] - targets[:, RESPONSE]) ** 2
         return loss
+
+
+class RankingSoftThresholdLoss(SoftThresholdLoss):
+    """Soft-threshold loss plus an interval-aware pairwise ranking hinge within each batch.
+
+    The dead-zone loss scores every compound independently and is blind to order: it cannot
+    tell that a near-duplicate pair was ranked the wrong way round across an activity cliff.
+    This adds a margin hinge over the pairs in a batch whose credible intervals do *not*
+    overlap -- the only pairs for which a true order is established -- penalising predictions
+    that order such a pair against its intervals. It is an additive regulariser on the value
+    task, scaled by ``ranking_weight`` (``0.0`` recovers the plain loss), and the last lever
+    the analysis note reaches for.
+
+    The term is added in :meth:`update` rather than through the per-row loss tensor, because a
+    pairwise penalty is not a per-row quantity. It is normalised to a per-pair mean and then
+    put on the same scale as the summed per-row loss, so ``ranking_weight`` reads as a
+    relative weight regardless of batch size.
+    """
+
+    def __init__(
+        self, ranking_weight: float = 0.0, ranking_margin: float = 0.5, **kwargs: object
+    ) -> None:
+        super().__init__(**kwargs)
+        self.ranking_weight = ranking_weight
+        self.ranking_margin = ranking_margin
+
+    def update(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        weights: torch.Tensor | None = None,
+        *args: torch.Tensor,
+    ) -> None:
+        super().update(preds, targets, mask, weights, *args)
+        if self.ranking_weight <= 0.0:
+            return
+        # chemprop passes the finiteness mask separately and has already replaced NaN targets
+        # with zeros, so the value rows are mask[:, VALUE], not targets.isfinite(). Only rows
+        # with a real two-sided interval (not a censored one-sided floor) can be ordered.
+        if mask is None:
+            return
+        value_mask = mask[:, VALUE] & (targets[:, LOWER] > _CENSORED_LOWER_SENTINEL)
+        if int(value_mask.sum()) < 2:
+            return
+        pred = preds[value_mask, VALUE]
+        lower = targets[value_mask, LOWER]
+        upper = targets[value_mask, UPPER]
+        # Pair (i, j) is ordered i<j exactly where upper_i < lower_j (the intervals are
+        # disjoint and i sits below j). Penalise when the predicted gap fails to clear the
+        # margin in that direction.
+        ordered = upper.unsqueeze(1) < lower.unsqueeze(0)  # (i, j): i strictly below j
+        n_pairs = int(ordered.sum())
+        if n_pairs == 0:
+            return
+        gap = pred.unsqueeze(0) - pred.unsqueeze(1)  # (i, j): pred_j - pred_i
+        hinge = torch.clamp(self.ranking_margin - gap, min=0.0)
+        penalty = (hinge * ordered).sum() / n_pairs
+        # Put the per-pair mean on the scale of the summed per-row loss compute() divides by
+        # num_samples, so ranking_weight stays a relative weight independent of batch size.
+        # Accumulate in place, matching the base class, so the metric's state buffer is kept.
+        self.total_loss += self.ranking_weight * penalty * value_mask.sum()
 
 
 class _AsymmetricValueLoss(ChempropMetric):
@@ -179,6 +265,53 @@ class PinballLoss(_AsymmetricValueLoss):
         return torch.maximum(self.tau * residual, (self.tau - 1.0) * residual)
 
 
+class _TargetAdaptedRegressionFFN(cpnn.RegressionFFN):
+    """RegressionFFN with a gated, isoform-specific residual on the value task.
+
+    One scored isoform gets a small MLP over the same input the shared readout sees (the
+    pooled graph representation concatenated with the conditioning vector), and its output is
+    added to the shared value prediction. The addition is gated by that isoform's target
+    one-hot -- which sits at a known offset in the input, since ``fingerprint`` concatenates
+    the conditioning after the encoder output and the target block comes first -- so the
+    correction is identically zero for every other isoform and for the auxiliary enzymes. The
+    encoder and the rest of the readout stay shared, which is the point: cross-isoform
+    transfer is preserved while one isoform (CYP2D6, whose potency rides a different axis)
+    gets capacity of its own. The adapter's last layer is initialised to zero, so training
+    starts from the unadapted readout and the correction has to earn itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        adapt_hidden: int,
+        target_offset: int,
+        target_index: int,
+        value_index: int = VALUE,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.target_offset = target_offset
+        self.target_index = target_index
+        self.value_index = value_index
+        self.adapter = nn.Sequential(
+            nn.Linear(self.input_dim, adapt_hidden),
+            nn.ReLU(),
+            nn.Linear(adapt_hidden, 1),
+        )
+        nn.init.zeros_(self.adapter[-1].weight)
+        nn.init.zeros_(self.adapter[-1].bias)
+
+    def forward(self, Z: torch.Tensor) -> torch.Tensor:  # noqa: N803 -- chemprop's Predictor API
+        base = self.ffn(Z)
+        gate = Z[:, self.target_offset + self.target_index].unsqueeze(1)
+        correction = self.adapter(Z) * gate  # (batch, 1); zero wherever the gate is zero
+        padded = torch.zeros_like(base)
+        padded[:, self.value_index : self.value_index + 1] = correction
+        return self.output_transform(base + padded)
+
+    train_step = forward
+
+
 class GraphNetwork:
     """Chemprop D-MPNN conditioned on target and assay through its readout."""
 
@@ -199,12 +332,17 @@ class GraphNetwork:
         n_members: int = 1,
         loss: str = "soft_threshold",
         tau: float = 0.5,
+        point_loss_weight: float = 0.0,
+        ranking_loss_weight: float = 0.0,
+        ranking_margin: float = 0.5,
         ensemble: str = "reseed",
         pretraining: str = "none",
         pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
         pretraining_finetune: bool = True,
         source_heads: bool = False,
-        auxiliary_response: bool = False,
+        adapt_target: str = "none",
+        adapt_hidden: int = 64,
+        response_assay: str | None = None,
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         physchem: bool = False,
@@ -217,13 +355,15 @@ class GraphNetwork:
     ) -> None:
         self.endpoints = endpoints
         self.targets = targets
-        # The response head is trained on its own assay, so it joins the conditioning
-        # vocabulary when it is on (and the label matrix grows a fourth column for it).
-        self.auxiliary_response = auxiliary_response
+        # The response head is trained on its own assay (a qHTS max-response or a screen
+        # fraction, named by response_assay), so that assay joins the conditioning vocabulary
+        # when it is on and the label matrix grows a fourth column for it.
+        self.response_assay = response_assay
+        self.auxiliary_response = response_assay is not None
         self.tdi_shift_threshold = tdi_shift_threshold
         self.tdi_assay_floor = tdi_assay_floor
-        self.assays = (*assays, RESPONSE_ASSAY) if auxiliary_response else assays
-        self._n_label = N_LABEL_COLUMNS + 1 if auxiliary_response else N_LABEL_COLUMNS
+        self.assays = (*assays, response_assay) if self.auxiliary_response else assays
+        self._n_label = N_LABEL_COLUMNS + 1 if self.auxiliary_response else N_LABEL_COLUMNS
         self.conditioning = conditioning
         self.hidden = hidden
         self.depth = depth
@@ -237,6 +377,15 @@ class GraphNetwork:
         self.n_members = n_members
         self.loss = loss
         self.tau = tau
+        #: Extra terms layered onto the soft-threshold loss (ignored by the other objectives):
+        #: a squared pull to the midpoint on reliable rows, and an interval-aware pairwise
+        #: ranking hinge. Both default off.
+        self.point_loss_weight = point_loss_weight
+        self.ranking_loss_weight = ranking_loss_weight
+        self.ranking_margin = ranking_margin
+        #: One scored isoform to give a gated, isoform-specific adaptation block, or "none".
+        self.adapt_target = adapt_target
+        self.adapt_hidden = adapt_hidden
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -324,7 +473,7 @@ class GraphNetwork:
         for row, (_, record) in enumerate(frame.iterrows()):
             if labelled:
                 y = np.full(self._n_label, np.nan)
-                if self.auxiliary_response and record["assay"] == RESPONSE_ASSAY:
+                if self.auxiliary_response and record["assay"] == self.response_assay:
                     # A response row: fill only the response task, leave pIC50 tasks NaN.
                     y[RESPONSE] = (float(record["value"]) - self._resp_centre) / self._resp_spread
                 else:
@@ -368,7 +517,19 @@ class GraphNetwork:
         # made "absolute" an MSE run rather than MAE.
         weights = torch.tensor([[1.0, 0.0, 0.0] + ([1.0] if self.auxiliary_response else [])])
         if self.loss == "soft_threshold":
-            criterion = SoftThresholdLoss(task_weights=weights)
+            # The point and ranking augmentations layer onto the dead-zone loss; the ranking
+            # hinge needs the batch, so it is a distinct criterion when it is switched on.
+            if self.ranking_loss_weight > 0.0:
+                criterion = RankingSoftThresholdLoss(
+                    ranking_weight=self.ranking_loss_weight,
+                    ranking_margin=self.ranking_margin,
+                    point_weight=self.point_loss_weight,
+                    task_weights=weights,
+                )
+            else:
+                criterion = SoftThresholdLoss(
+                    point_weight=self.point_loss_weight, task_weights=weights
+                )
         elif self.loss == "absolute":
             criterion = cpnn.MAE(task_weights=weights)
         elif self.loss == "squared":
@@ -379,12 +540,27 @@ class GraphNetwork:
             criterion = PinballLoss(self.tau, task_weights=weights)
         else:
             raise ValueError(f"unknown objective {self.loss!r}")
-        predictor = cpnn.RegressionFFN(
-            n_tasks=self._n_label,
-            input_dim=message_passing.output_dim + self._n_conditioning,
-            criterion=criterion,
-            dropout=self.dropout,
-        )
+        input_dim = message_passing.output_dim + self._n_conditioning
+        if self.adapt_target != "none":
+            # The target one-hot is the first block of the conditioning, which fingerprint()
+            # places right after the encoder output, so its gate column sits at
+            # message_passing.output_dim + (index of the adapted isoform in self.targets).
+            predictor = _TargetAdaptedRegressionFFN(
+                adapt_hidden=self.adapt_hidden,
+                target_offset=message_passing.output_dim,
+                target_index=self.targets.index(self.adapt_target),
+                n_tasks=self._n_label,
+                input_dim=input_dim,
+                criterion=criterion,
+                dropout=self.dropout,
+            )
+        else:
+            predictor = cpnn.RegressionFFN(
+                n_tasks=self._n_label,
+                input_dim=input_dim,
+                criterion=criterion,
+                dropout=self.dropout,
+            )
         return cpmodels.MPNN(message_passing, cpnn.MeanAggregation(), predictor)
 
     def fit(self, observations: pd.DataFrame) -> "GraphNetwork":
@@ -395,7 +571,7 @@ class GraphNetwork:
         # The pIC50 rows set one centre/spread for the value and its two bound columns;
         # the response rows (a different 0-1 scale) are standardised separately.
         is_response = (
-            usable["assay"] == RESPONSE_ASSAY
+            usable["assay"] == self.response_assay
             if self.auxiliary_response
             else np.zeros(len(usable), dtype=bool)
         )

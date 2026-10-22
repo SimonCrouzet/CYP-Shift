@@ -51,6 +51,13 @@ REFERENCE_ASSAY = "direct_inhibition_drc"
 #: onto the potency scale; only that model sees it.
 RESPONSE_ASSAY = "luminescent_max_response"
 
+#: The single-concentration screen as the response it actually measured -- an inhibited
+#: fraction at one concentration, not a pIC50. Like :data:`RESPONSE_ASSAY` it is routed to
+#: the graph's response head rather than pooled onto the potency scale, so the screen informs
+#: the model without being forced onto a fully specified Hill curve first. Used by the
+#: ``response_head`` screen strategy (graph only).
+SCREEN_RESPONSE_ASSAY = "direct_inhibition_screen_response"
+
 #: Proximity data_spaces, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
 #: relative or noisy outside dataset (``distant_aux``), a scored enzyme's own outside rows
@@ -228,6 +235,9 @@ ASSAY_METADATA = {
     # The graph's response head reads the same P450-Glo luminescent curve, so it shares the
     # luminescent dose-response profile; without an entry, metadata conditioning raised.
     RESPONSE_ASSAY: (0.0, 1.0, 1.0, 0.0),
+    # The screen-response head reads the challenge's own single-concentration screen, so it
+    # shares that assay's profile (fluorogenic, single concentration, single lab).
+    SCREEN_RESPONSE_ASSAY: (0.0, 0.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

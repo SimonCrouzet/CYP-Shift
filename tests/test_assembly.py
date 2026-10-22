@@ -147,4 +147,6 @@ class TestAssayMetadata:
 
     def test_only_the_screen_is_single_concentration(self):
         single = {a for a, v in ASSAY_METADATA.items() if v[1] == 0.0}
-        assert single == {"direct_inhibition_screen"}
+        # The screen-response head reads the very same single-concentration screen, so it is
+        # single-concentration too, not a second exception to the rule.
+        assert single == {"direct_inhibition_screen", "direct_inhibition_screen_response"}
