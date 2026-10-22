@@ -319,6 +319,60 @@ REGRESSION: dict[str, dict] = {
     # --- Screen weight: the single-concentration screen is on by default at weight 0.3; vary it. ---
     "graph_screen_weight_lo": {"model.kind": "graph", "multifidelity.screen_weight": 0.1},
     "graph_screen_weight_hi": {"model.kind": "graph", "multifidelity.screen_weight": 0.6},
+    # --- 2026-10-22 analysis-note avenues
+    #     (notes/performance_analysis_and_next_steps_2026-10-22.md), each layered on the two
+    #     graph baselines to beat: plain graph (CV 0.809) and graph_octant_tox21 (CV 0.781,
+    #     the current best). All are graph-only or graph+aux. The post-sweep calibration,
+    #     blend and analogue-correction steps (avenues 1-3) act on the OOF bundles these
+    #     write, so they are in the runbook, not here. ---
+    # Avenue 4: the screen as the response it measured, routed to a response head, rather than
+    # an isotonic pseudo-label on the pIC50 scale.
+    "graph_screen_response": {
+        "model.kind": "graph",
+        "multifidelity.screen_strategy": "response_head",
+    },
+    "graph_octant_tox21_screen_response": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "multifidelity.screen_strategy": "response_head",
+    },
+    # Avenue 6: a gated CYP2D6-specific adaptation block on the shared trunk (the middle
+    # ground between one trunk and the four separate trunks that did not help).
+    "graph_adapt_2d6": {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
+    "graph_octant_tox21_adapt_2d6": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "model.graph.adapt_target": "CYP2D6",
+    },
+    # Avenue 7: a midpoint point-pull and an interval-aware ranking hinge on the dead-zone
+    # loss, each at two weights, plus the pair together on the best baseline.
+    "graph_point_loss_lo": {"model.kind": "graph", "model.point_loss_weight": 0.1},
+    "graph_point_loss_hi": {"model.kind": "graph", "model.point_loss_weight": 0.5},
+    "graph_ranking_loss_lo": {"model.kind": "graph", "model.ranking_loss_weight": 0.1},
+    "graph_ranking_loss_hi": {"model.kind": "graph", "model.ranking_loss_weight": 0.5},
+    "graph_octant_tox21_point_ranking": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "model.point_loss_weight": 0.3,
+        "model.ranking_loss_weight": 0.3,
+    },
+    # Avenue 5: Tox21 inactives as censored rows, and a per-endpoint auxiliary weight budget,
+    # on the octant+tox21 baseline where tox21's near-auxiliary rows are present to act on.
+    "graph_octant_tox21_inactives": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "auxiliary.tox21_include_inactives": True,
+    },
+    "graph_octant_tox21_budget_half": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "auxiliary.per_endpoint_budget": 0.5,
+    },
+    "graph_octant_tox21_budget_one": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "auxiliary.per_endpoint_budget": 1.0,
+    },
     # --- ECFP6 (radius 3) instead of the default ECFP4, on the fingerprint-reading families. ---
     "boosted_octant_tox21_ecfp6": {**OCT_TOX, "features.fingerprint_radius": 3},
     "neural_ecfp6": {"model.kind": "neural", "features.fingerprint_radius": 3},
