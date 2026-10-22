@@ -219,16 +219,21 @@ class RankingSoftThresholdLoss(SoftThresholdLoss):
         # disjoint and i sits below j), and its weight is the weaker row's. Penalise when the
         # predicted gap fails to clear the margin in that direction.
         ordered = (upper.unsqueeze(1) < lower.unsqueeze(0)).float()  # (i, j): i strictly below j
-        pair_weight = torch.minimum(weight.unsqueeze(1), weight.unsqueeze(0)) * ordered
-        total_pair_weight = pair_weight.sum()
-        if float(total_pair_weight) == 0.0:
+        n_ordered = ordered.sum()
+        if float(n_ordered) == 0.0:
             return
+        pair_weight = torch.minimum(weight.unsqueeze(1), weight.unsqueeze(0)) * ordered
         gap = pred.unsqueeze(0) - pred.unsqueeze(1)  # (i, j): pred_j - pred_i
         hinge = torch.clamp(self.ranking_margin - gap, min=0.0)
-        penalty = (hinge * pair_weight).sum() / total_pair_weight
-        # Put the weighted per-pair mean on the scale of the summed per-row loss compute()
-        # divides by num_samples, so ranking_weight stays a relative weight independent of
-        # batch size. Accumulate in place, matching the base class, to keep the state buffer.
+        # Normalise by the unweighted ordered-pair count, not the summed pair weight. Dividing
+        # by the pair weight would cancel any common weight scale, so uniformly down-weighting a
+        # source (e.g. all its rows x0.1) would leave its ranking pull untouched while its
+        # interval loss shrank tenfold. Dividing by the count keeps the term proportional to the
+        # absolute pair weights, the same budget the per-row interval loss honours. (For unit
+        # weights this equals the old per-pair mean.) value_mask.sum() puts it on the scale of
+        # the summed per-row loss compute() divides by num_samples, so ranking_weight stays a
+        # relative weight independent of batch size. Accumulate in place to keep the state buffer.
+        penalty = (hinge * pair_weight).sum() / n_ordered
         self.total_loss += self.ranking_weight * penalty * value_mask.sum()
 
 

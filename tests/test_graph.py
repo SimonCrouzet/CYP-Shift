@@ -192,6 +192,30 @@ def test_ranking_term_ignores_zero_weight_rows():
     )
 
 
+def test_ranking_term_scales_with_a_uniform_down_weight():
+    """A uniform source down-weight must shrink the ranking contribution in the same proportion
+    as the interval loss, not cancel out of the normalisation. Rows at weight 0.1 give a tenth
+    of the ranking penalty they give at weight 1.0."""
+    weights = torch.tensor([[1.0, 0.0, 0.0]])
+    targets = torch.zeros(2, 3)
+    targets[0] = torch.tensor([0.05, 0.0, 0.1])
+    targets[1] = torch.tensor([1.05, 1.0, 1.1])
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    wrong = torch.zeros(2, 3)
+    wrong[:, VALUE] = torch.tensor([1.05, 0.05])  # wrong order
+    ranked = RankingSoftThresholdLoss(ranking_weight=1.0, ranking_margin=0.5, task_weights=weights)
+    base = SoftThresholdLoss(task_weights=weights)
+    full, tenth = torch.ones(2), torch.full((2,), 0.1)
+    contrib_full = float(ranked(wrong, targets, mask, full)) - float(
+        base(wrong, targets, mask, full)
+    )
+    contrib_tenth = float(ranked(wrong, targets, mask, tenth)) - float(
+        base(wrong, targets, mask, tenth)
+    )
+    assert contrib_full > 0
+    assert contrib_tenth == pytest.approx(0.1 * contrib_full, rel=1e-5)
+
+
 def test_censored_point_target_is_masked_under_point_objectives_only():
     """F07 guard: a censored row keeps its value for the soft-threshold dead-zone but is NaN
     (masked) for a two-sided point objective, which has no value to train it toward."""
