@@ -141,7 +141,7 @@ def test_only_the_neural_model_gets_the_full_conditioning_vocabulary():
 
 
 def test_all_multifidelity_strategies_are_named():
-    assert set(SCREEN_STRATEGIES) == {"extra_rows", "predicted_label", "embedding"}
+    assert set(SCREEN_STRATEGIES) == {"extra_rows", "predicted_label", "embedding", "response_head"}
 
 
 class TestCapabilityContract:

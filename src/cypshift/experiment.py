@@ -14,10 +14,14 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+from cypshift.config import ISOFORMS
 from cypshift.data.assembly import ASSAYS, DATA_SPACES
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
+
+#: Isoforms eligible for a per-isoform adaptation block, plus the ``"none"`` default.
+ADAPT_TARGETS = ("none", *ISOFORMS)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +67,15 @@ DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES
 #: Re-exported for the same reason.
 AUXILIARY_WEIGHTING = _AUXILIARY_WEIGHTING
 
-SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding")
+#: How the single-concentration screen is folded in when ``sources.screen`` is on.
+#: ``extra_rows`` pools calibrated pseudo-labels (or, for the curve, the raw reading) onto
+#: the potency scale; ``predicted_label``/``embedding`` fit a screen_model feature column.
+#: ``response_head`` keeps the screen as the response it actually measured -- an inhibited
+#: fraction at one concentration -- and routes it to the graph's dedicated response head
+#: instead of compressing it onto a pIC50 through the isotonic map. The response head makes
+#: fewer mechanistic assumptions than forcing every screen point onto a fully specified Hill
+#: curve (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 4); graph only.
+SCREEN_STRATEGIES = ("extra_rows", "predicted_label", "embedding", "response_head")
 
 #: Molecular foundation-model embeddings that can be appended as a feature block. Each
 #: (but ``none``) needs a precomputed cache from scripts/compute_embeddings.py.
@@ -174,6 +186,20 @@ class AuxiliaryConfig:
     #: inactive -- 6,822 against 1,776 active on CYP2D6 -- and keeping only the actives
     #: trains on a population biased toward hits, which the blinded test is not. Swept.
     include_qhts_inactives: bool = True
+    #: Keep the Tox21 P450-Glo re-screen's inactive compounds as censored low-potency rows
+    #: too. The Tox21 loader keeps only actives by default, so it cannot by itself supply the
+    #: missing inactive population the blinded test needs -- most acutely for CYP2D6, whose
+    #: screen pseudo-labels are almost all extrapolations. Off by default; swept
+    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5).
+    tox21_include_inactives: bool = False
+    #: Fix each scored endpoint's auxiliary weight mass to this fraction of its own
+    #: challenge-label mass, so "adding a source" cannot silently change how much of the loss
+    #: the challenge labels own. ``0.0`` leaves the distance/source weights untouched (the
+    #: default); ``0.5`` caps a scored enzyme's near-auxiliary rows at half its challenge
+    #: weight, which is what lets sources be compared within a budget rather than by volume
+    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 5). Applies to the
+    #: scored enzymes' own outside rows (near_aux); relatives keep the distance weighting.
+    per_endpoint_budget: float = 0.0
 
 
 @dataclass
@@ -337,6 +363,17 @@ class GraphConfig:
     #: Condition on the row's source dataset (keeping same-chemistry sources apart rather than
     #: pooling them), so each source gets its own calibration on the shared trunk. Swept.
     source_heads: bool = False
+    #: One scored isoform to give a small isoform-specific adaptation block on top of the
+    #: shared readout, or ``"none"``. A gated low-rank residual MLP on the pooled
+    #: representation, active only for this isoform's rows, so the encoder stays shared and
+    #: cross-isoform transfer survives -- the middle ground between a single trunk and the
+    #: four separate trunks that already failed to improve macro. Meant for CYP2D6, whose
+    #: potency rides a different axis from the lipophilic three
+    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 6). Swept.
+    adapt_target: str = "none"
+    #: Hidden width of the per-isoform adaptation block; ignored when ``adapt_target`` is
+    #: ``"none"``.
+    adapt_hidden: int = 64
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);
@@ -366,6 +403,19 @@ class ModelConfig:
     #: Asymmetry level for the ``expectile``/``pinball`` objectives; >0.5 errs high, which the
     #: soft-threshold metric rewards. Ignored by the other objectives. Swept.
     objective_tau: float = 0.5
+    #: Weight on a small squared point term added alongside the dead-zone soft-threshold
+    #: loss, so a prediction sitting anywhere inside a wide credible interval still feels a
+    #: gradient toward the fitted midpoint instead of drifting freely within the band. It is
+    #: applied only on reliable (uncensored, finite-interval) rows, and ``0.0`` leaves the
+    #: pure dead-zone loss untouched. Graph model only; swept
+    #: (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 7).
+    point_loss_weight: float = 0.0
+    #: Weight on an interval-aware pairwise ranking term: within a batch, pairs whose
+    #: credible intervals do not overlap (so a true order exists) are penalised by a hinge
+    #: when the predictions order them the wrong way. Helps resolve activity cliffs the
+    #: dead-zone loss is blind to. ``0.0`` is off. Graph model only; swept, and the last lever
+    #: to reach for (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 7).
+    ranking_loss_weight: float = 0.0
     n_members: int = 5
     boosted: BoostedConfig = field(default_factory=BoostedConfig)
     neural: NeuralConfig = field(default_factory=NeuralConfig)
@@ -500,6 +550,7 @@ class ExperimentConfig:
             (self.model.graph.pretraining, GRAPH_PRETRAINING, "model.graph.pretraining"),
             (self.sources.qhts_representation, QHTS_REPRESENTATIONS, "sources.qhts_representation"),
             (self.data.dedup_mode, DEDUP_MODES, "data.dedup_mode"),
+            (self.model.graph.adapt_target, ADAPT_TARGETS, "model.graph.adapt_target"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:
@@ -511,6 +562,21 @@ class ExperimentConfig:
                 "sources.qhts_representation='max_response' needs a model that can consume it: "
                 "model.kind='graph' with sources.veith on"
             )
+        if self.multifidelity.screen_strategy == "response_head":
+            if self.model.kind != "graph":
+                raise ValueError(
+                    "multifidelity.screen_strategy='response_head' needs a model with a response "
+                    f"head: model.kind='graph', not {self.model.kind!r}"
+                )
+            if self.sources.qhts_representation == "max_response":
+                # Both would want the graph's single response column; keeping them mutually
+                # exclusive avoids conflating a qHTS max-response with a screen fraction on
+                # one head (two heads is a later experiment, not this one).
+                raise ValueError(
+                    "multifidelity.screen_strategy='response_head' and "
+                    "sources.qhts_representation='max_response' both claim the graph response "
+                    "head; enable only one"
+                )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
         if self.model.n_members < 1:
@@ -547,6 +613,9 @@ class ExperimentConfig:
             ("auxiliary.scored_weight", self.auxiliary.scored_weight),
             ("auxiliary.target_weight", self.auxiliary.target_weight),
             ("multifidelity.screen_weight", self.multifidelity.screen_weight),
+            ("auxiliary.per_endpoint_budget", self.auxiliary.per_endpoint_budget),
+            ("model.point_loss_weight", self.model.point_loss_weight),
+            ("model.ranking_loss_weight", self.model.ranking_loss_weight),
         ):
             if weight < 0:
                 raise ValueError(f"{name} must be >= 0, got {weight!r}")
@@ -554,6 +623,23 @@ class ExperimentConfig:
             raise ValueError(
                 f"sources.structure is wired only into the boosted model, not {self.model.kind!r}"
             )
+        # The point and ranking terms augment the graph's own chemprop loss; no other model
+        # reads them, so a non-graph run carrying a non-zero weight would be credited with an
+        # experiment it never ran.
+        if self.model.kind != "graph":
+            for name, weight in (
+                ("model.point_loss_weight", self.model.point_loss_weight),
+                ("model.ranking_loss_weight", self.model.ranking_loss_weight),
+            ):
+                if weight > 0:
+                    raise ValueError(
+                        f"{name} is wired only into the graph model, not {self.model.kind!r}"
+                    )
+            if self.model.graph.adapt_target != "none":
+                raise ValueError(
+                    "model.graph.adapt_target is wired only into the graph model, not "
+                    f"{self.model.kind!r}"
+                )
         if self.model.kind == "graph":
             if self.features.molecular_embedding != "none":
                 raise ValueError(
@@ -562,6 +648,13 @@ class ExperimentConfig:
                 )
             if len(self.training.effective_stages()) > 1:
                 raise ValueError("the graph model does not run a multi-stage training curriculum")
+            if self.model.graph.separate_trunks and self.model.graph.adapt_target != "none":
+                # Separate trunks already give each isoform its own encoder, so a per-isoform
+                # adapter on top is redundant and its gate (a target one-hot) is absent.
+                raise ValueError(
+                    "model.graph.adapt_target needs the shared trunk; it is meaningless with "
+                    "model.graph.separate_trunks=True"
+                )
         if self.model.kind == "curve" and self.model.objective != "soft_threshold":
             raise ValueError(
                 "the curve model uses its own dose-response loss; model.objective="
