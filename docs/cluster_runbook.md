@@ -3,6 +3,26 @@
 Branch `model-levers-and-p0-fix`. `git pull` on the cluster, then launch. Keep the git tree
 clean so the revision namespace stays fixed and `--resume` reuses completed configs.
 
+## Setup
+
+```bash
+./setup.sh                # create/update the cypshift conda env, install, run the preflight
+ENV_PREFIX=/scratch/envs/cypshift ./setup.sh --fetch   # env on fast local disk + fetch core data
+```
+
+`setup.sh` creates or updates the `cypshift` env from `environment.yml`, installs the package with
+every runtime extra, then runs the preflight. Run the preflight alone any time before launching:
+
+```bash
+python scripts/check_env.py          # interpreter, packages, GPU, data caches, tokens
+python scripts/check_env.py --fetch  # also download the core challenge files into data/raw
+```
+
+It exits non-zero when the core (challenge data + always-required packages) is missing. Auxiliary
+caches (`data/external/`: octant, tox21, veith, chembl, sair, embeddings, chemeleon weights,
+ionization) are gitignored and not fetched by `check_env.py` — sync them to the node, or the
+config families that name them fail and skip. `TABPFN_TOKEN` is needed for the tfm configs.
+
 ## Launch
 
 ```bash
@@ -16,7 +36,7 @@ CYP_WORKERS=8 CYP_MEMBERS=1 python scripts/night_run.py
 - Resumable: re-run the same command; configs whose bundle already exists at this revision are skipped.
 - Writes `data/night_results.csv` (one row per config) and `data/run_bundles/<rev>/<config>/` (out-of-fold predictions, the input to calibration and blending).
 
-143 configs, ordered so the untested axes run first. At 1 member and a real GPU this is hours, not the ~2 days the laptop implied.
+141 regression configs (plus 14 TDI), ordered so the untested axes run first. At 1 member and a real GPU this is hours, not the ~2 days the laptop implied.
 
 ## What the sweep covers
 
