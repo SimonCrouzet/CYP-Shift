@@ -47,33 +47,54 @@ AID = {
 }
 
 
-def _clean(raw: pd.DataFrame) -> pd.DataFrame:
-    """Tox21 re-screen records into ``(SMILES, value)`` pairs on the pIC50 scale.
+def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
+    """Tox21 re-screen records into ``(SMILES, value, is_censored)`` rows on the pIC50 scale.
 
-    Keeps active compounds and takes the median ``Potency`` (AC50 in micromolar) across
-    the replicate columns, so ``pIC50 = 6 - log10(median potency)``. Inactives -- which
-    carry no potency -- are dropped rather than turned into an invented detection-limit
+    Keeps active compounds and takes the median ``Potency`` (AC50 in micromolar) across the
+    replicate columns, so ``pIC50 = 6 - log10(median potency)``. With ``include_inactives``,
+    the compounds the campaign called inactive -- which carry no potency -- are kept too, as
+    censored rows pinned to the bottom of the pIC50 range: they say the one thing the assay
+    established, that the compound is not resolvably active, which is exactly the inactive
+    population the hit-biased curve set lacks. Without the flag they are dropped (the historic
+    behaviour), since turning a non-measurement into a point estimate injects an invented
     value.
     """
-    frame = raw[raw["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
-    frame = frame[frame["PUBCHEM_EXT_DATASOURCE_SMILES"].notna()]
-    potency_columns = [c for c in frame.columns if c.startswith("Potency-Replicate")]
+    smiles_column = "PUBCHEM_EXT_DATASOURCE_SMILES"
+    with_smiles = raw[raw[smiles_column].notna()]
+    active = with_smiles[with_smiles["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
+    potency_columns = [c for c in active.columns if c.startswith("Potency-Replicate")]
     if not potency_columns:
         raise KeyError("Tox21 deposit has no 'Potency-Replicate' columns")
-    potency = frame[potency_columns].apply(pd.to_numeric, errors="coerce")
+    potency = active[potency_columns].apply(pd.to_numeric, errors="coerce")
     median = potency.where(potency > 0).median(axis=1)
-
-    frame = frame[median.notna()]
-    frame["value"] = 6.0 - np.log10(median[median.notna()].to_numpy(float))
+    active = active[median.notna()]
+    active["value"] = 6.0 - np.log10(median[median.notna()].to_numpy(float))
     low, high = PIC50_RANGE
-    frame = frame[(frame["value"] >= low) & (frame["value"] <= high)]
+    active = active[(active["value"] >= low) & (active["value"] <= high)]
     grouped = (
-        frame.groupby("PUBCHEM_EXT_DATASOURCE_SMILES")["value"]
+        active.groupby(smiles_column)["value"]
         .median()
         .reset_index()
-        .rename(columns={"PUBCHEM_EXT_DATASOURCE_SMILES": "SMILES"})
+        .rename(columns={smiles_column: "SMILES"})
     )
-    return grouped
+    grouped["is_censored"] = False
+    if not include_inactives:
+        return grouped
+
+    # Inactives: one censored row per compound at the pIC50 floor, excluding any compound that
+    # also has an active reading (the active measurement supersedes the detection-limit bound).
+    inactive_smiles = set(
+        with_smiles.loc[
+            with_smiles["PUBCHEM_ACTIVITY_OUTCOME"] == "Inactive", smiles_column
+        ]
+    ) - set(grouped["SMILES"])
+    if not inactive_smiles:
+        return grouped
+    censored = pd.DataFrame(
+        {"SMILES": sorted(inactive_smiles), "value": float(low), "is_censored": True}
+    )
+    logger.info("Tox21: %d active, %d censored inactive compounds", len(grouped), len(censored))
+    return pd.concat([grouped, censored], ignore_index=True)
 
 
 def load_auxiliary(
@@ -81,21 +102,24 @@ def load_auxiliary(
     challenge_smiles: pd.Series,
     cache: Path = DEFAULT_CACHE,
     dedup_mode: str = "canonical_smiles",
+    include_inactives: bool = False,
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Tox21 pIC50 rows for one enzyme.
 
-    Returns columns ``SMILES``, ``value``, ``target``. Empty for any enzyme Tox21 does not
-    cover. Downloads and caches on first use, since the PubChem paging is slow and the
-    answer does not change.
+    Returns columns ``SMILES``, ``value``, ``is_censored``, ``target``. Empty for any enzyme
+    Tox21 does not cover. Downloads and caches on first use, since the PubChem paging is slow
+    and the answer does not change; the active-only and with-inactives cleanings are cached
+    under separate names so one never masquerades as the other.
     """
     if enzyme not in AID:
-        return pd.DataFrame(columns=["SMILES", "value", "target"])
+        return pd.DataFrame(columns=["SMILES", "value", "is_censored", "target"])
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"tox21_{enzyme}.csv"
+    suffix = "_with_inactives" if include_inactives else ""
+    path = cache / f"tox21_{enzyme}{suffix}.csv"
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(download_assay(AID[enzyme]))
+        frame = _clean(download_assay(AID[enzyme]), include_inactives=include_inactives)
         frame.to_csv(path, index=False)
         logger.info("Tox21: cached %d %s compounds", len(frame), enzyme)
     deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
