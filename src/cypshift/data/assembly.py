@@ -141,7 +141,9 @@ def _from_wide(
         for bound in ("conf_low", "conf_high"):
             bound_column = f"{column}_{bound}"
             block[bound] = (
-                frame.loc[present, bound_column].to_numpy(float) if bound_column in frame else np.nan
+                frame.loc[present, bound_column].to_numpy(float)
+                if bound_column in frame
+                else np.nan
             )
         flag = censored_template.format(isoform=isoform) if censored_template else None
         block["is_censored"] = (

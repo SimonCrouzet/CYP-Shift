@@ -1,35 +1,21 @@
-"""Fit a per-endpoint recalibration on out-of-fold predictions and apply it to a submission.
+"""Fit a per-endpoint affine map ``y' = a*y + b`` on out-of-fold predictions and apply it.
 
-A model trained on a spread-preserving loss can still under- or over-spread under the
-attenuation its regulariser imposes, and the blind test is enriched for potent compounds, so
-a per-endpoint map ``y' = a*y + b`` can line the predictions up with the measured band. The
-analysis note (notes/performance_analysis_and_next_steps_2026-10-22.md, avenue 1) is pointed
-about how to fit it, and the defaults here follow that:
+Methods (``--method``, per-endpoint override via ``--endpoint-method ENZYME=method``):
 
-* **Do not assume expansion.** Under squared error the R2-optimal spread ratio is the
-  correlation ``rho``, not one, so a good calibration often *shrinks*. The ``affine`` method
-  lets the fitted slope move freely below or above one within a restrained band; it does not
-  force de-shrinking the way ``variance_match`` does.
-* **Do not fit on the high-true-potency stratum.** Selecting rows because their observed
-  label is large manufactures positive residuals even for a good conditional-mean predictor,
-  so ``fit_potent`` can invent an upward correction that does not transfer. It is kept for
-  comparison but is no longer the default; ``affine`` and ``offset`` fit the whole out-of-fold
-  set.
-* **Calibrate the submitted ensemble, not one member.** ``--members`` averages several
-  members' out-of-fold predictions before fitting, so the map is identified on the same
-  recipe it is applied to rather than on one member whose scale differs from the blend's.
-* **Treat CYP2D6 on its own.** Its labelled training population was selected through CYP2D6
-  while its test compounds were selected through other enzymes, so an enrichment-justified
-  slope from the other isoforms need not apply. ``--endpoint-method CYP2D6=offset`` gives one
-  endpoint a different (gentler) map.
+* ``affine`` -- fit slope and intercept on the whole out-of-fold set by minimising ST-RAE,
+  with the slope clamped to ``--slope-bounds`` (free to sit below or above one). Default.
+* ``offset`` -- fit the intercept only, slope pinned to one.
+* ``fit_potent`` / ``fit_full`` -- free affine minimising ST-RAE on the high-true-potency
+  stratum (``--potent-quantile``) or the whole set.
+* ``variance_match`` / ``variance_match_rho`` -- slope from the label/prediction spread ratio
+  (scaled by the OOF correlation for ``_rho``), intercept from the potent-stratum means.
+
+``--members`` averages several members' out-of-fold predictions before fitting, so the map is
+fit on the same ensemble it is applied to.
 
     python scripts/calibrate.py --rev 9102533 --members graph,graph_octant_tox21 \\
         --method affine --endpoint-method CYP2D6=offset \\
         --submission submissions/graph.csv --output submissions/graph_calibrated.csv
-
-None of these can be judged on the out-of-fold ST-RAE, which rewards the compression the
-blind test punishes; the calibrated submissions are a leaderboard experiment, so a few are
-generated at different methods and compared on the board.
 """
 
 import argparse
@@ -115,7 +101,7 @@ def affine_for_endpoint(
         return float(spread), float(intercept)
 
     # fit_potent / fit_full: free affine minimising ST-RAE on the potent stratum or the whole
-    # set. fit_potent is the historic lever the note warns can invent an upward correction.
+    # set.
     rows = np.ones_like(truth, dtype=bool) if method == "fit_full" else potent
     best = minimize(
         lambda p: soft_threshold_rae(truth[rows], p[0] * pred[rows] + p[1], low[rows], high[rows]),
