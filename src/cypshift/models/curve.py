@@ -57,6 +57,23 @@ SCREEN_PC = 4.305
 #: Arms. Each is its own curve, not a displacement of the other.
 ASSAY_CONDITIONS = ("direct", "preincubated")
 
+#: Assays measured under the preincubation (TDI) condition: the TDI dose-response and the
+#: primary single-concentration screen, which the organisers ran under preincubation to catch
+#: as many hits as possible. Every other assay (the direct DRC and all auxiliary assays) is
+#: direct, so this is the complete preincubated set.
+_PREINCUBATED_ASSAYS = ("tdi_drc", "direct_inhibition_screen")
+
+
+def assay_condition_index(assays: "pd.Series") -> np.ndarray:
+    """Map each row's assay to its curve condition index: 1 preincubated, 0 direct.
+
+    ``ASSAY_CONDITIONS`` orders direct first, preincubated second, so a preincubated assay maps
+    to 1. The screen is preincubated, so it constrains the same curve the TDI read compares
+    against the direct arm -- not the direct curve itself.
+    """
+    return assays.isin(_PREINCUBATED_ASSAYS).to_numpy(int)
+
+
 #: How the network is made to depend on which enzyme and assay_condition a row came from.
 CONDITIONING = ("heads", "descriptor", "film")
 
@@ -376,15 +393,14 @@ class CurveModel:
         target_index = torch.tensor(
             [self.targets.index(t) for t in usable["target"]], dtype=torch.long
         )
-        # The curve has exactly two assay conditions: preincubated (tdi_drc) and direct. Every
-        # non-tdi assay -- the direct curves, the screen, and all auxiliary assays (octant,
-        # veith/tox21, chembl/sair, novartis) -- maps to the direct condition, so auxiliary
-        # rows enter without a per-assay offset of their own. Curve-with-auxiliary is therefore
-        # a different measurement-model assumption than the per-assay conditioning the graph and
-        # boosted paths apply, not the same auxiliary conditioning.
-        assay_condition_index = torch.tensor(
-            (usable["assay"] == "tdi_drc").to_numpy(int), dtype=torch.long
-        )
+        # The curve has exactly two assay conditions: preincubated and direct. The preincubated
+        # arm carries the TDI dose-response and the primary single-concentration screen (run
+        # under preincubation); the direct curves and every auxiliary assay (octant, veith/tox21,
+        # chembl/sair, novartis) map to the direct condition, so auxiliary rows enter without a
+        # per-assay offset of their own. Curve-with-auxiliary is therefore a different
+        # measurement-model assumption than the per-assay conditioning the graph and boosted
+        # paths apply, not the same auxiliary conditioning.
+        condition_index = torch.tensor(assay_condition_index(usable["assay"]), dtype=torch.long)
         kind = torch.tensor(is_screen.astype(int), dtype=torch.long)
         lower_t = torch.tensor(lower, dtype=torch.float32)
         upper_t = torch.tensor(upper, dtype=torch.float32)
@@ -436,7 +452,7 @@ class CurveModel:
                     optimiser.zero_grad()
                     predicted = self._model(features[molecule_index[batch]])
                     rows = torch.arange(len(batch))
-                    parameters = predicted[rows, target_index[batch], assay_condition_index[batch]]
+                    parameters = predicted[rows, target_index[batch], condition_index[batch]]
                     loss = curve_loss(
                         parameters,
                         kind[batch],

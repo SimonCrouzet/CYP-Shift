@@ -225,7 +225,8 @@ ASSAY_METADATA = {
     #                          preincubated  dose_response  luminescent  aggregate
     "direct_inhibition_drc": (0.0, 1.0, 0.0, 0.0),  # fluorogenic, single lab (reference)
     "tdi_drc": (1.0, 1.0, 0.0, 0.0),
-    "direct_inhibition_screen": (0.0, 0.0, 0.0, 0.0),
+    # The primary single-concentration screen was run under the preincubation (TDI) condition.
+    "direct_inhibition_screen": (1.0, 0.0, 0.0, 0.0),
     # Auxiliary contexts described by what separates them at the bench: a coupled
     # luminescent readout (Veith/Tox21) and multi-lab literature aggregation (ChEMBL/SAIR)
     # are the real distinctions; Octant and Novartis share the reference's fluorogenic
@@ -238,8 +239,9 @@ ASSAY_METADATA = {
     # luminescent dose-response profile; without an entry, metadata conditioning raised.
     RESPONSE_ASSAY: (0.0, 1.0, 1.0, 0.0),
     # The screen-response head reads the challenge's own single-concentration screen, so it
-    # shares that assay's profile (fluorogenic, single concentration, single lab).
-    SCREEN_RESPONSE_ASSAY: (0.0, 0.0, 0.0, 0.0),
+    # shares that assay's profile: preincubation (TDI) condition, single concentration, single
+    # lab, fluorogenic.
+    SCREEN_RESPONSE_ASSAY: (1.0, 0.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

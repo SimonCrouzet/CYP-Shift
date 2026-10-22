@@ -18,8 +18,21 @@ from cypshift.models.curve import (
     SCREEN_PC,
     CurveModel,
     CurveNetwork,
+    assay_condition_index,
     inhibition_at,
 )
+
+
+def test_screen_maps_to_the_preincubated_curve_condition():
+    """The primary screen was run under preincubation, so it constrains the preincubated curve
+    (index 1), alongside the TDI DRC -- not the direct curve. Direct DRC and auxiliary assays
+    stay direct (index 0)."""
+    assays = pd.Series(
+        ["direct_inhibition_drc", "tdi_drc", "direct_inhibition_screen", "literature_ic50"]
+    )
+    assert assay_condition_index(assays).tolist() == [0, 1, 1, 0]
+    assert ASSAY_CONDITIONS[1] == "preincubated"  # index 1 is the preincubated arm
+
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]

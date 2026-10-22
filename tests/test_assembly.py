@@ -141,9 +141,16 @@ class TestAssayMetadata:
         challenge = {a: ASSAY_METADATA[a] for a in ASSAYS[:3]}
         assert len(set(challenge.values())) == len(challenge)
 
-    def test_only_the_tdi_assay_condition_preincubates(self):
+    def test_the_preincubated_assays_are_the_tdi_curve_and_the_screen(self):
+        # The organisers ran the primary single-concentration screen (and its response head)
+        # under the preincubation (TDI) condition, so all three carry preincubated=1.0; the
+        # direct DRC and every auxiliary assay do not.
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
-        assert preincubated == {"tdi_drc"}
+        assert preincubated == {
+            "tdi_drc",
+            "direct_inhibition_screen",
+            "direct_inhibition_screen_response",
+        }
 
     def test_only_the_screen_is_single_concentration(self):
         single = {a for a, v in ASSAY_METADATA.items() if v[1] == 0.0}
