@@ -16,18 +16,19 @@ def _single_endpoint(values: dict[str, float]) -> np.ndarray:
     return out
 
 
-def test_interval_point_sits_inside_a_lone_interval():
-    """One interval: any point inside is optimal, and the minimiser is one of its bounds."""
-    point = _interval_point(np.array([2.0]), np.array([3.0]), np.array([1.0]))
-    assert 2.0 <= point <= 3.0
+def test_interval_point_keeps_an_anchor_already_inside_the_interval():
+    """A global prediction inside the admissible region is left where it is, not dragged to a
+    bound -- the flat-optimum tie-break goes to the anchor."""
+    point = _interval_point(np.array([0.0]), np.array([10.0]), np.array([1.0]), anchor=5.0)
+    assert point == pytest.approx(5.0)
 
 
 def test_interval_point_is_pulled_toward_the_heavier_cluster():
-    """Two disjoint intervals: the heavier one wins, and the optimum is its near edge."""
+    """Two disjoint intervals with an anchor between them: the heavier one wins, at its edge."""
     low = np.array([0.0, 5.0])
     high = np.array([1.0, 6.0])
     weights = np.array([3.0, 1.0])  # the [0, 1] interval carries three times the weight
-    assert _interval_point(low, high, weights) == pytest.approx(1.0)
+    assert _interval_point(low, high, weights, anchor=3.0) == pytest.approx(1.0)
 
 
 def _fit_corrector(estimator: str, **kwargs) -> AnalogueCorrector:
@@ -73,6 +74,26 @@ def test_shrinkage_toward_one_trusts_the_neighbours_more():
     moved_weak = weak.correct(["CCO"], prediction)[0, 0] - 4.0
     moved_strong = strong.correct(["CCO"], prediction)[0, 0] - 4.0
     assert moved_strong > moved_weak > 0.0
+
+
+def test_kernel_and_neighbour_are_distinct_estimators():
+    """The two value-based estimators weight the neighbours differently, so at a fixed power
+    (!= 1) they do not collapse to the same answer."""
+    smiles = ["CCO", "CCCO", "CCCCO"]
+    truth = _single_endpoint({"a": 5.0, "b": 6.0, "c": 7.0})
+    model_pred = _single_endpoint({"a": 5.0, "b": 6.0, "c": 7.0})
+    lower, upper = truth - 0.1, truth + 0.1
+    common = dict(min_similarity=0.2, shrinkage=0.1, power=3.0)
+    kernel = AnalogueCorrector(estimator="kernel", **common).fit(
+        smiles, truth, lower, upper, model_pred
+    )
+    neighbour = AnalogueCorrector(estimator="neighbour", **common).fit(
+        smiles, truth, lower, upper, model_pred
+    )
+    prediction = _single_endpoint({"q": 5.5})
+    k = kernel.correct(["CCO"], prediction)[0, 0]
+    n = neighbour.correct(["CCO"], prediction)[0, 0]
+    assert k != pytest.approx(n)
 
 
 def test_unknown_estimator_is_rejected():

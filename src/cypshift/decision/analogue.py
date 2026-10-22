@@ -1,39 +1,24 @@
-"""A local, analogue-based correction layered on top of a global model.
+"""A local correction added to a global model's prediction from measured training neighbours.
 
-The graph learns one structure-activity function for the whole library. The blinded test,
-though, was not drawn from that library: it is ten purchased analogues around each measured
-reference hit, so a test compound usually sits near a *known*, same-endpoint training
-measurement. A global function cannot use that -- it has already averaged the reference into
-its weights -- but a local correction can read it directly:
+    y_corrected(x) = (1 - lambda(x)) * y_global(x) + lambda(x) * y_local(x)
 
-    y_corrected(x) = (1 - lambda(x)) * y_global(x) + lambda(x) * y_local(x),
+``y_local`` is computed from the query's nearest same-endpoint training neighbours (Tanimoto
+similarity on Morgan fingerprints); ``lambda(x)`` in [0, 1] decreases with neighbour distance,
+with between-neighbour disagreement, and with neighbour interval width, and is zero when no
+neighbour clears the similarity threshold (then the global prediction is returned unchanged).
 
-where ``y_local`` comes from the query's nearest same-endpoint training neighbours and
-``lambda(x)`` is a shrinkage that goes to zero when those neighbours are distant, disagree,
-or carry poorly determined activities. Where the query has no real analogue the correction
-vanishes and the global prediction stands; where it sits on top of a well-measured reference
-the correction speaks loudest. This is the analysis note's avenue 3
-(notes/performance_analysis_and_next_steps_2026-10-22.md), and shrinkage is not optional:
-the reference hits were selected at the active extreme, so copying their potency inherits
-selection noise and misses the very activity cliffs the analogues were bought to probe.
-
-Three local estimators, because which transfers is an empirical question:
+Three estimators for ``y_local``:
 
 ``neighbour``
-    The similarity-weighted mean of the neighbours' measured values. The plainest baseline.
+    The similarity-weighted mean of the neighbours' measured values (a point estimate).
 ``kernel``
-    A Tanimoto-kernel (Nadaraya-Watson) weighting of the same values, so the closest
-    neighbour dominates rather than counting equally with a distant one.
+    The value minimising the weighted soft-threshold distance to the neighbours' credible
+    intervals, under similarity**power weights. The objective is piecewise linear in the
+    candidate, so the optimum sits at an interval bound; of the bounds attaining it, the one
+    nearest the global prediction is returned.
 ``residual``
-    The global prediction plus the similarity-weighted mean of the neighbours' *residuals*
-    (measured minus the model's own out-of-fold prediction there). This corrects a local bias
-    in the global function rather than discarding it, which is usually the safer move.
-
-Every estimator is interval-aware where it reads a value: given the neighbours' credible
-intervals it picks the point minimising the weighted soft-threshold distance to them (the
-metric's own loss), not the blind mean of their midpoints. That minimiser of a weighted sum
-of soft-threshold absolute errors is piecewise linear in the candidate value, so its optimum
-sits at one of the interval bounds and is found by evaluating them.
+    The global prediction plus the similarity**power-weighted mean of the neighbours'
+    residuals (measured minus the global model's out-of-fold prediction at each neighbour).
 """
 
 import logging
@@ -55,13 +40,16 @@ def _interval_point(
     low: NDArray[np.float64],
     high: NDArray[np.float64],
     weights: NDArray[np.float64],
+    anchor: float,
 ) -> float:
     """The value minimising the weighted soft-threshold distance to a set of intervals.
 
     The objective ``sum_i w_i * (max(0, y - high_i) + max(0, low_i - y))`` is convex and
-    piecewise linear in ``y``, so a minimiser lies at one of the bounds. Evaluating the
-    objective at every bound and taking the best is exact and cheap for the small neighbour
-    sets this is called on.
+    piecewise linear in ``y``, so a minimiser lies at one of the bounds. The optimum is often a
+    flat interval (e.g. a single reference ``[0, 10]`` is matched by any value inside it); of
+    the points that achieve it, the one closest to ``anchor`` (the global prediction) is
+    returned, so a global prediction already inside the admissible region is left where it is
+    rather than dragged to an arbitrary bound.
     """
     candidates = np.concatenate([low, high])
 
@@ -70,7 +58,13 @@ def _interval_point(
         below = np.clip(low - y, a_min=0.0, a_max=None)
         return float((weights * (above + below)).sum())
 
-    return float(min(candidates, key=objective))
+    best = min(objective(float(c)) for c in candidates)
+    # The anchor is itself admissible when it does no worse than the bound optimum (it lies in
+    # the flat region); otherwise take the optimal bound nearest the anchor.
+    if objective(anchor) <= best + 1e-9:
+        return float(anchor)
+    optimal = [float(c) for c in candidates if objective(float(c)) <= best + 1e-9]
+    return min(optimal, key=lambda c: abs(c - anchor))
 
 
 @dataclass
@@ -97,6 +91,10 @@ class AnalogueCorrector:
     #: Disagreement (weighted sd of the neighbours' local target, in pIC50) at which the
     #: extra confidence factor ``exp(-disagreement / scale)`` falls to ``1/e``.
     disagreement_scale: float = 1.0
+    #: Mean neighbour interval width (in pIC50) at which the width factor ``exp(-width / scale)``
+    #: falls to ``1/e``. Independent of ``disagreement_scale``: a single neighbour has zero
+    #: disagreement but can still be wide.
+    width_scale: float = 2.0
     endpoints: tuple[str, ...] = REGRESSION_ENDPOINTS
 
     def __post_init__(self) -> None:
@@ -175,10 +173,13 @@ class AnalogueCorrector:
         eligible = np.flatnonzero(similarities >= self.min_similarity)
         if eligible.size == 0:
             return global_value
-        # Keep the closest neighbours, and weight them by similarity raised to ``power``.
         order = eligible[np.argsort(-similarities[eligible])][: self.max_neighbours]
-        weights = similarities[order] ** self.power
-        total = float(weights.sum())
+        similarity = similarities[order]
+        # The trust weights (for lambda) are always the sharp kernel; the estimator weights
+        # differ: "neighbour" is a plain similarity-weighted point, "kernel" leans harder on
+        # the closest match via similarity**power, so the two are genuinely distinct.
+        trust_weight = similarity**self.power
+        total = float(trust_weight.sum())
         if total <= 0:
             return global_value
 
@@ -188,22 +189,27 @@ class AnalogueCorrector:
         residual = reference["residual"][order]
 
         if self.estimator == "residual":
-            local = global_value + float((weights * residual).sum() / total)
+            local = global_value + float((trust_weight * residual).sum() / total)
             spread_basis = residual
         elif self.estimator == "kernel":
-            local = _interval_point(lower, upper, weights)
+            # Interval-aware: the point minimising the weighted soft-threshold distance to the
+            # neighbours' credible intervals under the sharp kernel weights.
+            local = _interval_point(lower, upper, similarity**self.power, global_value)
             spread_basis = value
-        else:  # "neighbour": interval-aware weighted point over the neighbours' values
-            local = _interval_point(lower, upper, weights)
+        else:  # "neighbour": the plain similarity-weighted mean of the neighbour values
+            local = float((similarity * value).sum() / float(similarity.sum()))
             spread_basis = value
 
-        # Shrinkage: trust the local estimate in proportion to how much neighbour weight
-        # there is and how much the neighbours agree. Both guard against the selection noise
-        # the reference hits carry.
-        mean = float((weights * spread_basis).sum() / total)
-        variance = float((weights * (spread_basis - mean) ** 2).sum() / total)
+        # lambda = (W / (W + shrinkage)) * exp(-disagreement / s_d) * exp(-mean_width / s_w),
+        # where W is the summed neighbour weight, disagreement the weighted sd of spread_basis,
+        # and mean_width the weighted mean interval width.
+        mean = float((trust_weight * spread_basis).sum() / total)
+        variance = float((trust_weight * (spread_basis - mean) ** 2).sum() / total)
         disagreement = float(np.sqrt(max(variance, 0.0)))
-        lam = (total / (total + self.shrinkage)) * float(
-            np.exp(-disagreement / self.disagreement_scale)
+        mean_width = float((trust_weight * (upper - lower)).sum() / total)
+        lam = (
+            (total / (total + self.shrinkage))
+            * float(np.exp(-disagreement / self.disagreement_scale))
+            * float(np.exp(-mean_width / self.width_scale))
         )
         return (1.0 - lam) * global_value + lam * local
