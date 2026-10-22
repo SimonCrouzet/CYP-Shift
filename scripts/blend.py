@@ -20,6 +20,7 @@ whether a blend beats its best member; treat the absolute level with the usual c
 """
 
 import argparse
+import itertools
 import logging
 import re
 from pathlib import Path
@@ -203,6 +204,46 @@ def blend(
     return predictions, truth, weights
 
 
+def macro_st_rae_on(
+    members: dict[str, pd.DataFrame],
+    method: str,
+    fit_names: set | None,
+    held_names: set | None,
+) -> float:
+    """Blend these members and return the macro ST-RAE, on the held-out rows when a fit/score
+    split is in force (so the score is off the weights' fitting data), else in sample."""
+    predictions, truth, _ = blend(members, method, None, fit_names)
+    if held_names is not None:
+        keep = truth["Molecule_Name"].isin(held_names).to_numpy()
+        predictions, truth = predictions.loc[keep], truth.loc[keep]
+    return float(score_submission(predictions, truth).loc[MACRO_LABEL, "ST-RAE_mean"])
+
+
+def search_combinations(
+    available: dict[str, pd.DataFrame],
+    candidates: list[str],
+    method: str,
+    fit_names: set | None,
+    held_names: set | None,
+    max_size: int,
+) -> tuple[list[str], float]:
+    """Best member subset (size 2..max_size) among ``candidates``, by blended macro ST-RAE.
+
+    Enumerates every subset so the winner is the best *combination* of the top single models,
+    not just the top-k pooled -- members that each win a different region can blend better than
+    the k individually-best. Scored on the held-out rows when a fit/score split is in force.
+    """
+    best_subset = list(candidates[:2])
+    best_score = np.inf
+    for size in range(2, min(max_size, len(candidates)) + 1):
+        for subset in itertools.combinations(candidates, size):
+            members = {name: available[name] for name in subset}
+            score = macro_st_rae_on(members, method, fit_names, held_names)
+            if score < best_score:
+                best_score, best_subset = score, list(subset)
+    return best_subset, best_score
+
+
 def scaffold_fit_mask(
     names: pd.Series, directory: Path, holdout_frac: float, seed: int
 ) -> np.ndarray:
@@ -244,6 +285,20 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Which CV repeat's bundles to use.")
     parser.add_argument("--members", default=None, help="Comma-separated config names to blend.")
     parser.add_argument("--top-k", type=int, default=None, help="Blend the best K single models.")
+    parser.add_argument(
+        "--combo-search",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Search every subset of the top-N single models and keep the best-blending "
+        "combination (not just the pooled top-k). Pair with --eval-holdout-frac for a fair read.",
+    )
+    parser.add_argument(
+        "--combo-max-size",
+        type=int,
+        default=5,
+        help="Largest member subset the combination search considers (default 5).",
+    )
     parser.add_argument(
         "--per-family",
         action="store_true",
@@ -338,11 +393,27 @@ def main() -> None:
         for name in singles.index:  # singles is sorted best-first, so the first per family wins
             best_of.setdefault(family(name), name)
         chosen = list(best_of.values())
+    elif arguments.combo_search:
+        candidates = list(singles.head(arguments.combo_search).index)
+        chosen, combo_score = search_combinations(
+            available,
+            candidates,
+            arguments.method,
+            fit_names,
+            held_names,
+            arguments.combo_max_size,
+        )
+        where = "held-out" if fit_names is not None else "in-sample"
+        print(
+            f"combo search over top {len(candidates)} (subsets <= {arguments.combo_max_size}): "
+            f"best {chosen} at {combo_score:.4f} {where} macro ST-RAE"
+        )
     elif arguments.top_k:
         chosen = list(singles.head(arguments.top_k).index)
     else:
         raise SystemExit(
-            "pass --members, --top-k, --per-family, --per-endpoint, or --endpoint-members"
+            "pass --members, --top-k, --combo-search, --per-family, --per-endpoint, or "
+            "--endpoint-members"
         )
     members = {n: available[n] for n in chosen}
 

@@ -10,7 +10,12 @@ import pytest
 from cypshift.config import REGRESSION_ENDPOINTS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from blend import blend, fit_weights, per_endpoint_best  # noqa: E402
+from blend import (  # noqa: E402
+    blend,
+    fit_weights,
+    per_endpoint_best,
+    search_combinations,
+)
 
 RNG = np.random.default_rng(0)
 N = 40
@@ -63,6 +68,22 @@ def test_blend_fits_on_named_rows_regardless_of_member_order():
     _, _, second = blend(members, "nnls", fit_names=second_half)
     assert first[enzyme]["low"] > first[enzyme]["high"]
     assert second[enzyme]["high"] > second[enzyme]["low"]
+
+
+def test_combination_search_keeps_the_best_blending_subset():
+    """Over the top-N singles, the search keeps the subset that blends best. A perfect member
+    with a mildly-off one beats pairing the perfect member with a far-off one, or adding the
+    far-off one as a third."""
+    available = {
+        "perfect": _member(dict.fromkeys(REGRESSION_ENDPOINTS, 0.0)),
+        "mild": _member(dict.fromkeys(REGRESSION_ENDPOINTS, 1.0)),
+        "far": _member(dict.fromkeys(REGRESSION_ENDPOINTS, 5.0)),
+    }
+    chosen, score = search_combinations(
+        available, ["perfect", "mild", "far"], "equal", None, None, max_size=3
+    )
+    assert set(chosen) == {"perfect", "mild"}  # the lowest-error equal blend
+    assert "far" not in chosen
 
 
 def test_fit_weights_equal_is_uniform():
