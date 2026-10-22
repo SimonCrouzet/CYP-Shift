@@ -32,7 +32,7 @@ import pandas as pd
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.challenge import load
 from cypshift.data.splits import (
-    analogue_holdout,
+    analogue_split,
     similarity_matched_holdout,
     stratified_scaffold_folds,
 )
@@ -140,8 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     test_names = set(test["Molecule_Name"])
 
     if arguments.outer == "analogue":
-        outer = analogue_holdout(
+        split = analogue_split(
             train["SMILES"].tolist(), holdout_fraction=arguments.outer_frac, seed=config.data.seed
+        )
+        outer = split.holdout_mask
+        coverage = split.anchor_label_coverage(train[list(REGRESSION_ENDPOINTS)].notna().to_numpy())
+        print(
+            "same-endpoint anchor coverage:",
+            {
+                REGRESSION_ENDPOINTS[c].split("_")[0]: (None if v != v else round(v, 3))
+                for c, v in coverage.items()
+            },
         )
     elif arguments.outer == "similarity":
         outer = similarity_matched_holdout(

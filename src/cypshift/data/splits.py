@@ -28,6 +28,7 @@ the full training set. Matching narrows the gap; it does not close it. Use
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -235,14 +236,52 @@ def similarity_matched_holdout(
     return mask
 
 
-def analogue_holdout(
+@dataclass(frozen=True)
+class AnalogueSplit:
+    """An analogue holdout and the retained anchor each held-out compound came from.
+
+    ``holdout_mask`` is true where a compound is a held-out analogue; ``anchor_of`` maps each
+    compound to the row index of its retained anchor, or ``-1`` for a retained compound. The
+    anchor mapping is what distinguishes this from a plain structural-neighbour mask: it names
+    the retained reference a local corrector would read for each held-out compound.
+    """
+
+    holdout_mask: NDArray[np.bool_]
+    anchor_of: NDArray[np.int_]
+
+    def anchor_label_coverage(self, labels: NDArray[np.bool_]) -> dict[int, float]:
+        """Per endpoint column, the fraction of held-out-and-labelled compounds whose anchor is
+        also labelled there, i.e. for which a same-endpoint retained reference actually exists.
+
+        A held-out compound is scored on an endpoint only where it carries a label; this reports
+        whether its anchor carries one on the same endpoint, which is what a same-endpoint
+        reference-hit comparison assumes (and what the mask alone cannot guarantee). ``NaN`` for
+        an endpoint with no held-out label.
+        """
+        labels = np.asarray(labels, dtype=bool)
+        held = np.flatnonzero(self.holdout_mask)
+        coverage: dict[int, float] = {}
+        for column in range(labels.shape[1]):
+            labelled = held[labels[held, column]]
+            if labelled.size == 0:
+                coverage[column] = float("nan")
+                continue
+            anchors = self.anchor_of[labelled]
+            has_anchor_label = (anchors >= 0) & labels[np.clip(anchors, 0, None), column]
+            coverage[column] = float(has_anchor_label.sum() / labelled.size)
+        return coverage
+
+
+def analogue_split(
     train_smiles: Sequence[str],
     holdout_fraction: float = 0.1,
     min_similarity: float = 0.4,
+    labels: NDArray[np.bool_] | None = None,
+    require_labelled_anchor: bool = False,
     n_bits: int = DEFAULT_N_BITS,
     radius: int = DEFAULT_RADIUS,
     seed: int = 0,
-) -> NDArray[np.bool_]:
+) -> AnalogueSplit:
     """Hold out analogues of retained anchors, the way the blinded test was built.
 
     The scaffold split guards against near-duplicate leakage, and the similarity-matched
@@ -251,22 +290,28 @@ def analogue_holdout(
     scored while their anchor stays known. This builds exactly that second view. It walks
     compounds from the most to the least locally crowded, and for each one not yet placed it
     keeps that compound as a retained anchor and sends its still-unplaced neighbours above
-    ``min_similarity`` to the holdout, until the holdout reaches ``holdout_fraction``. The
-    model is then scored on compounds that sit near a retained anchor -- the analogue regime
-    the calibration and local-correction experiments live or die in -- and, because scoring
-    drops unmeasured endpoints, only genuinely observed labels are judged.
+    ``min_similarity`` to the holdout, recording which anchor each came from, until the holdout
+    reaches ``holdout_fraction``.
 
     Args:
         train_smiles: Training compounds to split.
         holdout_fraction: Share of the training set to hold out as analogues.
         min_similarity: A neighbour joins an anchor's holdout only above this Tanimoto, so a
             compound with no real analogue is never forced into a spurious pair.
+        labels: Optional ``(n, n_endpoints)`` boolean of which endpoints each compound has a
+            measurement for, used by ``require_labelled_anchor``.
+        require_labelled_anchor: When true (and ``labels`` given), a neighbour joins an anchor's
+            holdout only if the anchor shares at least one measured endpoint with it, so the
+            held-out analogue actually has a same-endpoint retained reference.
         n_bits, radius: Fingerprint geometry (ECFP4-equivalent by default).
         seed: Fixes the anchor walk where similarities tie.
 
     Returns:
-        Boolean mask over ``train_smiles``, true where a compound is a held-out analogue.
+        An :class:`AnalogueSplit` (mask plus the anchor index per held-out compound).
     """
+    if require_labelled_anchor and labels is None:
+        raise ValueError("require_labelled_anchor needs labels")
+    label_array = None if labels is None else np.asarray(labels, dtype=bool)
     rng = np.random.default_rng(seed)
     fingerprints = morgan_fingerprints(train_smiles, radius=radius, n_bits=n_bits)
     n = len(fingerprints)
@@ -277,10 +322,11 @@ def analogue_holdout(
 
     placed = np.zeros(n, dtype=bool)  # anchor or already-held-out
     holdout = np.zeros(n, dtype=bool)
+    anchor_of = np.full(n, -1, dtype=int)
     for anchor in order:
-        if placed[anchor] or holdout.sum() >= n_holdout:
-            if holdout.sum() >= n_holdout:
-                break
+        if holdout.sum() >= n_holdout:
+            break
+        if placed[anchor]:
             continue
         placed[anchor] = True  # the anchor itself stays retained
         similarities = np.array(
@@ -291,15 +337,41 @@ def analogue_holdout(
         for neighbour in neighbours[np.argsort(-similarities[neighbours])]:
             if holdout.sum() >= n_holdout:
                 break
+            if (
+                require_labelled_anchor
+                and label_array is not None
+                and not np.any(label_array[anchor] & label_array[neighbour])
+            ):
+                continue  # no shared endpoint: the anchor is not a usable reference here
             holdout[neighbour] = True
             placed[neighbour] = True
+            anchor_of[neighbour] = anchor
     logger.info(
         "analogue holdout: %d of %d compounds held out as analogues (target %d)",
         int(holdout.sum()),
         n,
         n_holdout,
     )
-    return holdout
+    return AnalogueSplit(holdout, anchor_of)
+
+
+def analogue_holdout(
+    train_smiles: Sequence[str],
+    holdout_fraction: float = 0.1,
+    min_similarity: float = 0.4,
+    n_bits: int = DEFAULT_N_BITS,
+    radius: int = DEFAULT_RADIUS,
+    seed: int = 0,
+) -> NDArray[np.bool_]:
+    """The analogue holdout mask; see :func:`analogue_split` for the anchor-aware version."""
+    return analogue_split(
+        train_smiles,
+        holdout_fraction=holdout_fraction,
+        min_similarity=min_similarity,
+        n_bits=n_bits,
+        radius=radius,
+        seed=seed,
+    ).holdout_mask
 
 
 def similarity_profile_gap(

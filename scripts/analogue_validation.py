@@ -17,8 +17,9 @@ import logging
 import sys
 from pathlib import Path
 
+from cypshift.config import REGRESSION_ENDPOINTS
 from cypshift.data.challenge import load
-from cypshift.data.splits import analogue_holdout
+from cypshift.data.splits import analogue_split
 from cypshift.experiment import DEFAULT_CONFIG_PATH, ExperimentConfig
 from cypshift.pipeline import run
 
@@ -58,13 +59,24 @@ def main(argv: list[str] | None = None) -> int:
     # The mask must line up with the row order run() loads the training set in, so it is built
     # from the same load.
     train = load("inhibition", Path(config.data.directory))
-    mask = analogue_holdout(
+    labels = train[list(REGRESSION_ENDPOINTS)].notna().to_numpy()
+    split = analogue_split(
         train["SMILES"].tolist(),
         holdout_fraction=arguments.holdout_frac,
         min_similarity=arguments.min_similarity,
         seed=config.data.seed,
     )
-    scores, _ = run(config, bundle_path=arguments.bundle, holdout_mask=mask)
+    # Report whether each held-out compound actually has a same-endpoint retained anchor: the
+    # mask alone does not guarantee it, and a local corrector depends on it.
+    coverage = split.anchor_label_coverage(labels)
+    print(
+        "same-endpoint anchor coverage:",
+        {
+            REGRESSION_ENDPOINTS[c].split("_")[0]: (None if v != v else round(v, 3))
+            for c, v in coverage.items()
+        },
+    )
+    scores, _ = run(config, bundle_path=arguments.bundle, holdout_mask=split.holdout_mask)
     print(scores.round(4).to_string())
     print(f"\nanalogue-view MA-ST-RAE: {scores.loc['MA', 'ST-RAE_mean']:.4f}")
     return 0

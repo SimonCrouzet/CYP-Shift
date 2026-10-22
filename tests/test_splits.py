@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from cypshift.data.splits import (
+    AnalogueSplit,
     analogue_holdout,
+    analogue_split,
     leave_one_out_max_similarity,
     max_similarity_against_retained,
     max_similarity_to,
@@ -165,3 +167,51 @@ def test_analogue_holdout_is_reproducible():
     one = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
     two = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
     assert np.array_equal(one, two)
+
+
+def test_analogue_split_records_each_held_out_compound_s_anchor():
+    """F11: the split exposes the retained anchor per held-out compound, and the mask matches
+    analogue_holdout. Each held-out anchor is retained and similar above the threshold."""
+    split = analogue_split(SMILES, holdout_fraction=0.3, min_similarity=0.4, seed=0)
+    mask = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    assert np.array_equal(split.holdout_mask, mask)
+    fingerprints = morgan_fingerprints(SMILES)
+    for index in np.flatnonzero(split.holdout_mask):
+        anchor = split.anchor_of[index]
+        assert anchor >= 0
+        assert not split.holdout_mask[anchor]  # the anchor is retained
+        assert max_similarity_to([fingerprints[index]], [fingerprints[anchor]])[0] >= 0.4
+    assert (split.anchor_of[~split.holdout_mask] == -1).all()  # retained carry no anchor
+
+
+def test_anchor_label_coverage_reports_same_endpoint_references():
+    """F11: coverage is the fraction of held-out-and-labelled compounds whose anchor is also
+    labelled on that endpoint."""
+    split = AnalogueSplit(
+        holdout_mask=np.array([False, False, True, True]),
+        anchor_of=np.array([-1, -1, 0, 1]),
+    )
+    labels = np.zeros((4, 4), dtype=bool)
+    labels[2, 0] = labels[0, 0] = True  # held-out 2 and its anchor 0 both labelled on endpoint 0
+    labels[3, 0] = True  # held-out 3 labelled, but its anchor 1 is not
+    coverage = split.anchor_label_coverage(labels)
+    assert coverage[0] == pytest.approx(0.5)
+    assert coverage[1] != coverage[1]  # NaN: no held-out label on endpoint 1
+
+
+def test_require_labelled_anchor_drops_a_pair_with_no_shared_endpoint():
+    """F11: with require_labelled_anchor, a neighbour whose anchor shares no measured endpoint is
+    not held out (it would have no same-endpoint reference)."""
+    smiles = ["CCO", "CCO"]  # identical, so each is the other's only neighbour
+    labels = np.array([[True, False, False, False], [False, True, False, False]])
+    without = analogue_split(smiles, holdout_fraction=0.5, min_similarity=0.5, seed=0)
+    with_rule = analogue_split(
+        smiles,
+        holdout_fraction=0.5,
+        min_similarity=0.5,
+        labels=labels,
+        require_labelled_anchor=True,
+        seed=0,
+    )
+    assert without.holdout_mask.sum() == 1
+    assert with_rule.holdout_mask.sum() == 0
