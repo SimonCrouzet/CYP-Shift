@@ -173,6 +173,15 @@ def check_data(data_dir: Path, external: Path) -> bool:
     return core_ok
 
 
+def _hf_login_token() -> str | None:
+    """The token ``hf auth login`` stored, if huggingface_hub is importable."""
+    try:
+        from huggingface_hub import get_token
+    except ImportError:
+        return None
+    return get_token()
+
+
 def check_tokens() -> None:
     """Report the environment tokens some families need; all are optional."""
     section("environment tokens")
@@ -185,9 +194,9 @@ def check_tokens() -> None:
     tfm_token = bool(os.environ.get("TABPFN_TOKEN"))
     tfm_note = "set" if tfm_token else "unset (tfm configs fail+skip)"
     line(_status(tfm_token, warn_if_missing=True), f"TABPFN_TOKEN {tfm_note}")
-    hf = bool(os.environ.get("HF_TOKEN") or os.environ.get("HF_HOME"))
+    hf = bool(os.environ.get("HF_TOKEN") or os.environ.get("HF_HOME") or _hf_login_token())
     hf_note = "set" if hf else "unset (only needed to (re)generate embeddings)"
-    line(_status(hf, warn_if_missing=True), f"HF_TOKEN / HF_HOME {hf_note}")
+    line(_status(hf, warn_if_missing=True), f"HF_TOKEN / HF_HOME / hf auth login {hf_note}")
 
 
 def fetch_core(data_dir: Path) -> None:
