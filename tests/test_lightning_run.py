@@ -315,3 +315,62 @@ def test_build_code_archive_ships_tracked_code_but_no_data(tmp_path):
     assert any(n.startswith("scripts/") for n in names)
     assert any(n.startswith("src/cypshift/") for n in names)
     assert not any(n.startswith("data/") for n in names)  # data is gitignored, never archived
+
+
+def test_an_unresolved_teamspace_becomes_guidance_before_any_studio_exists(monkeypatch):
+    """The SDK raises a bare ValueError for an unresolved teamspace; we say what to set."""
+
+    class NoTeamspace:
+        def __init__(self, **_):
+            raise ValueError("Couldn't resolve teamspace from the provided name, org, or user")
+
+    monkeypatch.setattr(lr, "_require_sdk", lambda: (NoTeamspace, object))
+    monkeypatch.setattr(
+        lr, "teamspace_hint", lambda: " Logged in as me; teamspaces: ts (owner: me)."
+    )
+    args = lr.build_parser().parse_args(["launch", "--dry-run"])
+    with pytest.raises(SystemExit) as raised:
+        lr.open_studio(args)
+    message = str(raised.value)
+    assert "--teamspace" in message and "LIGHTNING_TEAMSPACE" in message
+    assert "Logged in as me; teamspaces: ts (owner: me)." in message
+
+
+def test_the_teamspace_owner_flags_reach_the_sdk(monkeypatch):
+    seen = {}
+
+    class Recording:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(lr, "_require_sdk", lambda: (Recording, object))
+    args = lr.build_parser().parse_args(
+        ["launch", "--dry-run", "--teamspace", "ts", "--user", "me", "--studio", "s1"]
+    )
+    lr.open_studio(args)
+    assert seen == {"name": "s1", "teamspace": "ts", "user": "me", "org": None, "create_ok": True}
+
+
+def test_other_value_errors_are_not_rewritten(monkeypatch):
+    class Broken:
+        def __init__(self, **_):
+            raise ValueError("something else entirely")
+
+    monkeypatch.setattr(lr, "_require_sdk", lambda: (Broken, object))
+    with pytest.raises(ValueError, match="something else"):
+        lr.open_studio(lr.build_parser().parse_args(["launch", "--dry-run"]))
+
+
+def test_the_teamspace_hint_never_raises(monkeypatch):
+    """With the SDK unreachable (or unauthenticated) the hint is empty, not an exception."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def refuse(name, *args, **kwargs):
+        if name.startswith("lightning_sdk"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse)
+    assert lr.teamspace_hint() == ""

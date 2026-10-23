@@ -128,7 +128,7 @@ Per-machine tokens live in `local.machine.env` at the repo root. It is gitignore
 | Variable | Used for |
 |---|---|
 | `LIGHTNING_USER_ID`, `LIGHTNING_API_KEY` | the Lightning SDK (alternative: `lightning login`) |
-| `CYP_LAI_STUDIO`, `CYP_LAI_TEAMSPACE` | optional defaults for `--studio` / `--teamspace` |
+| `LIGHTNING_TEAMSPACE` + `LIGHTNING_USERNAME` (or `LIGHTNING_ORG`) | the teamspace the Studio lives in and its owner; the SDK needs both (or pass `--teamspace` and `--user`/`--org`). `CYP_LAI_TEAMSPACE` / `CYP_LAI_STUDIO` are launcher defaults for `--teamspace` / `--studio` |
 | `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` (the key falls back to the `wandb login` entry in `~/.netrc`; `launch --wandb` refuses to start without one) |
 | `TABPFN_TOKEN` | the `tfm_*` configs; forwarded by `launch` when set |
 | `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set, else the token `hf auth login` stored |

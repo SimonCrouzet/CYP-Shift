@@ -320,10 +320,47 @@ def resolve_machine(name: str) -> object:
     return getattr(machine_enum, key)
 
 
+def teamspace_hint() -> str:
+    """The authenticated account's teamspaces and their owners, for the unresolved-teamspace error.
+
+    Best effort: a network, auth or SDK-internals failure yields an empty hint rather than masking
+    the real error. ``_get_authed_user`` is the SDK's own (private) resolver of the logged-in user.
+    """
+    try:
+        from lightning_sdk.utils.resolve import _get_authed_user
+
+        user = _get_authed_user()
+        listed = [f"{ts.name} (owner: {ts.owner.name})" for ts in user.teamspaces]
+    except Exception:  # noqa: BLE001 -- a hint must never replace the error it explains
+        return ""
+    return f" Logged in as {user.name}; teamspaces: {', '.join(listed) or '(none)'}."
+
+
 def open_studio(args: argparse.Namespace) -> object:
-    """The named Studio, created on first use. Opening it does not start it."""
+    """The named Studio, created on first use. Opening it does not start it.
+
+    The SDK needs a teamspace name and its owner (a user or an org). Both can come from the flags
+    or from the SDK's own ``LIGHTNING_TEAMSPACE`` / ``LIGHTNING_USERNAME`` / ``LIGHTNING_ORG``
+    variables; when none resolves it raises a bare ``ValueError``, which is turned into guidance
+    here, before any Studio exists.
+    """
     studio_cls, _ = _require_sdk()
-    return studio_cls(name=args.studio, teamspace=args.teamspace, create_ok=True)
+    try:
+        return studio_cls(
+            name=args.studio,
+            teamspace=args.teamspace,
+            user=args.user,
+            org=args.org,
+            create_ok=True,
+        )
+    except ValueError as error:
+        if "teamspace" not in str(error).lower():
+            raise
+        raise SystemExit(
+            "no Lightning teamspace to put the Studio in: pass --teamspace NAME (plus --org ORG if "
+            "an organization owns it, else --user USERNAME), or set LIGHTNING_TEAMSPACE and "
+            "LIGHTNING_USERNAME (or LIGHTNING_ORG) in local.machine.env." + teamspace_hint()
+        ) from error
 
 
 def ensure_running(
@@ -537,6 +574,12 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--studio", default=os.environ.get("CYP_LAI_STUDIO", "cyp-shift"))
     common.add_argument("--teamspace", default=os.environ.get("CYP_LAI_TEAMSPACE"))
+    common.add_argument(
+        "--user", default=None, help="teamspace owner, if a user (SDK default: LIGHTNING_USERNAME)"
+    )
+    common.add_argument(
+        "--org", default=None, help="teamspace owner, if an org (SDK default: LIGHTNING_ORG)"
+    )
     common.add_argument(
         "--remote-dir", default=DEFAULT_REMOTE_DIR, help="relative to the Studio root"
     )
