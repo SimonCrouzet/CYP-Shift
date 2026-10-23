@@ -417,3 +417,68 @@ def test_inhibition_has_finite_gradients_in_the_overflow_regime():
     params = torch.tensor([3.0, 5.0, 5.0], requires_grad=True)  # pIC50 far below pC
     inhibition_at(params, torch.tensor(12.0)).backward()
     assert torch.isfinite(params.grad).all()
+
+
+def _graph_model(**kwargs):
+    """A small graph-backbone curve for fast tests (fresh encoder, no CheMeleon download)."""
+    from cypshift.models.curve import GraphCurveModel
+
+    settings = {"hidden": 32, "depth": 2, "epochs": 3, "batch_size": 16, "n_forward_passes": 3}
+    return GraphCurveModel(**{**settings, **kwargs})
+
+
+def test_graph_curve_shares_the_readout_with_the_mlp_curve():
+    """The cross-model curve reads an answer off the curve exactly as the fingerprint MLP does:
+    both inherit the same _CurveReadout, so there is one definition of each read."""
+    from cypshift.models.curve import GraphCurveModel, _CurveReadout
+
+    assert issubclass(GraphCurveModel, _CurveReadout)
+    assert issubclass(CurveModel, _CurveReadout)
+
+
+def test_graph_curve_fits_and_reads_every_answer_off_one_curve():
+    """A D-MPNN backbone under the dose-response head: it trains, and the regression midpoint,
+    the screen-concentration response, and the is_TDI call all read off the predicted curve."""
+    model = _graph_model().fit(_observations())
+    distribution = model.predict(SMILES)
+    assert distribution.samples.shape == (3, len(SMILES), len(ISOFORMS))  # (passes, n, endpoints)
+    assert np.isfinite(distribution.samples).all()
+    assert model.predict_pic50(SMILES).shape == (len(SMILES), len(ISOFORMS))
+    response = model.predict_response(SMILES)
+    assert response.shape == (len(SMILES), len(ISOFORMS))
+    assert ((response >= 0.0) & (response <= 1.0)).all()  # a bounded inhibited fraction
+    tdi = model.predict_is_time_dependent(SMILES)
+    assert tdi.shape == (len(SMILES), len(ISOFORMS)) and tdi.dtype == bool
+
+
+def test_graph_curve_backbone_is_a_message_passing_encoder():
+    """The injected trunk is the chemprop encoder, and its output width is the encoder's -- the
+    curve head reads a learned graph representation, not a fingerprint MLP's output."""
+    from chemprop import nn as cpnn
+
+    from cypshift.models.curve import _GraphTrunk
+
+    model = _graph_model().fit(_observations())
+    assert isinstance(model._model.trunk, _GraphTrunk)
+    assert isinstance(model._model.trunk.message_passing, cpnn.BondMessagePassing)
+    assert model._model.trunk.output_dim == model._model.trunk.message_passing.output_dim
+
+
+def test_graph_curve_descriptors_ride_along_as_x_d():
+    """physchem/mechanism descriptors widen the representation the head reads (appended as x_d),
+    so the trunk output is wider than the bare encoder."""
+    bare = _graph_model().fit(_observations())
+    with_descriptors = _graph_model(physchem=True, mechanism=True).fit(_observations())
+    assert with_descriptors._model.trunk.output_dim > bare._model.trunk.output_dim
+
+
+def test_graph_curve_predicting_before_fitting_is_an_error():
+    with pytest.raises(RuntimeError, match="model is not fitted"):
+        _graph_model().predict_pic50(SMILES[:3])
+
+
+def test_graph_curve_rejects_an_unknown_conditioning_mode():
+    from cypshift.models.curve import GraphCurveModel
+
+    with pytest.raises(ValueError, match="unknown conditioning"):
+        GraphCurveModel(conditioning="nonsense")

@@ -61,6 +61,15 @@ CONDITIONING_STRATEGIES = (
 #: enzyme's data improve the scored ones. Which wins is measured, not assumed.
 CURVE_CONDITIONING = ("heads", "descriptor", "film")
 
+#: Which backbone the curve's dose-response head sits on: the fingerprint MLP, or a chemprop
+#: D-MPNN encoder (the cross-model curve-on-graph track).
+CURVE_BACKBONES = ("mlp", "graph")
+
+#: Pretrained encoders the graph curve backbone can initialise from. A subset of
+#: ``GRAPH_PRETRAINING``: ``"mammal"`` is an x_d embedding the graph readout appends, which the
+#: curve head does not consume, so only the message-passing encoders apply here.
+CURVE_BACKBONE_PRETRAINING = ("none", "chemeleon")
+
 #: Re-exported so a config can be validated without importing the data package.
 DESCRIPTOR_SOURCES = _DESCRIPTOR_SOURCES
 
@@ -316,6 +325,20 @@ class CurveConfig:
     #: Hidden-layer count of the curve backbone (the MLP under the dose-response head). Deepening
     #: it is the cheapest backbone-architecture lever; the head is unchanged. Swept.
     trunk_depth: int = 2
+    #: Which backbone produces the shared representation the dose-response head reads; see
+    #: :data:`CURVE_BACKBONES`. ``"mlp"`` is the fingerprint MLP (:class:`CurveModel`); ``"graph"``
+    #: is a chemprop D-MPNN encoder (:class:`GraphCurveModel`) -- the curve head on the graph
+    #: family's learned backbone. Swept.
+    backbone: str = "mlp"
+    #: Message-passing depth of the D-MPNN encoder when ``backbone="graph"`` (``hidden`` is its
+    #: message-passing width); ignored by the MLP backbone. Swept.
+    graph_depth: int = 3
+    #: A pretrained D-MPNN encoder to initialise the graph backbone from (``"none"``/
+    #: ``"chemeleon"``), and whether to fine-tune it or freeze it as a fixed featuriser. Only used
+    #: when ``backbone="graph"``. Swept. See :data:`CURVE_BACKBONE_PRETRAINING`.
+    pretraining: str = "none"
+    pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt"
+    pretraining_finetune: bool = True
     epochs: int = 60
     batch_size: int = 256
     learning_rate: float = 1e-3
@@ -547,6 +570,12 @@ class ExperimentConfig:
         checks = [
             (self.conditioning.strategy, CONDITIONING_STRATEGIES, "conditioning.strategy"),
             (self.model.curve.conditioning, CURVE_CONDITIONING, "model.curve.conditioning"),
+            (self.model.curve.backbone, CURVE_BACKBONES, "model.curve.backbone"),
+            (
+                self.model.curve.pretraining,
+                CURVE_BACKBONE_PRETRAINING,
+                "model.curve.pretraining",
+            ),
             *(
                 (source, DESCRIPTOR_SOURCES, "model.curve.descriptor_sources")
                 for source in self.model.curve.descriptor_sources
@@ -710,11 +739,55 @@ class ExperimentConfig:
                     "model.point_loss_weight / ranking_loss_weight apply only to "
                     f"model.objective='soft_threshold', not {self.model.objective!r}"
                 )
-        if self.model.kind == "curve" and self.model.objective != "soft_threshold":
-            raise ValueError(
-                "the curve model uses its own dose-response loss; model.objective="
-                f"{self.model.objective!r} would be ignored"
-            )
+        if self.model.kind == "curve":
+            if self.model.objective != "soft_threshold":
+                raise ValueError(
+                    "the curve model uses its own dose-response loss; model.objective="
+                    f"{self.model.objective!r} would be ignored"
+                )
+            if self.model.curve.backbone == "mlp":
+                # The D-MPNN backbone knobs belong to the graph curve; the fingerprint MLP
+                # ignores them, so a non-default value would credit a run with a backbone it
+                # never built.
+                if self.model.curve.pretraining != "none":
+                    raise ValueError(
+                        "model.curve.pretraining applies only to model.curve.backbone='graph'"
+                    )
+                if self.model.curve.graph_depth != 3:
+                    raise ValueError(
+                        "model.curve.graph_depth applies only to model.curve.backbone='graph'"
+                    )
+            else:
+                # The graph backbone learns its representation from the molecular graph: the
+                # fingerprint-MLP-only knobs are ignored, so reject them rather than credit a
+                # run with a feature it never read.
+                if self.model.curve.trunk_depth != 2:
+                    raise ValueError(
+                        "model.curve.trunk_depth is the fingerprint MLP's depth; it does not "
+                        "apply to model.curve.backbone='graph'"
+                    )
+                if self.features.molecular_embedding != "none":
+                    raise ValueError(
+                        "the graph curve backbone reads the molecular graph, not "
+                        "features.molecular_embedding"
+                    )
+                stages = self.training.effective_stages()
+                if len(stages) > 1:
+                    raise ValueError(
+                        "the graph curve backbone trains one pooled loop and does not run a "
+                        "multi-stage training curriculum"
+                    )
+                if stages:
+                    stage = stages[0]
+                    restricts_data = set(stage.data_spaces) != set(DATA_SPACES) or stage.assays
+                    sets_strategy = (
+                        stage.epochs is not None or stage.lr is not None or stage.freeze_trunk
+                    )
+                    if restricts_data or sets_strategy:
+                        raise ValueError(
+                            "the graph curve backbone ignores per-stage training settings; "
+                            "configure training through the model.curve.* fields instead"
+                        )
         if self.model.kind == "tfm":
             # The tabular backend has no sample weights, censoring or objective, and trains only
             # on the uncensored reference-assay rows (see TabularFoundationModel.fit). Reject the

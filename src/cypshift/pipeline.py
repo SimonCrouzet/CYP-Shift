@@ -155,6 +155,38 @@ def build_model(
             seed=config.data.seed,
         )
     if kind == "curve":
+        if config.model.curve.backbone == "graph":
+            # The cross-model track: the dose-response head on a chemprop D-MPNN backbone
+            # instead of the fingerprint MLP. The encoder learns the representation, so the
+            # fingerprint feature flags do not apply; physchem/mechanism/ionization ride along
+            # as x_d. The screen still enters as observation rows (same assembly path), so no
+            # screen_model input column is needed.
+            from cypshift.models.curve import GraphCurveModel
+
+            return GraphCurveModel(
+                targets=targets,
+                hidden=config.model.curve.hidden,
+                depth=config.model.curve.graph_depth,
+                dropout=config.model.curve.dropout,
+                pretraining=config.model.curve.pretraining,
+                pretraining_cache=config.model.curve.pretraining_cache,
+                pretraining_finetune=config.model.curve.pretraining_finetune,
+                physchem=config.features.use_physicochemical,
+                mechanism=config.features.use_mechanistic,
+                ionization_geometry=config.features.use_ionization_geometry,
+                ionization_cache=config.features.ionization_cache,
+                epochs=config.model.curve.epochs,
+                batch_size=config.model.curve.batch_size,
+                learning_rate=config.model.curve.learning_rate,
+                num_workers=config.model.graph.num_workers,
+                n_forward_passes=config.model.curve.forward_passes,
+                conditioning=config.model.curve.conditioning,
+                descriptor_sources=tuple(config.model.curve.descriptor_sources),
+                tdi_shift_threshold=config.model.curve.tdi_shift_threshold,
+                tdi_assay_floor=config.model.curve.tdi_assay_floor,
+                loss_tau=config.model.curve.loss_tau,
+                seed=config.data.seed,
+            )
         from cypshift.models.curve import CurveModel
 
         return CurveModel(

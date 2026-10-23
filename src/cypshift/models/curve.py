@@ -25,6 +25,7 @@ organisers' own rule.
 
 import logging
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -289,7 +290,68 @@ def curve_loss(
     return (penalty * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
-class CurveModel:
+class _CurveReadout:
+    """The ways of reading an answer off a fitted curve, shared by every curve backbone.
+
+    A backbone (the fingerprint MLP, or the D-MPNN graph encoder) supplies ``_curves`` --
+    the per-pass curve parameters, shape ``(passes, compounds, targets, assay_conditions, 3)``
+    -- and ``targets``/``tdi_*`` attributes; the regression midpoint, the response at any
+    concentration, and the is_TDI call are the same read regardless of which backbone produced
+    the curve, so they live here once.
+    """
+
+    def predict(self, smiles: list[str]) -> PredictiveDistribution:
+        """The regression track's prediction, satisfying the shared model interface.
+
+        The midpoint of the direct assay_condition's curve, one column per enzyme, with the
+        Monte Carlo dropout passes kept as the member axis so the spread reaches the
+        interval machinery rather than being averaged away here.
+
+        This exists because :class:`cypshift.models.base.Model` requires it and the
+        pipeline calls it. Without it the curve model could be built and fitted but
+        never scored -- every run through the pipeline died at prediction.
+        """
+        curves = self._curves(smiles)
+        direct = curves[:, :, :, ASSAY_CONDITIONS.index("direct"), PIC50]
+        # self.targets may be wider than the scored four when auxiliary enzymes were
+        # trained on; select the scored endpoints in their canonical order.
+        columns = [self.targets.index(e.split("_")[0]) for e in REGRESSION_ENDPOINTS]
+        return PredictiveDistribution(
+            samples=direct[:, :, columns], endpoints=tuple(REGRESSION_ENDPOINTS)
+        )
+
+    def predict_pic50(
+        self, smiles: list[str], assay_condition: str = "direct"
+    ) -> NDArray[np.float64]:
+        """The curve's midpoint, which is what the regression track asks for."""
+        return self._curves(smiles).mean(axis=0)[
+            :, :, ASSAY_CONDITIONS.index(assay_condition), PIC50
+        ]
+
+    def predict_response(
+        self, smiles: list[str], pc: float = SCREEN_PC, assay_condition: str = "direct"
+    ) -> NDArray[np.float64]:
+        """Inhibited fraction at any concentration, read off the predicted curve."""
+        curves = torch.from_numpy(
+            self._curves(smiles).mean(axis=0)[:, :, ASSAY_CONDITIONS.index(assay_condition)]
+        )
+        return inhibition_at(curves, pc).numpy()
+
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """Call is_TDI from the two assay_conditions' curves, using the model's decision
+        thresholds."""
+        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
+        curves = self._curves(smiles).mean(axis=0)
+        direct = curves[:, :, ASSAY_CONDITIONS.index("direct"), PIC50]
+        preincubated = curves[:, :, ASSAY_CONDITIONS.index("preincubated"), PIC50]
+        return np.where(
+            direct > floor,
+            (preincubated - direct) > shift,
+            preincubated > floor + shift,
+        )
+
+
+class CurveModel(_CurveReadout):
     """Predicts a dose-response curve per compound, enzyme and assay_condition."""
 
     name = "curve"
@@ -524,52 +586,311 @@ class CurveModel:
         with torch.no_grad():
             return np.stack([self._model(features).numpy() for _ in range(self.n_forward_passes)])
 
-    def predict(self, smiles: list[str]) -> PredictiveDistribution:
-        """The regression track's prediction, satisfying the shared model interface.
+    # predict / predict_pic50 / predict_response / predict_is_time_dependent are inherited
+    # from _CurveReadout, shared with the graph-backbone curve.
 
-        The midpoint of the direct assay_condition's curve, one column per enzyme, with the
-        Monte Carlo dropout passes kept as the member axis so the spread reaches the
-        interval machinery rather than being averaged away here.
 
-        This exists because :class:`cypshift.models.base.Model` requires it and the
-        pipeline calls it. Without it the curve model could be built and fitted but
-        never scored -- every run through the pipeline died at prediction.
+class _GraphTrunk(nn.Module):
+    """A chemprop D-MPNN encoder adapted as a curve backbone.
+
+    ``CurveNetwork`` calls ``self.trunk(x)`` and uses only its output, so a trunk may take
+    anything as ``x`` provided it returns ``(batch, width)``. This one takes a chemprop batch:
+    it runs message passing over the molecular graph, mean-aggregates to one vector per
+    molecule, and (when present) concatenates the standardised dense descriptor block the batch
+    carries in ``x_d``. The dose-response head above it is unchanged, so the curve is read off a
+    representation learned from the molecular graph instead of the fingerprint MLP's output.
+    """
+
+    def __init__(
+        self, message_passing: nn.Module, aggregation: nn.Module, xd_width: int = 0
+    ) -> None:
+        super().__init__()
+        self.message_passing = message_passing
+        self.aggregation = aggregation
+        #: The representation width the curve head reads: encoder output plus any x_d descriptors.
+        self.output_dim = message_passing.output_dim + xd_width
+
+    def forward(self, batch: object) -> torch.Tensor:
+        node = self.message_passing(batch.bmg, batch.V_d)
+        pooled = self.aggregation(node, batch.bmg.batch)
+        if batch.X_d is not None:
+            pooled = torch.cat([pooled, batch.X_d.to(pooled.device)], dim=1)
+        return pooled
+
+
+class GraphCurveModel(_CurveReadout):
+    """The dose-response curve head on a chemprop D-MPNN backbone.
+
+    The fingerprint-MLP curve (:class:`CurveModel`) and this one share the dose-response head
+    and every way of reading it (:class:`_CurveReadout`); they differ only in the backbone that
+    produces the shared representation. Here a learned D-MPNN encoder -- optionally initialised
+    from the same CheMeleon pretraining the graph model uses -- replaces the fingerprint MLP, so
+    the curve is read off a representation learned from the molecular graph. This is the
+    cross-model track: the curve's two reads (direct for regression, direct-vs-preincubated for
+    TDI) sitting on the graph family's backbone rather than the curve model's own MLP.
+
+    The screen enters as observation rows constraining the curve at the screen concentration,
+    exactly as for the MLP curve; the enzyme/assay_condition conditioning is the curve head's
+    (heads/descriptor/film), not the graph model's readout conditioning. The learned encoder
+    replaces the fingerprint, so the fingerprint feature flags do not apply; physchem/mechanism/
+    ionization descriptors still ride along as chemprop ``x_d``, standardised on training rows.
+    """
+
+    name = "curve_graph"
+    #: Required by :class:`cypshift.models.base.Model`; the TDI endpoints are scored separately.
+    endpoints = tuple(REGRESSION_ENDPOINTS)
+
+    def __init__(
+        self,
+        targets: tuple[str, ...] = ISOFORMS,
+        hidden: int = 300,
+        depth: int = 3,
+        dropout: float = 0.1,
+        pretraining: str = "none",
+        pretraining_cache: str = "data/external/chemeleon/chemeleon_mp.pt",
+        pretraining_finetune: bool = True,
+        physchem: bool = False,
+        mechanism: bool = False,
+        ionization_geometry: bool = False,
+        ionization_cache: str = "data/external/ionization/features.parquet",
+        epochs: int = 60,
+        batch_size: int = 256,
+        learning_rate: float = 1e-3,
+        num_workers: int = 0,
+        n_forward_passes: int = 30,
+        conditioning: str = "heads",
+        descriptor_sources: tuple[str, ...] = ("curated",),
+        tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
+        tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
+        loss_tau: float = 0.5,
+        seed: int = 0,
+    ) -> None:
+        if conditioning not in CONDITIONING:
+            raise ValueError(
+                f"unknown conditioning {conditioning!r}; expected one of {CONDITIONING}"
+            )
+        self.targets = targets
+        #: Encoder message-passing width (d_h) and depth; dropout is shared with the head.
+        self.hidden = hidden
+        self.depth = depth
+        self.dropout = dropout
+        #: Which pretrained encoder initialises the backbone ("none"/"chemeleon") and whether it
+        #: is fine-tuned or frozen as a fixed featuriser.
+        self.pretraining = pretraining
+        self.pretraining_cache = pretraining_cache
+        self.pretraining_finetune = pretraining_finetune
+        #: Dense descriptor blocks appended to the pooled graph representation through x_d.
+        self.physchem = physchem
+        self.mechanism = mechanism
+        self.ionization_geometry = ionization_geometry
+        self.ionization_cache = ionization_cache
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.num_workers = num_workers
+        self.n_forward_passes = n_forward_passes
+        self.conditioning = conditioning
+        self.descriptor_sources = descriptor_sources
+        self.tdi_shift_threshold = tdi_shift_threshold
+        self.tdi_assay_floor = tdi_assay_floor
+        self.loss_tau = loss_tau
+        self.seed = seed
+        self._model: CurveNetwork | None = None
+        self._descriptor = None
+        self._xd_centre: np.ndarray | None = None
+        self._xd_scale: np.ndarray | None = None
+        self._device = "cpu"
+
+    def _descriptor_matrix(self, smiles: list[str]) -> np.ndarray:
+        """The dense descriptor block (physchem/mechanism/ionization) for the x_d slot, or empty."""
+        if self._descriptor is None:
+            return np.empty((len(smiles), 0), dtype=np.float32)
+        return self._descriptor(smiles).astype(np.float32)
+
+    def _encoder(self) -> nn.Module:
+        """The D-MPNN message-passing encoder: CheMeleon-pretrained or freshly initialised."""
+        from chemprop import nn as cpnn
+
+        from cypshift.models.graph import chemeleon_message_passing
+
+        if self.pretraining == "chemeleon":
+            message_passing = chemeleon_message_passing(Path(self.pretraining_cache))
+            if not self.pretraining_finetune:
+                for parameter in message_passing.parameters():
+                    parameter.requires_grad = False
+            return message_passing
+        return cpnn.BondMessagePassing(d_h=self.hidden, depth=self.depth, dropout=self.dropout)
+
+    def fit(self, observations: pd.DataFrame) -> "GraphCurveModel":
+        """Train the curve head on a D-MPNN backbone over the observation table.
+
+        Screen rows constrain the curve at the screen concentration; every other row constrains
+        the midpoint. One datapoint per observation, the per-row routing carried in ``y`` as
+        ``[target_index, assay_condition_index, kind, lower, upper, weight]`` and read back in
+        the loop, so the custom dose-response loss selects the right (enzyme, condition) curve.
         """
-        curves = self._curves(smiles)
-        direct = curves[:, :, :, ASSAY_CONDITIONS.index("direct"), PIC50]
-        # self.targets may be wider than the scored four when auxiliary enzymes were
-        # trained on; select the scored endpoints in their canonical order.
-        columns = [self.targets.index(e.split("_")[0]) for e in REGRESSION_ENDPOINTS]
-        return PredictiveDistribution(
-            samples=direct[:, :, columns], endpoints=tuple(REGRESSION_ENDPOINTS)
+        from chemprop import data as cpdata
+
+        torch.manual_seed(self.seed)
+        usable = observations[np.isfinite(observations["value"])].reset_index(drop=True)
+        if usable.empty:
+            raise ValueError("no finite measurements to fit on")
+
+        if self.physchem or self.mechanism or self.ionization_geometry:
+            from cypshift.features.ionization import block_for as ionization_block_for
+            from cypshift.features.molecular import featurise
+
+            ionization = ionization_block_for(self.ionization_geometry, Path(self.ionization_cache))
+
+            def descriptor_block(smiles: list[str]) -> np.ndarray:
+                return featurise(
+                    smiles,
+                    fingerprint=False,
+                    physchem=self.physchem,
+                    mechanism=self.mechanism,
+                    ionization=ionization,
+                )
+
+            self._descriptor = descriptor_block
+
+        value = usable["value"].to_numpy(float)
+        lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
+        upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
+        lower = np.where(usable["is_censored"].to_numpy(bool), -1e4, lower)
+        is_screen = (usable["assay"] == "direct_inhibition_screen").to_numpy()
+        target_index = np.array([self.targets.index(t) for t in usable["target"]], dtype=float)
+        condition_index = assay_condition_index(usable["assay"]).astype(float)
+        kind = is_screen.astype(float)
+        weight = usable["weight"].to_numpy(float)
+
+        descriptors = self._descriptor_matrix(usable["SMILES"].tolist())
+        xd_width = descriptors.shape[1]
+        if xd_width:
+            self._xd_centre = descriptors.mean(axis=0)
+            self._xd_scale = descriptors.std(axis=0) + 1e-6
+            descriptors = (descriptors - self._xd_centre) / self._xd_scale
+
+        condition_descriptors = None
+        if self.conditioning in DESCRIBED_CONDITIONING:
+            condition_descriptors = torch.tensor(
+                describe_all(list(self.targets), tuple(self.descriptor_sources)),
+                dtype=torch.float32,
+            )
+        trunk = _GraphTrunk(self._encoder(), self._mean_aggregation(), xd_width)
+        self._model = CurveNetwork(
+            trunk.output_dim,
+            len(self.targets),
+            len(ASSAY_CONDITIONS),
+            self.hidden,
+            self.dropout,
+            conditioning=self.conditioning,
+            descriptors=condition_descriptors,
+            trunk=trunk,
+            trunk_output_dim=trunk.output_dim,
+        )
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model.to(self._device)
+        logger.info(
+            "training curve-on-graph on %d observations (%d screen) on %s",
+            len(usable),
+            int(is_screen.sum()),
+            self._device,
         )
 
-    def predict_pic50(
-        self, smiles: list[str], assay_condition: str = "direct"
-    ) -> NDArray[np.float64]:
-        """The curve's midpoint, which is what the regression track asks for."""
-        return self._curves(smiles).mean(axis=0)[
-            :, :, ASSAY_CONDITIONS.index(assay_condition), PIC50
+        points = []
+        for row in range(len(usable)):
+            y = np.array(
+                [
+                    target_index[row],
+                    condition_index[row],
+                    kind[row],
+                    lower[row],
+                    upper[row],
+                    weight[row],
+                ],
+                dtype=float,
+            )
+            x_d = descriptors[row].astype(float) if xd_width else None
+            points.append(
+                cpdata.MoleculeDatapoint.from_smi(usable["SMILES"].iloc[row], y=y, x_d=x_d)
+            )
+        loader = cpdata.build_dataloader(
+            cpdata.MoleculeDataset(points),
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=True,
+            drop_last=False,
+        )
+        trainable = [p for p in self._model.parameters() if p.requires_grad]
+        optimiser = torch.optim.Adam(trainable, lr=self.learning_rate)
+        for epoch in range(self.epochs):
+            self._model.train()
+            total, seen = 0.0, 0
+            for batch in loader:
+                batch.bmg.to(self._device)
+                targets_row = batch.Y.to(self._device)
+                optimiser.zero_grad()
+                predicted = self._model(batch)
+                rows = torch.arange(len(targets_row), device=self._device)
+                parameters = predicted[rows, targets_row[:, 0].long(), targets_row[:, 1].long()]
+                loss = curve_loss(
+                    parameters,
+                    targets_row[:, 2].long(),
+                    targets_row[:, 3],
+                    targets_row[:, 4],
+                    targets_row[:, 5],
+                    tau=self.loss_tau,
+                )
+                loss.backward()
+                optimiser.step()
+                total += loss.detach().item() * len(targets_row)
+                seen += len(targets_row)
+            if epoch % 20 == 0 or epoch == self.epochs - 1:
+                logger.info("  epoch %2d  loss %.4f", epoch, total / max(seen, 1))
+        return self
+
+    @staticmethod
+    def _mean_aggregation() -> nn.Module:
+        from chemprop import nn as cpnn
+
+        return cpnn.MeanAggregation()
+
+    def _curves(self, smiles: list[str]) -> NDArray[np.float64]:
+        """Curve parameters, shape ``(passes, compounds, targets, assay_conditions, 3)``.
+
+        Dropout stays on for the Monte Carlo passes (both the encoder's and the head's), the
+        same spread source as the MLP curve, so the interval machinery sees a predictive spread.
+        """
+        from chemprop import data as cpdata
+
+        if self._model is None:
+            raise RuntimeError("model is not fitted")
+        descriptors = self._descriptor_matrix(smiles)
+        if descriptors.shape[1] and self._xd_centre is not None:
+            descriptors = (descriptors - self._xd_centre) / self._xd_scale
+        points = [
+            cpdata.MoleculeDatapoint.from_smi(
+                s,
+                y=np.zeros(1, dtype=float),
+                x_d=(descriptors[i].astype(float) if descriptors.shape[1] else None),
+            )
+            for i, s in enumerate(smiles)
         ]
-
-    def predict_response(
-        self, smiles: list[str], pc: float = SCREEN_PC, assay_condition: str = "direct"
-    ) -> NDArray[np.float64]:
-        """Inhibited fraction at any concentration, read off the predicted curve."""
-        curves = torch.from_numpy(
-            self._curves(smiles).mean(axis=0)[:, :, ASSAY_CONDITIONS.index(assay_condition)]
+        loader = cpdata.build_dataloader(
+            cpdata.MoleculeDataset(points),
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=False,
+            drop_last=False,
         )
-        return inhibition_at(curves, pc).numpy()
-
-    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
-        """Call is_TDI from the two assay_conditions' curves, using the model's decision
-        thresholds."""
-        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
-        curves = self._curves(smiles).mean(axis=0)
-        direct = curves[:, :, ASSAY_CONDITIONS.index("direct"), PIC50]
-        preincubated = curves[:, :, ASSAY_CONDITIONS.index("preincubated"), PIC50]
-        return np.where(
-            direct > floor,
-            (preincubated - direct) > shift,
-            preincubated > floor + shift,
-        )
+        self._model.train()
+        torch.manual_seed(self.seed)
+        passes = []
+        for _ in range(self.n_forward_passes):
+            outputs = []
+            for batch in loader:
+                batch.bmg.to(self._device)
+                with torch.no_grad():
+                    outputs.append(self._model(batch).cpu().numpy())
+            passes.append(np.concatenate(outputs, axis=0))
+        return np.stack(passes)

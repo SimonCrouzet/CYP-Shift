@@ -408,6 +408,15 @@ REGRESSION: dict[str, dict] = {
     #     table, and a per-condition affine calibration layer). The graph takes only one-hot. ---
     "neural_cond_embedding": {"model.kind": "neural", "conditioning.strategy": "embedding"},
     "neural_cond_calibration": {"model.kind": "neural", "conditioning.strategy": "calibration"},
+    # --- Cross-model: the dose-response curve head on a chemprop D-MPNN backbone (the graph
+    #     family's learned encoder in place of the curve model's fingerprint MLP). The curve's
+    #     regression midpoint, scored against the plain graph and the fingerprint-MLP curve. ---
+    "curve_graph": {"model.kind": "curve", "model.curve.backbone": "graph"},
+    "curve_graph_chemeleon": {
+        "model.kind": "curve",
+        "model.curve.backbone": "graph",
+        "model.curve.pretraining": "chemeleon",
+    },
 }
 
 #: The TDI track: the dose-response curve model under each conditioning strategy, with the
@@ -458,6 +467,28 @@ TDI: dict[str, dict] = {
         "sources.tdi_assay_condition": True,
         "model.curve.conditioning": "heads",
         "model.curve.trunk_depth": 4,
+    },
+    # Cross-model: the curve head on a chemprop D-MPNN backbone -- the curve's two reads
+    # (direct for regression, direct-vs-preincubated for TDI) on the graph family's learned
+    # encoder rather than the fingerprint MLP, optionally CheMeleon-initialised.
+    "curve_graph_heads": {
+        "model.kind": "curve",
+        "sources.tdi_assay_condition": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.backbone": "graph",
+    },
+    "curve_graph_chemeleon_heads": {
+        "model.kind": "curve",
+        "sources.tdi_assay_condition": True,
+        "model.curve.conditioning": "heads",
+        "model.curve.backbone": "graph",
+        "model.curve.pretraining": "chemeleon",
+    },
+    "curve_graph_descriptor": {
+        "model.kind": "curve",
+        "sources.tdi_assay_condition": True,
+        "model.curve.conditioning": "descriptor",
+        "model.curve.backbone": "graph",
     },
 }
 
@@ -596,7 +627,14 @@ def _gpu_first(item: tuple[str, dict]) -> int:
     if name == "ref_submitted":
         return 1
     gpu = ("graph", "neural", "per_target_ensemble", "tfm")
-    return 2 if overrides.get("model.kind") in gpu else 3
+    kind = overrides.get("model.kind")
+    if kind in gpu:
+        return 2
+    # The graph-backbone curve trains a D-MPNN, so it is a GPU config too; the fingerprint-MLP
+    # curve and the boosted trees stay in the CPU group.
+    if kind == "curve" and overrides.get("model.curve.backbone") == "graph":
+        return 2
+    return 3
 
 
 #: Reordered GPU-first so a full-machine run uses the GPU rather than spending hours on the
