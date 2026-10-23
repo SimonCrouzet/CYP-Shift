@@ -28,6 +28,9 @@ nn = ["torch>=2.2", "chemprop>=2.3"]
 tfm = ["tabpfn>=9.2"]
 analysis = ["matplotlib>=3.8", "seaborn>=0.13"]
 track = ["wandb>=0.17"]
+# Lightning AI SDK, used only by scripts/lightning_run.py to launch the sweep on a Studio GPU.
+# Not in `dev`: it is a local orchestration tool, imported lazily, and not exercised by the suite.
+cloud = ["lightning-sdk>=0.1"]
 
 # The developer install pulls in every runtime extra, because the test suite covers
 # all of them. A `dev` install that cannot collect the tests is not a dev install.

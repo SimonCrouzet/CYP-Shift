@@ -38,6 +38,34 @@ CYP_WORKERS=8 CYP_MEMBERS=1 python scripts/night_run.py
 
 141 regression configs (plus 14 TDI), ordered so the untested axes run first. At 1 member and a real GPU this is hours, not the ~2 days the laptop implied.
 
+## Follow the sweep online (W&B)
+
+Optional, off by default. Set `CYP_WANDB=1` to log the sweep to Weights & Biases as it runs — a live results table plus a macro-ST-RAE (and macro-MCC) point per config, named by the code revision:
+
+```bash
+pip install 'cypshift[track]'   # wandb; already in the dev install
+export WANDB_PROJECT=cyp-shift WANDB_ENTITY=<you>   # optional; defaults project=cyp-shift
+CYP_WANDB=1 CYP_WORKERS=8 CYP_MEMBERS=1 python scripts/night_run.py
+```
+
+Without `CYP_WANDB` there is no W&B dependency or network call; a missing `wandb` with it set warns and the sweep continues (W&B is a monitor, never a gate).
+
+## Run it on a Lightning AI Studio GPU
+
+`scripts/lightning_run.py` runs the same sweep on a Lightning AI Studio and syncs the results back, so a RAM/GPU-constrained laptop need not host it.
+
+```bash
+pip install 'cypshift[cloud]'                 # lightning-sdk (local orchestration only)
+export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # or: lightning login
+python scripts/lightning_run.py --dry-run             # print the plan; no cloud, no SDK
+python scripts/lightning_run.py --machine A10G --members 1 --wandb
+```
+
+- Ships the committed code (`git archive`, so no data/.git/working-configs) and `data/raw`; add `--data-external` to also upload the local-only auxiliary caches, else they fetch remotely.
+- `--no-setup` skips `./setup.sh` on a Studio that already has the env; `--remote-python 'conda run -n cypshift python'` picks the interpreter when setup built a named env.
+- `--wandb` turns on `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY`, so the run is followable online (the API key is never printed, including in `--dry-run`).
+- Downloads `data/night_results.csv`, `data/run_bundles/`, the best-config JSONs and the candidate submissions into the repo. `--keep-running` leaves the Studio up.
+
 ## What the sweep covers
 
 - **Feature-set sweep** — `boosted_fs_*`, `tfm_fs_*`: which blocks each model sees (fingerprint / physchem+mechanistic / ionization / embedding, and combinations).

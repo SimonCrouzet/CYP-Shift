@@ -721,9 +721,79 @@ def already_done() -> set[tuple[str, str, int]]:
     return {(r.phase, r.name, int(r.seed)) for r in ok.itertuples()}
 
 
+#: Weights & Biases handles, set by ``wandb_start`` when ``CYP_WANDB`` is on. The sweep runs one
+#: config at a time in this process, so a single run logged from ``record`` needs no cross-process
+#: coordination. Left None (a no-op) unless opted in, so the default sweep has no W&B dependency.
+_WANDB_RUN = None
+_WANDB_ROWS: list[list] = []
+
+
+def wandb_start() -> None:
+    """Begin a W&B run for the sweep when ``CYP_WANDB`` is set, so it can be followed online.
+
+    Off by default: only ``CYP_WANDB`` (any value) turns it on, and ``wandb`` is imported lazily,
+    so neither the dependency nor an account is needed for an ordinary local run. Project and
+    entity come from the standard ``WANDB_PROJECT`` / ``WANDB_ENTITY`` env; the run is named by the
+    code revision so it lines up with the results namespace. A missing package warns and the sweep
+    continues -- W&B is a monitor, never a gate on the run.
+    """
+    global _WANDB_RUN
+    if not os.environ.get("CYP_WANDB"):
+        return
+    try:
+        import wandb
+    except ImportError:
+        logger.warning("CYP_WANDB is set but wandb is not installed (pip install wandb); skipping")
+        return
+    _WANDB_RUN = wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "cyp-shift"),
+        entity=os.environ.get("WANDB_ENTITY"),
+        name=REV,
+        job_type="sweep",
+        config={
+            "rev": REV,
+            "n_folds": N_FOLDS,
+            "members": NUM_MEMBERS or "family default",
+            "n_regression": len(REGRESSION),
+            "n_tdi": len(TDI),
+        },
+    )
+    logger.info("W&B run live: %s", getattr(_WANDB_RUN, "url", "(no url)"))
+
+
+def wandb_log_row(row: dict) -> None:
+    """Log one completed config to the live W&B run: a running results table plus scalars.
+
+    Each call rebuilds the table from the accumulated rows (a logged ``wandb.Table`` is immutable,
+    so it cannot be mutated and re-logged), and logs the config's macro ST-RAE / MCC under
+    phase-grouped keys so the dashboard shows a point per configuration as the night proceeds.
+    """
+    if _WANDB_RUN is None:
+        return
+    import wandb
+
+    _WANDB_ROWS.append([row.get(column) for column in RESULT_COLUMNS])
+    metrics: dict = {
+        "results": wandb.Table(columns=RESULT_COLUMNS, data=[list(r) for r in _WANDB_ROWS]),
+        "configs_done": len(_WANDB_ROWS),
+    }
+    if row.get("status") == "ok" and row.get("macro_ST_RAE") is not None:
+        metrics[f"ST_RAE/{row['phase']}/{row['name']}"] = row["macro_ST_RAE"]
+        if row.get("macro_MCC") is not None:
+            metrics[f"MCC/{row['phase']}/{row['name']}"] = row["macro_MCC"]
+    _WANDB_RUN.log(metrics)
+
+
+def wandb_finish() -> None:
+    """Close the W&B run (no-op when W&B was not started)."""
+    if _WANDB_RUN is not None:
+        _WANDB_RUN.finish()
+
+
 def record(row: dict) -> None:
     full = pd.DataFrame([{column: row.get(column) for column in RESULT_COLUMNS}])
     full.to_csv(RESULTS, mode="a", header=not RESULTS.exists(), index=False)
+    wandb_log_row(row)
 
 
 def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
@@ -867,6 +937,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     _archive_stale_results()
+    wandb_start()
     members = NUM_MEMBERS or "family default"
     logger.info(
         "run identity (results namespace): %s | graph workers: %d | ensemble members: %s",
@@ -898,6 +969,8 @@ def main() -> None:
         best_tdi = tdi.index[0]
         logger.info("=== Best TDI: %s (MCC %.4f) ===", best_tdi, tdi.loc[best_tdi, "mean"])
         write_submission("classification", TDI[best_tdi], TDI_SUBMISSION, TDI_BEST_CONFIG)
+
+    wandb_finish()
 
 
 if __name__ == "__main__":
