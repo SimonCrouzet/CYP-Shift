@@ -42,6 +42,29 @@ def test_inverse_variance_weighting_upweights_tight_bands_and_preserves_the_mass
     assert out.loc[two_sided, "weight"].sum() == pytest.approx(obs.loc[two_sided, "weight"].sum())
 
 
+def test_inverse_variance_weighting_excludes_response_rows_and_absent_uncertainty():
+    """A measured potency interval is eligible; a response-task row (a construction band in
+    response units) and a zero-width row (no interval supplied, filled low==high==value) are not,
+    so neither collects the maximum-precision factor that would swamp the scored potency rows."""
+    from cypshift.data.assembly import SCREEN_RESPONSE_ASSAY
+
+    obs = pd.DataFrame(
+        {
+            "assay": ["direct_dose_response", SCREEN_RESPONSE_ASSAY, "literature_ic50"],
+            "value": [5.0, 0.3, 6.0],
+            "conf_low": [4.9, 0.2, 6.0],  # potency band, response band, zero-width potency
+            "conf_high": [5.1, 0.4, 6.0],
+            "is_censored": [False, False, False],
+            "weight": [1.0, 1.0, 1.0],
+        }
+    )
+    out = weight_by_inverse_variance(obs)
+    assert out.loc[1, "weight"] == 1.0  # response row: untouched despite its finite band
+    assert out.loc[2, "weight"] == 1.0  # zero-width potency: absent uncertainty, untouched
+    # Only the single eligible potency row remained; preserving its mass leaves it unchanged.
+    assert out.loc[0, "weight"] == pytest.approx(1.0)
+
+
 def test_every_declared_model_kind_can_be_built():
     for kind in ("boosted", "neural", "graph"):
         config = ExperimentConfig()

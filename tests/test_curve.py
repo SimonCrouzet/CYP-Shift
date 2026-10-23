@@ -477,6 +477,22 @@ def test_graph_curve_predicting_before_fitting_is_an_error():
         _graph_model().predict_pic50(SMILES[:3])
 
 
+def test_graph_curve_routes_configured_dropout_to_the_readout():
+    """P2 fix: the injected trunk carries the configured dropout at the readout, so the dropout
+    is applied even when the encoder is frozen or zero-dropout and the MC passes are not
+    deterministic. CurveNetwork adds none after an injected trunk and its heads are linear."""
+    model = _graph_model(dropout=0.3).fit(_observations())
+    assert isinstance(model._model.trunk.readout_dropout, torch.nn.Dropout)
+    assert model._model.trunk.readout_dropout.p == pytest.approx(0.3)
+
+
+def test_graph_curve_mc_passes_vary_under_dropout():
+    """With non-zero dropout the Monte Carlo passes differ, so the spread reaches the interval
+    machinery rather than repeating one deterministic computation."""
+    passes = _graph_model(dropout=0.3, n_forward_passes=6).fit(_observations())._curves(SMILES)
+    assert passes.std(axis=0).max() > 0.0  # the passes are not identical
+
+
 def test_graph_curve_rejects_an_unknown_conditioning_mode():
     from cypshift.models.curve import GraphCurveModel
 

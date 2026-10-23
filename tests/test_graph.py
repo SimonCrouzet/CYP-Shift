@@ -152,6 +152,18 @@ def test_per_target_heads_builds_one_value_head_per_target_on_a_shared_encoder()
     assert len(mpnn.predictor.heads) == len(net.targets)  # one head per target
 
 
+def test_ffn_hidden_widens_the_per_target_heads():
+    """P2 fix: ffn_hidden sets the per-target potency head width (not a fixed 128), so a
+    per_target_heads + ffn_hidden sweep actually varies the potency readout, and the head carries
+    the model dropout rather than none."""
+    net = GraphNetwork(per_target_heads=True, ffn_hidden=256, dropout=0.2)
+    head = net._build().predictor.heads[0]
+    assert head[0].out_features == 256  # first Linear widened to ffn_hidden
+    assert isinstance(head[2], torch.nn.Dropout) and head[2].p == pytest.approx(0.2)
+    default = GraphNetwork(per_target_heads=True)._build().predictor.heads[0]
+    assert default[0].out_features == 128  # ffn_hidden=0 keeps the 128 default
+
+
 def test_per_target_heads_selects_the_row_s_own_head_by_the_target_one_hot():
     """The value prediction is the active target's head output; a different one-hot selects a
     different head, while the carrier/response columns come from the shared ffn."""
@@ -161,10 +173,10 @@ def test_per_target_heads_selects_the_row_s_own_head_by_the_target_one_hot():
     # Give the two heads distinct constant outputs so the selection is observable.
     with torch.no_grad():
         for index, head in enumerate(predictor.heads):
-            torch.nn.init.zeros_(head[0].weight)
+            torch.nn.init.zeros_(head[0].weight)  # first Linear: hidden <- input
             torch.nn.init.zeros_(head[0].bias)
-            torch.nn.init.zeros_(head[2].weight)
-            torch.nn.init.constant_(head[2].bias, float(index + 1))
+            torch.nn.init.zeros_(head[-1].weight)  # output Linear (after ReLU + Dropout)
+            torch.nn.init.constant_(head[-1].bias, float(index + 1))
     z = torch.zeros(2, predictor.input_dim)
     z[0, offset + 0] = 1.0  # row 0 -> target 0's head (bias 1)
     z[1, offset + 2] = 1.0  # row 1 -> target 2's head (bias 3)

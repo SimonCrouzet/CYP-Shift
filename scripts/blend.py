@@ -207,14 +207,14 @@ def blend(
 def macro_st_rae_on(
     members: dict[str, pd.DataFrame],
     method: str,
-    fit_names: set | None,
-    held_names: set | None,
+    weight_names: set | None,
+    score_names: set | None,
 ) -> float:
-    """Blend these members and return the macro ST-RAE, on the held-out rows when a fit/score
-    split is in force (so the score is off the weights' fitting data), else in sample."""
-    predictions, truth, _ = blend(members, method, None, fit_names)
-    if held_names is not None:
-        keep = truth["Molecule_Name"].isin(held_names).to_numpy()
+    """Blend these members and return the macro ST-RAE, fitting weights on ``weight_names`` and
+    scoring on ``score_names`` (so the score is off the weights' fitting data), else in sample."""
+    predictions, truth, _ = blend(members, method, None, weight_names)
+    if score_names is not None:
+        keep = truth["Molecule_Name"].isin(score_names).to_numpy()
         predictions, truth = predictions.loc[keep], truth.loc[keep]
     return float(score_submission(predictions, truth).loc[MACRO_LABEL, "ST-RAE_mean"])
 
@@ -223,22 +223,26 @@ def search_combinations(
     available: dict[str, pd.DataFrame],
     candidates: list[str],
     method: str,
-    fit_names: set | None,
-    held_names: set | None,
+    weight_names: set | None,
+    score_names: set | None,
     max_size: int,
 ) -> tuple[list[str], float]:
     """Best member subset (size 2..max_size) among ``candidates``, by blended macro ST-RAE.
 
     Enumerates every subset so the winner is the best *combination* of the top single models,
     not just the top-k pooled -- members that each win a different region can blend better than
-    the k individually-best. Scored on the held-out rows when a fit/score split is in force.
+    the k individually-best. Each subset's weights are fit on ``weight_names`` and scored on
+    ``score_names``; the caller passes a *selection* split for ``score_names`` (not the outer
+    evaluation holdout), so the row set the winner is picked on is disjoint from the one the
+    chosen pipeline is finally scored on -- the subset choice is a label-dependent decision and
+    must not see the reported rows.
     """
     best_subset = list(candidates[:2])
     best_score = np.inf
     for size in range(2, min(max_size, len(candidates)) + 1):
         for subset in itertools.combinations(candidates, size):
             members = {name: available[name] for name in subset}
-            score = macro_st_rae_on(members, method, fit_names, held_names)
+            score = macro_st_rae_on(members, method, weight_names, score_names)
             if score < best_score:
                 best_score, best_subset = score, list(subset)
     return best_subset, best_score
@@ -395,18 +399,38 @@ def main() -> None:
         chosen = list(best_of.values())
     elif arguments.combo_search:
         candidates = list(singles.head(arguments.combo_search).index)
+        # Subset selection is a label-dependent choice, so it must not be made on the rows the
+        # winner is then scored on. Carve a *selection* split from the fitting pool (the fit side
+        # when an outer holdout is in force, else the whole table) with a different seed: fit each
+        # subset's weights on the inner-fit rows and score candidates on the inner-selection rows.
+        # The outer held_names stay a clean final evaluation of the selected pipeline; without an
+        # outer holdout the final score is in-sample regardless, but selection still avoids the
+        # reported rows. Searching more subsets widens the scope for selection optimism, which is
+        # exactly why its score is reported as a selection score, not the final one.
+        pool_names = (
+            fit_names
+            if fit_names is not None
+            else set(next(iter(available.values()))["Molecule_Name"])
+        )
+        sel_frac = arguments.eval_holdout_frac if arguments.eval_holdout_frac > 0 else 0.25
+        sel_series = pd.Series(sorted(pool_names))
+        sel_mask = scaffold_fit_mask(sel_series, arguments.directory, sel_frac, arguments.seed + 1)
+        sel_fit_names = set(sel_series[sel_mask])
+        sel_score_names = set(sel_series[~sel_mask])
         chosen, combo_score = search_combinations(
             available,
             candidates,
             arguments.method,
-            fit_names,
-            held_names,
+            sel_fit_names,
+            sel_score_names,
             arguments.combo_max_size,
         )
-        where = "held-out" if fit_names is not None else "in-sample"
+        scope = "fit side" if fit_names is not None else "full table"
         print(
             f"combo search over top {len(candidates)} (subsets <= {arguments.combo_max_size}): "
-            f"best {chosen} at {combo_score:.4f} {where} macro ST-RAE"
+            f"best {chosen} at {combo_score:.4f} selection macro ST-RAE "
+            f"(scaffold selection split within the {scope}; the final score below is on the "
+            f"{'untouched outer holdout' if fit_names is not None else 'full table, in-sample'})"
         )
     elif arguments.top_k:
         chosen = list(singles.head(arguments.top_k).index)

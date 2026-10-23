@@ -343,6 +343,12 @@ class _PerTargetHeadsRegressionFFN(cpnn.RegressionFFN):
     encoder per isoform) and the adapter (one shared value head plus a gated residual); this is
     the shared-trunk, independent-output-head arrangement. The target one-hot is the first
     conditioning block, so it sits at ``target_offset : target_offset + n_targets`` in ``Z``.
+
+    ``head_hidden`` is the per-target head's hidden width and ``head_dropout`` its dropout, both
+    wired from the graph config (``ffn_hidden`` and the model dropout) so this readout's capacity
+    and regularisation match the shared FFN rather than being fixed -- a ``per_target_heads +
+    ffn_hidden`` sweep then actually varies the potency readout's width, and the head carries the
+    same dropout as the shared readout so the comparison is output sharing, not regularisation.
     """
 
     def __init__(
@@ -351,6 +357,7 @@ class _PerTargetHeadsRegressionFFN(cpnn.RegressionFFN):
         target_offset: int,
         n_targets: int,
         head_hidden: int = 128,
+        head_dropout: float = 0.0,
         value_index: int = VALUE,
         **kwargs: object,
     ) -> None:
@@ -362,6 +369,7 @@ class _PerTargetHeadsRegressionFFN(cpnn.RegressionFFN):
             nn.Sequential(
                 nn.Linear(self.input_dim, head_hidden),
                 nn.ReLU(),
+                nn.Dropout(head_dropout),
                 nn.Linear(head_hidden, 1),
             )
             for _ in range(n_targets)
@@ -648,10 +656,15 @@ class GraphNetwork:
             )
         elif self.per_target_heads:
             # Shared encoder, one value-task output head per target, gated by the target one-hot
-            # (the first conditioning block, placed right after the encoder output).
+            # (the first conditioning block, placed right after the encoder output). The head
+            # width follows ffn_hidden (so a per_target_heads + ffn_hidden sweep varies the
+            # potency readout, not just the shared carrier/response FFN) and it carries the model
+            # dropout, so it is not a fixed, unregularised 128-wide block.
             predictor = _PerTargetHeadsRegressionFFN(
                 target_offset=message_passing.output_dim,
                 n_targets=len(self.targets),
+                head_hidden=self.ffn_hidden if self.ffn_hidden > 0 else 128,
+                head_dropout=self.dropout,
                 n_tasks=self._n_label,
                 input_dim=input_dim,
                 criterion=criterion,

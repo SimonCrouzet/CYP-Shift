@@ -599,14 +599,26 @@ class _GraphTrunk(nn.Module):
     molecule, and (when present) concatenates the standardised dense descriptor block the batch
     carries in ``x_d``. The dose-response head above it is unchanged, so the curve is read off a
     representation learned from the molecular graph instead of the fingerprint MLP's output.
+
+    A dropout is applied to that representation before the head reads it. ``CurveNetwork`` adds
+    no dropout after an injected trunk and its heads are linear, and a frozen (or zero-dropout
+    pretrained) encoder applies none of its own, so without this the configured dropout would be
+    ignored and the Monte Carlo prediction passes would be deterministic -- repeating one
+    computation instead of estimating a spread. Placing it here makes the readout dropout the one
+    guaranteed Monte Carlo source regardless of the encoder's state.
     """
 
     def __init__(
-        self, message_passing: nn.Module, aggregation: nn.Module, xd_width: int = 0
+        self,
+        message_passing: nn.Module,
+        aggregation: nn.Module,
+        xd_width: int = 0,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.message_passing = message_passing
         self.aggregation = aggregation
+        self.readout_dropout = nn.Dropout(dropout)
         #: The representation width the curve head reads: encoder output plus any x_d descriptors.
         self.output_dim = message_passing.output_dim + xd_width
 
@@ -615,7 +627,7 @@ class _GraphTrunk(nn.Module):
         pooled = self.aggregation(node, batch.bmg.batch)
         if batch.X_d is not None:
             pooled = torch.cat([pooled, batch.X_d.to(pooled.device)], dim=1)
-        return pooled
+        return self.readout_dropout(pooled)
 
 
 class GraphCurveModel(_CurveReadout):
@@ -715,6 +727,11 @@ class GraphCurveModel(_CurveReadout):
 
         if self.pretraining == "chemeleon":
             message_passing = chemeleon_message_passing(Path(self.pretraining_cache))
+            # The checkpoint carries its own dropout (the local CheMeleon encoder's is 0.0); set
+            # the configured dropout so a fine-tuned encoder is regularised. A frozen encoder's
+            # dropout is inert, but _GraphTrunk's readout dropout still supplies the MC spread.
+            if isinstance(getattr(message_passing, "dropout", None), nn.Dropout):
+                message_passing.dropout.p = self.dropout
             if not self.pretraining_finetune:
                 for parameter in message_passing.parameters():
                     parameter.requires_grad = False
@@ -776,7 +793,7 @@ class GraphCurveModel(_CurveReadout):
                 describe_all(list(self.targets), tuple(self.descriptor_sources)),
                 dtype=torch.float32,
             )
-        trunk = _GraphTrunk(self._encoder(), self._mean_aggregation(), xd_width)
+        trunk = _GraphTrunk(self._encoder(), self._mean_aggregation(), xd_width, self.dropout)
         self._model = CurveNetwork(
             trunk.output_dim,
             len(self.targets),

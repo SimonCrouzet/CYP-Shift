@@ -407,31 +407,54 @@ def assemble_training_data(
     return observations, screen_model
 
 
+#: Assays whose label is a response quantity (an inhibited fraction, a raw log2 fold-change, or a
+#: qHTS maximum response), not a potency with a credible interval. Their ``conf_low``/``conf_high``
+#: are a construction band or a degenerate ``low == high == value``, in units that are not the
+#: pIC50 interval, so inverse-variance precision weighting must not read them as a tight potency.
+_RESPONSE_ASSAYS = frozenset({RESPONSE_ASSAY, SCREEN_RESPONSE_ASSAY, SCREEN_LOG2FC_ASSAY})
+
+
 def weight_by_inverse_variance(observations: pd.DataFrame, floor: float = 0.1) -> pd.DataFrame:
-    """Scale each two-sided measurement's weight by the inverse of its interval variance.
+    """Scale each measured potency interval's weight by the inverse of its interval variance.
 
     A measurement's credible-interval width is a precision proxy: a tight band is a confident
     label and should pull harder than a wide one. The factor is ``1 / max(width/2, floor)**2``
     (``floor`` caps the influence of an implausibly tight band), then renormalised so the total
     weight of the affected rows is unchanged -- this redistributes weight by precision, it does
-    not inflate it. Censored (one-sided) rows and response-task rows, which have no two-sided
-    interval, are left untouched.
+    not inflate it.
+
+    Only genuinely measured, two-sided potency intervals are eligible, which the earlier version
+    did not enforce. Three kinds of row are now excluded explicitly:
+
+    * **Censored (one-sided) rows**, which have no two-sided interval.
+    * **Response-task rows** (``_RESPONSE_ASSAYS``): the screen fraction carries a fixed +-0.1
+      construction band and the qHTS response carries ``low == high == value``, both in response
+      units, not pIC50; reading those as tight potencies gave every one the maximum precision
+      factor and swamped the scored potency rows.
+    * **Zero-width rows** (``width <= 0``): a missing credible interval is filled with
+      ``low = high = value`` upstream, which means uncertainty was *not supplied*, not that the
+      measurement is near-exact -- so it must not collect the ``1/floor**2`` maximum factor.
     """
     out = observations.copy()
     low = out["conf_low"].to_numpy(float)
     high = out["conf_high"].to_numpy(float)
     width = high - low
     censored = out["is_censored"].to_numpy(bool) if "is_censored" in out.columns else False
-    two_sided = np.isfinite(width) & (width >= 0) & ~np.asarray(censored)
-    if not two_sided.any():
+    is_response = (
+        out["assay"].isin(_RESPONSE_ASSAYS).to_numpy()
+        if "assay" in out.columns
+        else np.zeros(len(out), bool)
+    )
+    eligible = np.isfinite(width) & (width > 0) & ~np.asarray(censored) & ~is_response
+    if not eligible.any():
         return out
-    factor = 1.0 / np.maximum(width[two_sided] / 2.0, floor) ** 2
-    weight = out.loc[two_sided, "weight"].to_numpy(float)
+    factor = 1.0 / np.maximum(width[eligible] / 2.0, floor) ** 2
+    weight = out.loc[eligible, "weight"].to_numpy(float)
     rescaled = weight * factor
     total = rescaled.sum()
     if total > 0:
         rescaled *= weight.sum() / total  # preserve the affected rows' total weight mass
-    out.loc[two_sided, "weight"] = rescaled
+    out.loc[eligible, "weight"] = rescaled
     return out
 
 
