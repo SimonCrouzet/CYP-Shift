@@ -20,9 +20,11 @@ so this passes the archived commit's SHA as ``CYP_REV``. Without that, every cod
 share the ``nogit`` namespace and a resume would silently reuse results from different code.
 
 Auth is the Lightning SDK's own (``LIGHTNING_USER_ID`` + ``LIGHTNING_API_KEY``, or a prior
-``lightning login``); nothing here reads or stores a credential. ``--dry-run`` prints the plan and
-touches neither the cloud nor the SDK. Remote paths are relative to the Studio root, which is where
-both the shell and the file API start.
+``lightning login``). ``main`` first loads the gitignored ``local.machine.env`` into the environment
+(``cypshift.local_env``; an exported variable wins), which is also where the tokens forwarded to the
+sweep come from. Nothing here stores a credential, and ``--dry-run`` shows the forwarded ones as
+``***``. It prints the plan and touches neither the cloud nor the SDK. Remote paths are relative to
+the Studio root, which is where both the shell and the file API start.
 """
 
 import argparse
@@ -38,6 +40,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
+
+from cypshift.local_env import load_local_env
 
 logger = logging.getLogger("lightning_run")
 
@@ -116,6 +120,19 @@ def wandb_env(enabled: bool) -> dict[str, str]:
         if value:
             env[name] = value
     return env
+
+
+#: Tokens the sweep itself needs, forwarded to the remote whenever they are set locally.
+SWEEP_TOKENS = ("TABPFN_TOKEN", "HF_TOKEN")
+#: Forwarded variables whose values are never printed (``--dry-run``, logs).
+SECRET_ENV = ("WANDB_API_KEY", *SWEEP_TOKENS)
+
+
+def token_env() -> dict[str, str]:
+    """The sweep tokens set locally (``TABPFN_TOKEN`` for the ``tfm_*`` configs, ``HF_TOKEN`` for
+    gated embedding assets). Unlike W&B these need no flag: without them the configs that use them
+    fail and are skipped, which a remote sweep would only discover hours in."""
+    return {name: os.environ[name] for name in SWEEP_TOKENS if os.environ.get(name)}
 
 
 def setup_command(remote_dir: str) -> str:
@@ -326,8 +343,9 @@ def sync_data(studio: object, args: argparse.Namespace, data_archive: Path) -> b
 
 
 def sweep_env(args: argparse.Namespace, revision: str) -> dict[str, str]:
-    """Environment forwarded to the sweep: the archived revision, plus W&B when enabled."""
-    return {"CYP_REV": revision, **wandb_env(args.wandb)}
+    """Environment forwarded to the sweep: the archived revision, the sweep tokens, and W&B when
+    enabled."""
+    return {"CYP_REV": revision, **wandb_env(args.wandb), **token_env()}
 
 
 def read_status(studio: object, remote_dir: str) -> dict:
@@ -440,7 +458,7 @@ def plan_launch(args: argparse.Namespace) -> list[str]:
     """
     revision = args.rev or git_revision(args.ref)
     redacted = {
-        key: ("***" if key == "WANDB_API_KEY" else value)
+        key: ("***" if key in SECRET_ENV else value)
         for key, value in sweep_env(args, revision).items()
     }
     steps = [
@@ -530,6 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    load_local_env()  # before the parser: some defaults (CYP_LAI_*) are read from the environment
     args = build_parser().parse_args(argv)
     if args.command == "launch":
         if args.dry_run:

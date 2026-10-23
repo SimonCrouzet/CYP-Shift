@@ -41,6 +41,7 @@ from cypshift.cli import submit
 from cypshift.config import CLASSIFICATION_ENDPOINTS
 from cypshift.eval.scoring import MACRO_LABEL
 from cypshift.experiment import ExperimentConfig
+from cypshift.local_env import load_local_env
 from cypshift.pipeline import run_cv
 
 logger = logging.getLogger("night")
@@ -972,6 +973,7 @@ def _archive_stale_results() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     _archive_stale_results()
     wandb_start()

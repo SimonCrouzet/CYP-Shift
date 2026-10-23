@@ -17,6 +17,7 @@ from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.experiment import ExperimentConfig
+from cypshift.local_env import load_local_env
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.ensemble import PerTargetEnsemble
 from cypshift.models.forest import PerTargetForest
@@ -26,6 +27,12 @@ from cypshift.pipeline import assemble_training_data, build_model
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
 
 logger = logging.getLogger(__name__)
+
+
+@app.callback()
+def _load_tokens() -> None:
+    """Make the tokens in the gitignored ``local.machine.env`` visible to every command."""
+    load_local_env()
 
 
 def _configure_logging(verbose: bool) -> None:

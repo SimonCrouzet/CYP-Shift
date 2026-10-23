@@ -56,7 +56,7 @@ Without `CYP_WANDB` there is no W&B dependency or network call; a missing `wandb
 
 ```bash
 pip install 'cypshift[cloud]'                          # lightning-sdk (local orchestration only)
-export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...     # or: lightning login
+# credentials: fill in local.machine.env (below), or `lightning login`
 python scripts/lightning_run.py launch --dry-run       # print the plan; no cloud, no SDK
 python scripts/lightning_run.py launch --machine L4 --members 1 --wandb
 python scripts/lightning_run.py status                 # Studio up? sweep alive? configs done? log tail
@@ -68,7 +68,7 @@ python scripts/lightning_run.py stop                   # stop the Studio; files 
 - `--machine` is any name the installed SDK offers (`L4` by default; `T4`, `L40S`, `A100`, `H100`, ...); it is ignored for a Studio that is already running. `--max-hours` sets the machine runtime cap where the machine type requires one.
 - The sweep's run identity comes from the archived commit's SHA, passed as `CYP_REV` (a `git archive` carries no `.git`, which would otherwise put every code version in one `nogit` results namespace). `git archive` ships the **committed** tree, so commit before launching.
 - `--data-external` also ships the local-only auxiliary caches; `--no-setup` skips `setup.sh`; `--remote-python` overrides the interpreter.
-- `--wandb` sets `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY` (the key is never printed, including in `--dry-run`).
+- `--wandb` sets `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY`. `TABPFN_TOKEN` and `HF_TOKEN` are forwarded whenever they are set, with no flag (the `tfm_*` configs need the first; without it they fail and are skipped). Secret values are shown as `***` in `--dry-run` and never logged.
 - `--wait` blocks (polling every `--poll` seconds) until the sweep ends, then fetches; add `--stop-after` to stop the Studio too. Without `--wait`, `launch` returns as soon as the sweep is running.
 - `fetch` merges `data/night_results.csv` rather than overwriting it, so rows from local runs are kept and re-fetching mid-run only adds what is new. Bundles, best-config JSONs and candidate submissions are copied into the repo.
 - A running Studio is billed until stopped. Remote paths are relative to the Studio root, where both the shell and the file API start; if they ever differ, the upload check fails with a message to set `--remote-dir` to an absolute path.
@@ -120,3 +120,17 @@ Do not compare numbers across these — they are not the same split:
 
 - scaffold-CV ranks configs in the right order (it correctly put graph below boosted, octant+tox21 below plain graph, both confirmed live), but is ~0.12–0.18 optimistic in absolute ST-RAE — never read the CV number as a live score.
 - Track CV **R²** and the predicted-σ / true-σ ratio, not CV ST-RAE. ST-RAE on CV is nearly blind to the calibration gap that is actually costing us live.
+
+## Tokens: `local.machine.env`
+
+Per-machine tokens live in `local.machine.env` at the repo root. It is gitignored (and so absent from `git archive`, i.e. never shipped to the Studio), and `scripts/lightning_run.py`, `scripts/night_run.py`, `scripts/check_env.py` and the `cypshift` CLI load it at start (`cypshift.local_env`).
+
+| Variable | Used for |
+|---|---|
+| `LIGHTNING_USER_ID`, `LIGHTNING_API_KEY` | the Lightning SDK (alternative: `lightning login`) |
+| `CYP_LAI_STUDIO`, `CYP_LAI_TEAMSPACE` | optional defaults for `--studio` / `--teamspace` |
+| `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` |
+| `TABPFN_TOKEN` | the `tfm_*` configs; forwarded by `launch` when set |
+| `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set |
+
+Format is `NAME=value`, one per line (`export`, quotes and `#` comments are accepted). A variable already exported in the shell wins over the file, and a blank value is ignored, so the shipped template with empty values is inert. `CYP_LOCAL_ENV=/path/to/file` points the loader elsewhere, to keep tokens outside the checkout. Only variable names are ever logged; a malformed line is reported by number, never by content.

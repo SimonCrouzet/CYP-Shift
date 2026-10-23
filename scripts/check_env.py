@@ -176,6 +176,12 @@ def check_data(data_dir: Path, external: Path) -> bool:
 def check_tokens() -> None:
     """Report the environment tokens some families need; all are optional."""
     section("environment tokens")
+    try:  # the preflight must still run when cypshift itself is not importable
+        from cypshift.local_env import load_local_env
+
+        load_local_env()
+    except ImportError:
+        pass
     tfm_token = bool(os.environ.get("TABPFN_TOKEN"))
     tfm_note = "set" if tfm_token else "unset (tfm configs fail+skip)"
     line(_status(tfm_token, warn_if_missing=True), f"TABPFN_TOKEN {tfm_note}")

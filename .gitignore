@@ -31,3 +31,6 @@ configs/submit_graph.json
 
 # Lightning launcher staging (code/data/results tarballs)
 scratch/
+
+# Per-machine tokens and settings -- never tracked
+/local.machine.env
