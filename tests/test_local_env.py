@@ -109,6 +109,7 @@ def test_the_sweep_tokens_are_forwarded_without_a_flag_and_only_when_set(
 ) -> None:
     for name in ("TABPFN_TOKEN", "HF_TOKEN", "WANDB_API_KEY"):
         monkeypatch.delenv(name, raising=False)
+    _hub_stub(monkeypatch, None)  # not this machine's `hf auth login`
     assert lr.sweep_env(_launch_args(), "abc1234") == {"CYP_REV": "abc1234"}
 
     monkeypatch.setenv("TABPFN_TOKEN", "tab")
@@ -170,3 +171,36 @@ def test_launch_with_wandb_but_no_key_fails_before_any_cloud_call(
     monkeypatch.setattr(lr, "open_studio", forbidden)
     with pytest.raises(SystemExit, match="wandb login"):
         lr.launch(_launch_args(wandb=True, dry_run=False))
+
+
+def _hub_stub(monkeypatch: pytest.MonkeyPatch, stored: str | None) -> None:
+    """A huggingface_hub whose ``get_token`` returns what ``hf auth login`` would have stored."""
+    import types
+
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub", types.SimpleNamespace(get_token=lambda: stored)
+    )
+
+
+def test_the_hf_token_falls_back_to_what_hf_login_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    _hub_stub(monkeypatch, "stored-hf")
+    assert lr.hf_token() == "stored-hf"
+    assert lr.token_env()["HF_TOKEN"] == "stored-hf"
+
+    monkeypatch.setenv("HF_TOKEN", "exported-hf")  # an exported token wins
+    assert lr.hf_token() == "exported-hf"
+
+
+def test_no_hf_login_and_no_variable_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("TABPFN_TOKEN", raising=False)
+    _hub_stub(monkeypatch, None)
+    assert lr.hf_token() is None
+    assert lr.token_env() == {}
+
+
+def test_a_missing_huggingface_hub_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # makes the import raise ImportError
+    assert lr.hf_token() is None

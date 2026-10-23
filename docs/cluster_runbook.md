@@ -68,7 +68,7 @@ python scripts/lightning_run.py stop                   # stop the Studio; files 
 - `--machine` is any name the installed SDK offers (`L4` by default; `T4`, `L40S`, `A100`, `H100`, ...); it is ignored for a Studio that is already running. `--max-hours` sets the machine runtime cap where the machine type requires one.
 - The sweep's run identity comes from the archived commit's SHA, passed as `CYP_REV` (a `git archive` carries no `.git`, which would otherwise put every code version in one `nogit` results namespace). `git archive` ships the **committed** tree, so commit before launching.
 - `--data-external` also ships the local-only auxiliary caches; `--no-setup` skips `setup.sh`; `--remote-python` overrides the interpreter.
-- `--wandb` sets `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY`. `TABPFN_TOKEN` and `HF_TOKEN` are forwarded whenever they are set, with no flag (the `tfm_*` configs need the first; without it they fail and are skipped). Secret values are shown as `***` in `--dry-run` and never logged.
+- `--wandb` sets `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY`. `TABPFN_TOKEN` and the HuggingFace token (`HF_TOKEN`, or the one `hf auth login` stored) are forwarded whenever available, with no flag (the `tfm_*` configs need the first; without it they fail and are skipped). Secret values are shown as `***` in `--dry-run` and never logged.
 - `--wait` blocks (polling every `--poll` seconds) until the sweep ends, then fetches; add `--stop-after` to stop the Studio too. Without `--wait`, `launch` returns as soon as the sweep is running.
 - `fetch` merges `data/night_results.csv` rather than overwriting it, so rows from local runs are kept and re-fetching mid-run only adds what is new. Bundles, best-config JSONs and candidate submissions are copied into the repo.
 - A running Studio is billed until stopped. Remote paths are relative to the Studio root, where both the shell and the file API start; if they ever differ, the upload check fails with a message to set `--remote-dir` to an absolute path.
@@ -129,8 +129,8 @@ Per-machine tokens live in `local.machine.env` at the repo root. It is gitignore
 |---|---|
 | `LIGHTNING_USER_ID`, `LIGHTNING_API_KEY` | the Lightning SDK (alternative: `lightning login`) |
 | `CYP_LAI_STUDIO`, `CYP_LAI_TEAMSPACE` | optional defaults for `--studio` / `--teamspace` |
-| `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` |
+| `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` (the key falls back to the `wandb login` entry in `~/.netrc`; `launch --wandb` refuses to start without one) |
 | `TABPFN_TOKEN` | the `tfm_*` configs; forwarded by `launch` when set |
-| `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set |
+| `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set, else the token `hf auth login` stored |
 
 Format is `NAME=value`, one per line (`export`, quotes and `#` comments are accepted). A variable already exported in the shell wins over the file, and a blank value is ignored, so the shipped template with empty values is inert. `CYP_LOCAL_ENV=/path/to/file` points the loader elsewhere, to keep tokens outside the checkout. Only variable names are ever logged; a malformed line is reported by number, never by content.

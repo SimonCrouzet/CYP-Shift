@@ -140,17 +140,37 @@ def wandb_env(enabled: bool) -> dict[str, str]:
     return env
 
 
-#: Tokens the sweep itself needs, forwarded to the remote whenever they are set locally.
-SWEEP_TOKENS = ("TABPFN_TOKEN", "HF_TOKEN")
 #: Forwarded variables whose values are never printed (``--dry-run``, logs).
-SECRET_ENV = ("WANDB_API_KEY", *SWEEP_TOKENS)
+SECRET_ENV = ("WANDB_API_KEY", "TABPFN_TOKEN", "HF_TOKEN")
+
+
+def hf_token() -> str | None:
+    """The local HuggingFace token: ``HF_TOKEN`` if set, else the one ``hf auth login`` stored.
+
+    ``huggingface_hub.get_token`` resolves both (and honours ``HF_HOME``). As with the W&B key,
+    logging in exports nothing, so without this a logged-in machine would forward no token.
+    """
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        return token
+    try:
+        from huggingface_hub import get_token
+    except ImportError:
+        return None
+    return get_token() or None
 
 
 def token_env() -> dict[str, str]:
-    """The sweep tokens set locally (``TABPFN_TOKEN`` for the ``tfm_*`` configs, ``HF_TOKEN`` for
-    gated embedding assets). Unlike W&B these need no flag: without them the configs that use them
-    fail and are skipped, which a remote sweep would only discover hours in."""
-    return {name: os.environ[name] for name in SWEEP_TOKENS if os.environ.get(name)}
+    """The sweep tokens available locally: ``TABPFN_TOKEN`` (the ``tfm_*`` configs) and the
+    HuggingFace token (gated assets). Unlike W&B these need no flag: without them the configs that
+    use them fail and are skipped, which a remote sweep would only discover hours in."""
+    env = {}
+    if os.environ.get("TABPFN_TOKEN"):
+        env["TABPFN_TOKEN"] = os.environ["TABPFN_TOKEN"]
+    token = hf_token()
+    if token:
+        env["HF_TOKEN"] = token
+    return env
 
 
 def setup_command(remote_dir: str) -> str:
