@@ -160,6 +160,13 @@ REGRESSION: dict[str, dict] = {
         "sources.veith": True,
         "sources.qhts_representation": "max_response",
     },
+    # Veith potency AND max-response in one run (the reference recipe's coexisting qHTS tasks),
+    # so the panel carries both quantities rather than one or the other.
+    "graph_veith_both": {
+        "model.kind": "graph",
+        "sources.veith": True,
+        "sources.qhts_representation": "both",
+    },
     # Veith qHTS with vs without its inactives, to finally sweep include_qhts_inactives.
     "graph_veith": {"model.kind": "graph", "sources.veith": True},
     "graph_veith_active_only": {

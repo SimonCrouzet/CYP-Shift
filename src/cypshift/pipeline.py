@@ -113,7 +113,7 @@ def build_model(
         # response column -- so the panel can carry both at once; an empty tuple leaves the
         # response heads off entirely.
         response_assays = []
-        if config.sources.qhts_representation == "max_response":
+        if config.sources.qhts_representation in ("max_response", "both"):
             response_assays.append(RESPONSE_ASSAY)
         if config.sources.screen:
             if config.multifidelity.screen_strategy == "response_head":
@@ -581,7 +581,10 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     }
     # The graph's auxiliary response head wants Veith as a 0-1 max-response on its own
     # assay, not a pooled pIC50; only that model requests it, so other models are untouched.
+    # ``both`` keeps the pooled pIC50 assay *and* additionally emits the response rows, so the
+    # one panel carries Veith potency and response at once.
     response_mode = config.sources.qhts_representation == "max_response"
+    both_mode = config.sources.qhts_representation == "both"
     # Source-stratified conditioning keeps same-chemistry sources (veith+tox21, chembl+sair)
     # as separate rows instead of pooling them, so the graph can condition on the source.
     source_heads = config.model.kind == "graph" and config.model.graph.source_heads
@@ -646,31 +649,51 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         }
         by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
         for name in datasets:
-            try:
-                loaded = all_loaders[name](
-                    enzyme,
-                    challenge,
-                    dedup_mode=config.data.dedup_mode,
-                    **extra_kwargs.get(name, {}),
-                )
-            except Exception as error:  # noqa: BLE001 -- best-effort, but remember it raised
-                logger.info("no %s data for %s (%s); skipping", name, enzyme, error)
-                raised[name] = str(error)
-                continue
-            if loaded.empty:
-                continue
-            contributed[name] += len(loaded)
-            # Give every source the same columns, so pooling and row-building are uniform:
-            # a source without intervals collapses its bounds to the point and is uncensored.
-            for column, default in (("conf_low", loaded["value"]), ("conf_high", loaded["value"])):
-                if column not in loaded.columns:
-                    loaded[column] = default
-            if "is_censored" not in loaded.columns:
-                loaded["is_censored"] = False
-            # Pool same-chemistry sources together by default; keep them apart (keyed by the
-            # source name) only when the model conditions on the source.
-            source_key = name if source_heads else "_pooled"
-            by_assay.setdefault((assay_by_source[name], source_key), []).append(loaded)
+            # A source usually contributes one (kwargs, assay) spec; Veith in ``both`` mode
+            # contributes two -- the pooled potency onto luminescent_ac50 and the max-response
+            # onto the response head -- so the panel carries both qHTS quantities at once. Each
+            # spec loads under its own try, so a representation a given deposit cannot supply
+            # (the old CYP1A2 deposit has no Max_Response column) drops only that quantity, not
+            # the enzyme's other rows.
+            if name == "veith" and both_mode:
+                specs = [
+                    (
+                        {"include_inactives": config.auxiliary.include_qhts_inactives},
+                        "luminescent_ac50",
+                    ),
+                    ({"representation": "max_response"}, RESPONSE_ASSAY),
+                ]
+            else:
+                specs = [(extra_kwargs.get(name, {}), assay_by_source[name])]
+            for kwargs, assay_override in specs:
+                try:
+                    loaded = all_loaders[name](
+                        enzyme, challenge, dedup_mode=config.data.dedup_mode, **kwargs
+                    )
+                except Exception as error:  # noqa: BLE001 -- best-effort, but remember it raised
+                    logger.info(
+                        "no %s (%s) data for %s (%s); skipping", name, assay_override, enzyme, error
+                    )
+                    raised[name] = str(error)
+                    continue
+                if loaded.empty:
+                    continue
+                contributed[name] += len(loaded)
+                # Give every source the same columns, so pooling and row-building are uniform: a
+                # source without intervals collapses its bounds to the point and is uncensored.
+                for column, default in (
+                    ("conf_low", loaded["value"]),
+                    ("conf_high", loaded["value"]),
+                ):
+                    if column not in loaded.columns:
+                        loaded[column] = default
+                if "is_censored" not in loaded.columns:
+                    loaded["is_censored"] = False
+                # Pool same-chemistry sources together by default; keep them apart (keyed by the
+                # source name) only when the model conditions on the source. The response rows
+                # live on their own assay, so they never pool with the potency rows regardless.
+                source_key = name if source_heads else "_pooled"
+                by_assay.setdefault((assay_override, source_key), []).append(loaded)
 
         for (assay, source_key), gathered in by_assay.items():
             data = pd.concat(gathered, ignore_index=True)

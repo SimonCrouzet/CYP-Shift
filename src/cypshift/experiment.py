@@ -111,7 +111,7 @@ GRAPH_PRETRAINING = ("none", "chemeleon", "mammal")
 
 #: How the Veith qHTS panel is represented: a pooled pIC50, or a 0-1 max-response on its own
 #: assay (which the graph consumes through a separate head).
-QHTS_REPRESENTATIONS = ("pic50", "max_response")
+QHTS_REPRESENTATIONS = ("pic50", "max_response", "both")
 
 #: How auxiliary rows are matched against the challenge set for dedup: exact canonical SMILES,
 #: or the coarser InChIKey connectivity block.
@@ -239,9 +239,12 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
-    #: How Veith qHTS enters: as a pooled ``pic50`` (default) or as a 0-1 ``max_response`` on
-    #: its own assay. A data-side choice, not gated on the model -- but max_response needs a
-    #: model with a separate head for it, so validation requires model.kind=graph + veith.
+    #: How Veith qHTS enters: as a pooled ``pic50`` (default), as a 0-1 ``max_response`` on its
+    #: own assay, or ``both`` -- the potency rows pooled onto the luminescent-AC50 assay *and* the
+    #: max-response rows on the response head in the same run, so the graph panel carries Veith
+    #: potency and response at once (the reference recipe's coexisting qHTS tasks). A data-side
+    #: choice, but ``max_response``/``both`` need a model with a response head, so validation
+    #: requires model.kind=graph + veith for them.
     qhts_representation: str = "pic50"
     #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
     #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
@@ -598,12 +601,12 @@ class ExperimentConfig:
         for value, allowed, name in checks:
             if value not in allowed:
                 raise ValueError(f"{name}={value!r} is not one of {allowed}")
-        if self.sources.qhts_representation == "max_response" and not (
+        if self.sources.qhts_representation in ("max_response", "both") and not (
             self.model.kind == "graph" and self.sources.veith
         ):
             raise ValueError(
-                "sources.qhts_representation='max_response' needs a model that can consume it: "
-                "model.kind='graph' with sources.veith on"
+                f"sources.qhts_representation={self.sources.qhts_representation!r} needs a model "
+                "that can consume a response head: model.kind='graph' with sources.veith on"
             )
         if self.multifidelity.screen_strategy in ("response_head", "log2fc_response") and (
             self.model.kind != "graph"

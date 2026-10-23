@@ -273,6 +273,39 @@ def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):
     assert (relative["conf_low"] == relative["value"]).all()
 
 
+def test_veith_both_representation_emits_potency_and_response_without_losing_potency(monkeypatch):
+    """qhts_representation='both' routes Veith potency to the luminescent-AC50 assay and the
+    max-response to the response head in one run, and a deposit that cannot supply the response
+    (the old CYP1A2 schema) drops only the response, not that enzyme's potency rows."""
+    import cypshift.pipeline as pipe
+    from cypshift.data.assembly import RESPONSE_ASSAY
+
+    monkeypatch.setattr("cypshift.data.sequences.sequence_for", lambda name, *a, **k: "M")
+    monkeypatch.setattr("cypshift.data.auxiliary.site_distances", lambda scored, cands: None)
+    monkeypatch.setattr("cypshift.data.auxiliary.select_auxiliaries", lambda *a, **k: [])
+
+    def fake_veith(enzyme, smiles, *a, representation="pic50", **k):
+        if representation == "max_response":
+            if enzyme == "CYP1A2":  # old deposit: no Max_Response column
+                raise KeyError("deposit has no 'Max_Response' column")
+            return pd.DataFrame({"SMILES": ["CCO"], "value": [0.4], "target": enzyme})
+        return pd.DataFrame({"SMILES": ["CCO"], "value": [5.0], "target": enzyme})
+
+    monkeypatch.setattr("cypshift.data.veith.load_auxiliary", fake_veith)
+    config = ExperimentConfig()
+    config.override("model.kind", "graph")
+    config.sources.veith = True
+    config.override("sources.qhts_representation", "both")
+    config.auxiliary.max_distance = 0.0  # scored enzymes only
+    rows = pipe.auxiliary_observations(config, _retained())
+    assays = set(rows["assay"])
+    assert "luminescent_ac50" in assays and RESPONSE_ASSAY in assays  # both quantities present
+    # CYP1A2 keeps a potency row though its response load raised.
+    potency = rows[rows["assay"] == "luminescent_ac50"]
+    assert "CYP1A2" in set(potency["target"])
+    assert "CYP1A2" not in set(rows[rows["assay"] == RESPONSE_ASSAY]["target"])
+
+
 def test_auxiliary_is_absent_when_the_source_is_unreachable(monkeypatch):
     """A run must not fail for lack of an auxiliary source (no network, no cache).
 
