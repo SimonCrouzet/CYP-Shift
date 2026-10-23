@@ -28,3 +28,6 @@ wandb/
 configs/member_*.json
 configs/night_best*.json
 configs/submit_graph.json
+
+# Lightning launcher staging (code/data/results tarballs)
+scratch/

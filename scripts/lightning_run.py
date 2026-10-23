@@ -1,35 +1,43 @@
-"""Launch the night_run sweep on a Lightning AI Studio GPU and sync the results back.
+"""Run the night_run sweep on a persistent Lightning AI Studio, and follow it from anywhere.
 
-The sweep (``scripts/night_run.py``) is GPU-bound and env-var driven (``CYP_WORKERS`` /
-``CYP_MEMBERS``), writing its results under ``data/`` and ``submissions/``. This script runs
-that same sweep on a Lightning AI Studio instead of the local machine and pulls the outputs
-home, so a RAM/GPU-constrained laptop does not have to host the run.
+A Lightning Studio keeps its filesystem across stop/start, so this treats it as a long-lived
+workstation rather than a throwaway job: the environment, the data and ``data/night_results.csv``
+all survive, and the sweep (which is resumable) simply continues where it left off. The sweep runs
+*detached* on the Studio, so closing the laptop does not kill it; ``status`` and ``fetch`` reattach.
 
-Flow (each step is a single, stable Lightning SDK call, so the cloud surface stays small):
+    launch   start/reuse the Studio, sync the code, ensure the env, start the sweep detached
+    status   is the Studio up, is the sweep alive, how many configs are done, the log tail
+    fetch    download results into the repo (safe mid-run: a partial CSV is merged, never clobbered)
+    stop     stop the Studio (its filesystem is kept; ``launch`` later resumes)
 
-    1. ``git archive`` the tracked tree -> a code tarball (no data, no .git, no working configs).
-    2. ``tar`` the data the sweep needs (``data/raw`` core, optionally the ``data/external``
-       auxiliary caches) -> a data tarball.
-    3. Start the Studio on the requested machine.
-    4. Upload both tarballs; extract them into the remote working directory.
-    5. Optionally run ``./setup.sh`` there (build the env, fetch/verify the core data), then run
-       the sweep with the chosen ``CYP_WORKERS`` / ``CYP_MEMBERS``.
-    6. ``tar`` the result paths that exist on the remote, download that one archive, extract it
-       locally (into the repo, so bundles and the results CSV land where the tooling expects).
-    7. Stop the Studio (unless ``--keep-running``).
+``launch`` is idempotent. It reuses a running Studio (the SDK's ``start`` raises on one), always
+refreshes the small code tarball, uploads the data only the first time (or with ``--refresh-data``),
+and runs the check-first ``./setup.sh`` every time -- a few seconds once the env exists. The env is
+built inside the project directory (``ENV_PREFIX``) so the interpreter path is fixed and persists.
 
-Auth is the Lightning SDK's own: ``LIGHTNING_USER_ID`` + ``LIGHTNING_API_KEY`` in the
-environment, or a prior ``lightning login``. Nothing here reads or stores a credential.
+The sweep's run identity (``REV``) normally comes from ``git``; a ``git archive`` has no ``.git``,
+so this passes the archived commit's SHA as ``CYP_REV``. Without that, every code version would
+share the ``nogit`` namespace and a resume would silently reuse results from different code.
 
-``--dry-run`` prints the full plan -- every command and transfer -- and touches neither the
-cloud nor the SDK, so the orchestration can be checked without an account.
+Auth is the Lightning SDK's own (``LIGHTNING_USER_ID`` + ``LIGHTNING_API_KEY``, or a prior
+``lightning login``); nothing here reads or stores a credential. ``--dry-run`` prints the plan and
+touches neither the cloud nor the SDK. Remote paths are relative to the Studio root, which is where
+both the shell and the file API start.
 """
 
 import argparse
 import logging
+import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import time
+from collections.abc import Callable
 from pathlib import Path
+
+import pandas as pd
 
 logger = logging.getLogger("lightning_run")
 
@@ -44,16 +52,26 @@ RESULT_PATHS = (
     "submissions/night_submission_classification.csv",
 )
 
-#: Machine names accepted by ``--machine``, mapped to the Lightning SDK ``Machine`` attribute.
-#: Kept as strings so the mapping is inspectable (and testable) without importing the SDK.
-MACHINES = {
-    "CPU": "CPU",
-    "T4": "T4",
-    "L4": "L4",
-    "A10G": "A10G",
-    "L40S": "L40S",
-    "A100": "A100",
-}
+#: Machines worth naming in ``--help``. Not an allow-list: the choice is validated against the SDK's
+#: own ``Machine`` members at launch, so a newly offered machine needs no code change here.
+MACHINE_HINTS = ("CPU", "T4", "L4", "L40S", "A100", "H100")
+
+#: Remote working directory, relative to the Studio root (the file API resolves paths there; a
+#: shell ``~`` is not expanded by it).
+DEFAULT_REMOTE_DIR = "cyp-shift"
+#: The env is built inside the project directory, so it persists with it and the interpreter path
+#: is known without asking conda.
+REMOTE_ENV = ".env"
+DEFAULT_REMOTE_PYTHON = f"./{REMOTE_ENV}/bin/python"
+#: Written after the first successful data sync, so later launches skip the upload.
+DATA_MARKER = "data/.cyp_synced"
+PID_FILE = "sweep.pid"
+LOG_FILE = "sweep.log"
+
+
+def git_revision(ref: str = "HEAD") -> str:
+    """Short SHA of ``ref`` -- the revision a ``git archive`` of it actually contains."""
+    return subprocess.check_output(["git", "rev-parse", "--short", ref], text=True).strip()
 
 
 def build_code_archive(archive_path: Path, ref: str = "HEAD") -> Path:
@@ -73,10 +91,9 @@ def build_code_archive(archive_path: Path, ref: str = "HEAD") -> Path:
 def data_tar_sources(include_external: bool) -> list[str]:
     """The data paths to ship: the core ``data/raw`` always, the auxiliary caches on request.
 
-    ``data/raw`` holds the challenge files the run cannot fetch itself in-process; ``data/external``
-    holds the auxiliary caches (octant/tox21/veith/chembl/sair/novartis, embeddings, the CheMeleon
-    encoder). Some of those download on first use remotely, but the local-only caches (e.g. octant,
-    novartis) must be shipped, so uploading ``data/external`` is offered when it exists.
+    ``data/raw`` holds the challenge files; ``data/external`` holds the auxiliary caches
+    (octant/tox21/veith/chembl/sair/novartis, embeddings, the CheMeleon encoder). Some of those
+    download on first use remotely, but the local-only caches (octant, novartis) must be shipped.
     """
     sources = ["data/raw"]
     if include_external:
@@ -91,8 +108,6 @@ def wandb_env(enabled: bool) -> dict[str, str]:
     locally (the API key for non-interactive auth, the project/entity for where the run lands), so
     the remote run reports to the same account and project without an interactive ``wandb login``.
     """
-    import os
-
     if not enabled:
         return {}
     env = {"CYP_WANDB": "1"}
@@ -103,25 +118,65 @@ def wandb_env(enabled: bool) -> dict[str, str]:
     return env
 
 
-def sweep_command(
+def setup_command(remote_dir: str) -> str:
+    """Build or verify the env inside the project directory. Idempotent: ``setup.sh`` is
+    check-first, so once the env exists this is a few seconds of import probes."""
+    return f"cd {remote_dir} && ENV_PREFIX=$PWD/{REMOTE_ENV} bash ./setup.sh"
+
+
+def detached_sweep_command(
     remote_dir: str,
     python: str,
     workers: int,
     members: int,
-    run_setup: bool,
     extra_env: dict[str, str] | None = None,
 ) -> str:
-    """The remote shell command that (optionally) sets up the env and runs the sweep.
+    """Start the sweep in the background and record its pid, so it outlives this connection.
 
-    ``CYP_WORKERS`` / ``CYP_MEMBERS`` are passed exactly as a local launch would set them;
-    ``python`` is the interpreter (or interpreter prefix, e.g. ``conda run -n cypshift python``)
-    that has the dependencies -- after ``./setup.sh`` on a fresh Studio, or the Studio's own env.
-    ``extra_env`` carries any W&B variables so the remote run can be followed online.
+    ``nohup`` with redirected output keeps it alive after the session ends, and the pid is written
+    from inside the same subshell that backgrounds it (so ``$!`` is the sweep's pid and the ``cd``
+    applies). ``extra_env`` carries ``CYP_REV`` and any W&B variables. ``nohup``/``env`` exec in
+    place, so the recorded pid stays the python process's.
     """
-    setup = "./setup.sh && " if run_setup else ""
     env = {"CYP_WORKERS": str(workers), "CYP_MEMBERS": str(members), **(extra_env or {})}
-    assignments = " ".join(f"{key}={value}" for key, value in env.items())
-    return f"cd {remote_dir} && {setup}{assignments} {python} scripts/night_run.py"
+    assignments = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
+    return (
+        f"cd {remote_dir} && (nohup env {assignments} {python} scripts/night_run.py "
+        f"> {LOG_FILE} 2>&1 < /dev/null & echo $! > {PID_FILE})"
+    )
+
+
+def status_command(remote_dir: str) -> str:
+    """One shell snippet reporting the sweep's liveness, progress and log tail as ``KEY=value``.
+
+    Liveness checks the process *is* the sweep (not just that the pid exists), so a pid left over
+    from before a Studio restart and reused by something else is not mistaken for a live sweep. It
+    reads ``/proc/<pid>/cmdline``: ``ps -o args=`` truncates to 80 columns when its output is not a
+    terminal, which cut ``night_run.py`` off a long interpreter path and made a live sweep look
+    stopped.
+    """
+    return (
+        f"cd {remote_dir} 2>/dev/null || {{ echo PROJECT=missing; exit 0; }}; "
+        "echo PROJECT=present; "
+        f'if [ -f {PID_FILE} ] && kill -0 "$(cat {PID_FILE})" 2>/dev/null '
+        f"&& tr '\\0' ' ' < /proc/\"$(cat {PID_FILE})\"/cmdline | grep -q night_run.py; "
+        f"then echo SWEEP=running; else echo SWEEP=stopped; fi; "
+        f"if [ -f data/night_results.csv ]; then "
+        f"echo ROWS=$(( $(wc -l < data/night_results.csv) - 1 )); else echo ROWS=0; fi; "
+        f"echo ---; tail -n 5 {LOG_FILE} 2>/dev/null; true"
+    )
+
+
+def parse_status(output: str) -> dict:
+    """Parse :func:`status_command` output into ``project`` / ``running`` / ``rows`` / ``tail``."""
+    head, _, tail = output.partition("---")
+    fields = dict(line.split("=", 1) for line in head.splitlines() if "=" in line)
+    return {
+        "project": fields.get("PROJECT") == "present",
+        "running": fields.get("SWEEP") == "running",
+        "rows": int(fields.get("ROWS", 0) or 0),
+        "tail": tail.strip(),
+    }
 
 
 def result_tar_command(remote_dir: str, archive_name: str) -> str:
@@ -134,13 +189,58 @@ def result_tar_command(remote_dir: str, archive_name: str) -> str:
     return f"cd {remote_dir} && tar czf {archive_name} {existing}"
 
 
-def resolve_machine(name: str) -> object:
-    """Map a ``--machine`` string to a Lightning SDK ``Machine`` member (SDK imported lazily)."""
-    key = name.upper()
-    if key not in MACHINES:
-        raise SystemExit(f"unknown --machine {name!r}; choose one of {sorted(MACHINES)}")
-    machine_module = _require_sdk()[1]
-    return getattr(machine_module, MACHINES[key])
+def merge_results(local_csv: Path, incoming_csv: Path) -> int:
+    """Append the incoming sweep rows to ``local_csv`` without losing local ones.
+
+    A plain extract would overwrite the local results with the Studio's, discarding any rows from
+    runs made here. Rows are keyed by their full content, so re-fetching a partial CSV mid-run and
+    again at the end adds only what is new. Returns the number of rows the merge added.
+    """
+    incoming = pd.read_csv(incoming_csv)
+    if local_csv.exists():
+        existing = pd.read_csv(local_csv)
+        merged = pd.concat([existing, incoming], ignore_index=True).drop_duplicates()
+        added = len(merged) - len(existing)
+    else:
+        merged, added = incoming, len(incoming)
+    local_csv.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(local_csv, index=False)
+    return added
+
+
+def extract_results(archive: Path, repo_root: Path) -> int:
+    """Unpack a downloaded results archive into ``repo_root``, merging the results CSV.
+
+    Bundles, best-config JSONs and submissions are extracted in place (bundles are namespaced by
+    revision, so they cannot collide); ``data/night_results.csv`` goes through
+    :func:`merge_results`.
+    Returns the number of result rows added.
+    """
+    staging = repo_root / "scratch" / "lightning_extract"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    with tarfile.open(archive) as tar:
+        tar.extractall(staging, filter="data")  # "data" filter: no absolute paths or escapes
+    added = 0
+    for source in staging.rglob("*"):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(staging)
+        target = repo_root / relative
+        if relative == Path("data/night_results.csv"):
+            added = merge_results(target, source)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    shutil.rmtree(staging)
+    return added
+
+
+def studio_is_running(studio: object) -> bool:
+    """Whether the Studio is up. Compared by status name, so no SDK import is needed."""
+    status = studio.status
+    return getattr(status, "name", str(status)).lower() == "running"
 
 
 def _require_sdk() -> tuple[type, type]:
@@ -155,147 +255,295 @@ def _require_sdk() -> tuple[type, type]:
     return Studio, Machine
 
 
-def plan(args: argparse.Namespace) -> list[str]:
-    """The ordered, human-readable steps the launch will take -- the body of ``--dry-run``.
-
-    Pure: it builds the plan from the arguments alone, with no cloud call and no SDK import, so it
-    is the testable description of exactly what ``launch`` does.
-    """
-    code = f"{args.remote_dir}/code.tar.gz"
-    data = f"{args.remote_dir}/data.tar.gz"
-    results = f"{args.remote_dir}/results.tar.gz"
-    steps = [
-        f"git archive {args.ref} -> {args.archive}",
-        f"tar {' '.join(data_tar_sources(args.data_external))} -> {args.data_archive}",
-        f"Studio(name={args.studio!r}, teamspace={args.teamspace!r}).start({args.machine})",
-        f"upload {args.archive} -> {code}; upload {args.data_archive} -> {data}",
-        f"remote: mkdir -p {args.remote_dir} && tar xzf {code} -C {args.remote_dir} && "
-        f"tar xzf {data} -C {args.remote_dir}",
-        "remote: "
-        + sweep_command(
-            args.remote_dir,
-            args.remote_python,
-            args.workers,
-            args.members,
-            args.setup,
-            # Never print the API key in the plan; show it is forwarded, not its value.
-            {k: ("***" if k == "WANDB_API_KEY" else v) for k, v in wandb_env(args.wandb).items()},
-        ),
-        "remote: " + result_tar_command(args.remote_dir, "results.tar.gz"),
-        f"download {results} -> {args.archive_dir}/results.tar.gz; extract into the repo",
-        "Studio.stop()" if not args.keep_running else "Studio left running (--keep-running)",
-    ]
-    return steps
+def resolve_machine(name: str) -> object:
+    """Map a ``--machine`` name to the SDK's ``Machine`` member, validated against the SDK."""
+    _, machine_enum = _require_sdk()
+    available = sorted(n for n in dir(machine_enum) if n.isupper())
+    key = name.upper()
+    if key not in available:
+        raise SystemExit(f"unknown --machine {name!r}; the SDK offers: {', '.join(available)}")
+    return getattr(machine_enum, key)
 
 
-def launch(args: argparse.Namespace) -> None:
-    """Run the plan against a real Studio. The SDK is imported here, never at module load."""
+def open_studio(args: argparse.Namespace) -> object:
+    """The named Studio, created on first use. Opening it does not start it."""
     studio_cls, _ = _require_sdk()
-    machine = resolve_machine(args.machine)
+    return studio_cls(name=args.studio, teamspace=args.teamspace, create_ok=True)
 
-    archive = build_code_archive(Path(args.archive), args.ref)
-    data_archive = Path(args.data_archive)
+
+def ensure_running(
+    studio: object, args: argparse.Namespace, resolver: Callable = resolve_machine
+) -> None:
+    """Start the Studio unless it is already up (the SDK's ``start`` raises on a running one)."""
+    if studio_is_running(studio):
+        logger.info("Studio %s is already running; reusing it (--machine ignored)", args.studio)
+        return
+    max_runtime = int(args.max_hours * 3600) if args.max_hours else None
+    logger.info("starting Studio %s on %s", args.studio, args.machine)
+    studio.start(resolver(args.machine), max_runtime=max_runtime)
+
+
+def upload_checked(studio: object, local: Path, remote: str) -> None:
+    """Upload one file and confirm the shell sees it where the file API put it.
+
+    The file API and the shell are separate views of the Studio; if their roots ever differ, an
+    unchecked upload would succeed and the next command would fail confusingly; failing here says
+    so.
+    """
+    studio.upload_file(str(local), remote)
+    try:
+        studio.run(f"test -f {shlex.quote(remote)}")
+    except RuntimeError as error:
+        raise SystemExit(
+            f"uploaded {local} to {remote!r} but the shell cannot see it there; the file API root "
+            "and the shell directory differ -- set --remote-dir to an absolute path"
+        ) from error
+
+
+def sync_code(studio: object, args: argparse.Namespace, archive: Path) -> None:
+    """Refresh the code on the Studio. Small, so done on every launch."""
+    remote_dir = args.remote_dir
+    studio.run(f"mkdir -p {remote_dir}")
+    upload_checked(studio, archive, f"{remote_dir}/code.tar.gz")
+    studio.run(f"cd {remote_dir} && tar xzf code.tar.gz")
+
+
+def sync_data(studio: object, args: argparse.Namespace, data_archive: Path) -> bool:
+    """Upload the data once. Returns whether it uploaded (False when already synced)."""
+    remote_dir = args.remote_dir
+    if not args.refresh_data:
+        _, code = studio.run_with_exit_code(f"test -f {remote_dir}/{DATA_MARKER}")
+        if code == 0:
+            logger.info("data already on the Studio; skipping upload (--refresh-data to resend)")
+            return False
     data_archive.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["tar", "czf", str(data_archive), *data_tar_sources(args.data_external)], check=True
     )
+    upload_checked(studio, data_archive, f"{remote_dir}/data.tar.gz")
+    studio.run(f"cd {remote_dir} && tar xzf data.tar.gz && touch {DATA_MARKER}")
+    return True
 
-    studio = studio_cls(name=args.studio, teamspace=args.teamspace, create_ok=True)
-    logger.info("starting Studio %s on %s", args.studio, args.machine)
-    studio.start(machine)
-    try:
-        remote_code = f"{args.remote_dir}/code.tar.gz"
-        remote_data = f"{args.remote_dir}/data.tar.gz"
-        studio.run(f"mkdir -p {args.remote_dir}")
-        studio.upload_file(str(archive), remote_code)
-        studio.upload_file(str(data_archive), remote_data)
-        studio.run(f"cd {args.remote_dir} && tar xzf code.tar.gz && tar xzf data.tar.gz")
-        logger.info("running the sweep (workers=%d members=%d)", args.workers, args.members)
-        output = studio.run(
-            sweep_command(
-                args.remote_dir,
-                args.remote_python,
-                args.workers,
-                args.members,
-                args.setup,
-                wandb_env(args.wandb),
-            )
+
+def sweep_env(args: argparse.Namespace, revision: str) -> dict[str, str]:
+    """Environment forwarded to the sweep: the archived revision, plus W&B when enabled."""
+    return {"CYP_REV": revision, **wandb_env(args.wandb)}
+
+
+def read_status(studio: object, remote_dir: str) -> dict:
+    return parse_status(studio.run(status_command(remote_dir)))
+
+
+def launch(
+    args: argparse.Namespace,
+    studio: object | None = None,
+    resolver: Callable = resolve_machine,
+) -> None:
+    """Start (or resume) the sweep on the persistent Studio, detached."""
+    studio = studio or open_studio(args)
+    revision = args.rev or git_revision(args.ref)
+    archive = build_code_archive(Path(args.archive), args.ref)
+    ensure_running(studio, args, resolver)
+
+    current = read_status(studio, args.remote_dir)
+    if current["running"]:
+        raise SystemExit(
+            f"a sweep is already running on {args.studio} ({current['rows']} configs recorded); "
+            "use `status` to follow it or `fetch` to download its results"
         )
-        logger.info("sweep finished:\n%s", output)
+    sync_code(studio, args, archive)
+    sync_data(studio, args, Path(args.data_archive))
+    if args.setup:
+        logger.info("checking the remote env (setup.sh is check-first)")
+        logger.info("%s", studio.run(setup_command(args.remote_dir)))
+    studio.run(
+        detached_sweep_command(
+            args.remote_dir,
+            args.remote_python,
+            args.workers,
+            args.members,
+            sweep_env(args, revision),
+        )
+    )
+    logger.info(
+        "sweep started detached on %s at revision %s. Follow with:\n"
+        "  python scripts/lightning_run.py status --studio %s\n"
+        "  python scripts/lightning_run.py fetch  --studio %s",
+        args.studio,
+        revision,
+        args.studio,
+        args.studio,
+    )
+    if args.wait:
+        wait_and_fetch(studio, args)
 
-        studio.run(result_tar_command(args.remote_dir, "results.tar.gz"))
-        local_results = Path(args.archive_dir) / "results.tar.gz"
-        local_results.parent.mkdir(parents=True, exist_ok=True)
-        studio.download_file(f"{args.remote_dir}/results.tar.gz", str(local_results))
-        subprocess.run(["tar", "xzf", str(local_results)], check=True)
-        logger.info("results extracted into the repo (%s)", ", ".join(RESULT_PATHS))
-    finally:
-        if not args.keep_running:
-            logger.info("stopping Studio %s", args.studio)
-            studio.stop()
+
+def wait_and_fetch(studio: object, args: argparse.Namespace, sleep: Callable = time.sleep) -> None:
+    """Block until the sweep ends, then fetch; stop the Studio afterwards only on request."""
+    while read_status(studio, args.remote_dir)["running"]:
+        sleep(args.poll)
+    fetch(args, studio)
+    if args.stop_after:
+        stop(args, studio)
+
+
+def fetch(args: argparse.Namespace, studio: object | None = None) -> None:
+    """Download the results (partial is fine) and merge them into the repo."""
+    studio = studio or open_studio(args)
+    if not studio_is_running(studio):
+        raise SystemExit(
+            f"Studio {args.studio} is not running; `launch` starts it, or start it in the UI"
+        )
+    remote_archive = f"{args.remote_dir}/results.tar.gz"
+    studio.run(result_tar_command(args.remote_dir, "results.tar.gz"))
+    local = Path(args.archive_dir) / "results.tar.gz"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    studio.download_file(remote_archive, str(local))
+    added = extract_results(local, Path.cwd())
+    logger.info("results merged into the repo (%d new rows in data/night_results.csv)", added)
+
+
+def status(args: argparse.Namespace, studio: object | None = None) -> None:
+    studio = studio or open_studio(args)
+    up = studio_is_running(studio)
+    print(f"Studio {args.studio}: {getattr(studio.status, 'name', studio.status)}")
+    if not up:
+        print("  not running -- `launch` starts it and resumes the sweep from the saved results")
+        return
+    current = read_status(studio, args.remote_dir)
+    if not current["project"]:
+        print(f"  no project at {args.remote_dir} yet -- run `launch`")
+        return
+    print(f"  sweep: {'RUNNING' if current['running'] else 'not running'}")
+    print(f"  configs recorded: {current['rows']}")
+    if current["tail"]:
+        print("  log tail:\n    " + current["tail"].replace("\n", "\n    "))
+
+
+def stop(args: argparse.Namespace, studio: object | None = None) -> None:
+    """Stop the Studio. Its filesystem is kept, so ``launch`` resumes where the sweep left off."""
+    studio = studio or open_studio(args)
+    if not studio_is_running(studio):
+        print(f"Studio {args.studio} is already stopped")
+        return
+    if read_status(studio, args.remote_dir)["running"] and not args.force:
+        raise SystemExit("a sweep is still running; fetch first, or pass --force to stop it anyway")
+    studio.stop()
+    print(f"Studio {args.studio} stopped (filesystem kept)")
+
+
+def plan_launch(args: argparse.Namespace) -> list[str]:
+    """The ordered steps ``launch`` takes -- the body of ``launch --dry-run``.
+
+    Pure: built from the arguments alone, with no cloud call and no SDK import. The API key is
+    shown as ``***``, never its value.
+    """
+    revision = args.rev or git_revision(args.ref)
+    redacted = {
+        key: ("***" if key == "WANDB_API_KEY" else value)
+        for key, value in sweep_env(args, revision).items()
+    }
+    steps = [
+        f"git archive {args.ref} -> {args.archive}  (revision {revision})",
+        f"open Studio {args.studio!r}; start it on {args.machine} only if not already running",
+        f"abort if a sweep is already running in {args.remote_dir}",
+        f"upload code tarball -> {args.remote_dir}/code.tar.gz, extract (every launch)",
+        f"data: tar {' '.join(data_tar_sources(args.data_external))}, upload and extract once "
+        f"(marker {DATA_MARKER}; --refresh-data resends)",
+    ]
+    if args.setup:
+        steps.append("remote: " + setup_command(args.remote_dir) + "  (check-first, idempotent)")
+    steps.append(
+        "remote (detached): "
+        + detached_sweep_command(
+            args.remote_dir, args.remote_python, args.workers, args.members, redacted
+        )
+    )
+    steps.append(
+        "wait for it, then fetch" + (" and stop the Studio" if args.stop_after else "")
+        if args.wait
+        else "return immediately; follow with `status`, download with `fetch`"
+    )
+    return steps
 
 
 def build_parser() -> argparse.ArgumentParser:
-    import os
-
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--studio", default=os.environ.get("CYP_LAI_STUDIO", "cyp-shift"))
-    parser.add_argument("--teamspace", default=os.environ.get("CYP_LAI_TEAMSPACE"))
-    parser.add_argument("--machine", default="A10G", help=f"one of {sorted(MACHINES)}")
-    parser.add_argument("--workers", type=int, default=8, help="remote CYP_WORKERS")
-    parser.add_argument(
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--studio", default=os.environ.get("CYP_LAI_STUDIO", "cyp-shift"))
+    common.add_argument("--teamspace", default=os.environ.get("CYP_LAI_TEAMSPACE"))
+    common.add_argument(
+        "--remote-dir", default=DEFAULT_REMOTE_DIR, help="relative to the Studio root"
+    )
+    common.add_argument("--archive-dir", default="scratch", help="where downloads land")
+
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    run = commands.add_parser("launch", parents=[common], help="start or resume the sweep")
+    run.add_argument(
+        "--machine", default="L4", help=f"SDK machine name, e.g. {', '.join(MACHINE_HINTS)}"
+    )
+    run.add_argument(
+        "--max-hours", type=float, default=None, help="machine runtime cap, if required"
+    )
+    run.add_argument("--workers", type=int, default=8, help="remote CYP_WORKERS")
+    run.add_argument(
         "--members",
         type=int,
         default=1,
         help="remote CYP_MEMBERS (1 screens architectures fast; 0 uses each family's default)",
     )
-    parser.add_argument("--ref", default="HEAD", help="git ref to archive and run")
-    parser.add_argument("--remote-dir", default="~/cyp-shift", help="remote working directory")
-    parser.add_argument(
+    run.add_argument("--ref", default="HEAD", help="git ref to archive and run")
+    run.add_argument(
+        "--rev", default=None, help="override the CYP_REV namespace (default: ref SHA)"
+    )
+    run.add_argument(
         "--remote-python",
-        default="python",
-        help="remote interpreter (or prefix, e.g. 'conda run -n cypshift python')",
+        default=DEFAULT_REMOTE_PYTHON,
+        help="remote interpreter; the default is the env this script builds",
     )
-    parser.add_argument(
-        "--data-external",
-        action="store_true",
-        help="also ship data/external (local-only auxiliary caches); else fetch remotely",
+    run.add_argument("--data-external", action="store_true", help="also ship data/external caches")
+    run.add_argument("--refresh-data", action="store_true", help="resend data even if synced")
+    run.add_argument(
+        "--no-setup", dest="setup", action="store_false", help="skip setup.sh (env already built)"
     )
-    parser.add_argument(
-        "--no-setup",
-        dest="setup",
-        action="store_false",
-        help="skip ./setup.sh on the remote (the Studio already has the env and data)",
-    )
-    parser.add_argument(
+    run.add_argument(
         "--wandb",
         action="store_true",
-        help="follow the sweep online: set CYP_WANDB on the remote and forward WANDB_API_KEY / "
-        "WANDB_PROJECT / WANDB_ENTITY from this environment",
+        help="follow the sweep online: set CYP_WANDB and forward WANDB_API_KEY/PROJECT/ENTITY",
     )
-    parser.add_argument("--keep-running", action="store_true", help="do not stop the Studio after")
-    parser.add_argument("--dry-run", action="store_true", help="print the plan; no cloud, no SDK")
-    parser.add_argument("--archive", default="scratch/code.tar.gz", help="local code tarball path")
-    parser.add_argument(
-        "--data-archive", default="scratch/data.tar.gz", help="local data tarball path"
-    )
-    parser.add_argument(
-        "--archive-dir", default="scratch", help="where the downloaded results archive lands"
-    )
+    run.add_argument("--wait", action="store_true", help="block until done, then fetch")
+    run.add_argument("--poll", type=int, default=300, help="seconds between checks with --wait")
+    run.add_argument("--stop-after", action="store_true", help="with --wait, stop the Studio after")
+    run.add_argument("--archive", default="scratch/code.tar.gz", help="local code tarball")
+    run.add_argument("--data-archive", default="scratch/data.tar.gz", help="local data tarball")
+    run.add_argument("--dry-run", action="store_true", help="print the plan; no cloud, no SDK")
+
+    commands.add_parser("status", parents=[common], help="Studio and sweep state")
+    commands.add_parser("fetch", parents=[common], help="download and merge results")
+    halt = commands.add_parser("stop", parents=[common], help="stop the Studio (keeps its files)")
+    halt.add_argument("--force", action="store_true", help="stop even if a sweep is running")
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
-    if args.dry_run:
-        print("Lightning AI sweep launch plan:")
-        for index, step in enumerate(plan(args), start=1):
-            print(f"  {index}. {step}")
-        return
-    launch(args)
+    if args.command == "launch":
+        if args.dry_run:
+            print("Lightning AI sweep launch plan:")
+            for index, step in enumerate(plan_launch(args), start=1):
+                print(f"  {index}. {step}")
+            return
+        launch(args)
+    elif args.command == "status":
+        status(args)
+    elif args.command == "fetch":
+        fetch(args)
+    else:
+        stop(args)
 
 
 if __name__ == "__main__":

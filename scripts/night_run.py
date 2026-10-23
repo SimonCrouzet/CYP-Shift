@@ -680,7 +680,14 @@ def run_identity() -> str:
 
     Results are namespaced by it so a code change (e.g. the boosted weight fix) does not
     silently reuse results trained under the old semantics.
+
+    ``CYP_REV`` overrides it. A tree shipped without its ``.git`` (a ``git archive`` uploaded to a
+    remote Studio) has no revision of its own and would otherwise collapse every code version into
+    ``nogit``; the launcher passes the archived commit's SHA so the namespace stays meaningful.
     """
+    override = os.environ.get("CYP_REV")
+    if override:
+        return override
     try:
         sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
         clean = subprocess.call(["git", "diff", "--quiet"]) == 0

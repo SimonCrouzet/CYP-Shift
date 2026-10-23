@@ -50,21 +50,28 @@ CYP_WANDB=1 CYP_WORKERS=8 CYP_MEMBERS=1 python scripts/night_run.py
 
 Without `CYP_WANDB` there is no W&B dependency or network call; a missing `wandb` with it set warns and the sweep continues (W&B is a monitor, never a gate).
 
-## Run it on a Lightning AI Studio GPU
+## Run it on a persistent Lightning AI Studio
 
-`scripts/lightning_run.py` runs the same sweep on a Lightning AI Studio and syncs the results back, so a RAM/GPU-constrained laptop need not host it.
+`scripts/lightning_run.py` treats a Lightning Studio as a long-lived workstation. A Studio keeps its filesystem across stop/start, so the env, the data and `data/night_results.csv` survive; the sweep is resumable, so a relaunch continues where it left off. The sweep runs **detached** on the Studio (`nohup` + a pid file), so closing the laptop does not kill it.
 
 ```bash
-pip install 'cypshift[cloud]'                 # lightning-sdk (local orchestration only)
-export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # or: lightning login
-python scripts/lightning_run.py --dry-run             # print the plan; no cloud, no SDK
-python scripts/lightning_run.py --machine A10G --members 1 --wandb
+pip install 'cypshift[cloud]'                          # lightning-sdk (local orchestration only)
+export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...     # or: lightning login
+python scripts/lightning_run.py launch --dry-run       # print the plan; no cloud, no SDK
+python scripts/lightning_run.py launch --machine L4 --members 1 --wandb
+python scripts/lightning_run.py status                 # Studio up? sweep alive? configs done? log tail
+python scripts/lightning_run.py fetch                  # download + merge results (safe mid-run)
+python scripts/lightning_run.py stop                   # stop the Studio; files are kept
 ```
 
-- Ships the committed code (`git archive`, so no data/.git/working-configs) and `data/raw`; add `--data-external` to also upload the local-only auxiliary caches, else they fetch remotely.
-- `--no-setup` skips `./setup.sh` on a Studio that already has the env; `--remote-python 'conda run -n cypshift python'` picks the interpreter when setup built a named env.
-- `--wandb` turns on `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY`, so the run is followable online (the API key is never printed, including in `--dry-run`).
-- Downloads `data/night_results.csv`, `data/run_bundles/`, the best-config JSONs and the candidate submissions into the repo. `--keep-running` leaves the Studio up.
+- `launch` is idempotent: it reuses a running Studio (the SDK's `start` raises on one), refreshes the small code tarball each time, uploads the data **once** (`--refresh-data` resends), and runs the check-first `./setup.sh` every time (a few seconds once the env exists). The env lives in `cyp-shift/.env` so it persists with the project. It refuses to start a second sweep while one is running.
+- `--machine` is any name the installed SDK offers (`L4` by default; `T4`, `L40S`, `A100`, `H100`, ...); it is ignored for a Studio that is already running. `--max-hours` sets the machine runtime cap where the machine type requires one.
+- The sweep's run identity comes from the archived commit's SHA, passed as `CYP_REV` (a `git archive` carries no `.git`, which would otherwise put every code version in one `nogit` results namespace). `git archive` ships the **committed** tree, so commit before launching.
+- `--data-external` also ships the local-only auxiliary caches; `--no-setup` skips `setup.sh`; `--remote-python` overrides the interpreter.
+- `--wandb` sets `CYP_WANDB` remotely and forwards `WANDB_API_KEY` / `WANDB_PROJECT` / `WANDB_ENTITY` (the key is never printed, including in `--dry-run`).
+- `--wait` blocks (polling every `--poll` seconds) until the sweep ends, then fetches; add `--stop-after` to stop the Studio too. Without `--wait`, `launch` returns as soon as the sweep is running.
+- `fetch` merges `data/night_results.csv` rather than overwriting it, so rows from local runs are kept and re-fetching mid-run only adds what is new. Bundles, best-config JSONs and candidate submissions are copied into the repo.
+- A running Studio is billed until stopped. Remote paths are relative to the Studio root, where both the shell and the file API start; if they ever differ, the upload check fails with a message to set `--remote-dir` to an absolute path.
 
 ## What the sweep covers
 
