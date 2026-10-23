@@ -140,6 +140,7 @@ def build_model(
             adapt_target=config.model.graph.adapt_target,
             adapt_hidden=config.model.graph.adapt_hidden,
             per_target_heads=config.model.graph.per_target_heads,
+            per_measurement_heads=config.model.graph.per_measurement_heads,
             ffn_hidden=config.model.graph.ffn_hidden,
             response_assays=tuple(response_assays),
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,

@@ -79,18 +79,34 @@ class FakeStudio:
         shutil.copy(self.root / remote_path, file_path)
 
 
+def _release_file(tmp_path: Path) -> Path:
+    return tmp_path / "release_sweep"
+
+
 def _stub_sweep(tmp_path: Path) -> Path:
-    """A stand-in for night_run.py: records one result row under CYP_REV, then lingers briefly so
-    the detached 'running' state is observable. Invoked as ``<stub> scripts/night_run.py``."""
+    """A stand-in for night_run.py: records one result row under CYP_REV, then stays alive until
+    the test creates the release file (capped at 60 s so a failed test cannot orphan it). Blocking
+    on a file rather than sleeping keeps "the sweep is running" deterministic under load.
+    Invoked as ``<stub> scripts/night_run.py``."""
     stub = tmp_path / "stub_sweep.sh"
+    if stub.exists():
+        # Never rewrite it: a launch that is already running executes this file, and a shell reads
+        # its script incrementally, so truncating it under a live sweep can end the sweep early.
+        return stub
     stub.write_text(
         "#!/bin/sh\n"
         "mkdir -p data\n"
         f"printf '{HEADER}\\n%s,reg,graph,0,ok,0.78\\n' \"$CYP_REV\" > data/night_results.csv\n"
-        "sleep 2\n"
+        "i=0\n"
+        f"while [ ! -f '{_release_file(tmp_path)}' ] && [ $i -lt 600 ]; "
+        "do sleep 0.1; i=$((i+1)); done\n"
     )
     stub.chmod(0o755)
     return stub
+
+
+def _let_the_sweep_finish(tmp_path: Path) -> None:
+    _release_file(tmp_path).touch()
 
 
 def _fake_code_archive(path: Path, ref: str = "HEAD") -> Path:
@@ -116,6 +132,7 @@ def local(tmp_path, monkeypatch):
 
 
 def _wait_until_stopped(studio: FakeStudio, timeout: float = 15.0) -> dict:
+    """Wait for the (already released) stub sweep to exit."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         current = lr.read_status(studio, lr.DEFAULT_REMOTE_DIR)
@@ -153,6 +170,7 @@ def test_launch_runs_detached_then_fetch_merges_without_clobbering(tmp_path, loc
     assert (remote / lr.DATA_MARKER).exists()
     assert lr.read_status(studio, lr.DEFAULT_REMOTE_DIR)["running"]  # started detached, still going
 
+    _let_the_sweep_finish(tmp_path)
     finished = _wait_until_stopped(studio)
     assert finished["rows"] == 1 and finished["project"]
 
@@ -167,6 +185,7 @@ def test_a_second_launch_is_refused_while_the_sweep_runs(tmp_path, local):
     lr.launch(_launch_args(tmp_path), studio=studio, resolver=lambda name: name)
     with pytest.raises(SystemExit, match="already running"):
         lr.launch(_launch_args(tmp_path), studio=studio, resolver=lambda name: name)
+    _let_the_sweep_finish(tmp_path)
     _wait_until_stopped(studio)
 
 
@@ -175,6 +194,7 @@ def test_a_running_studio_is_reused_not_restarted(tmp_path, local):
     studio = FakeStudio(tmp_path / "studio", running=True)
     lr.launch(_launch_args(tmp_path), studio=studio, resolver=lambda name: name)
     assert studio.started_with is None  # never called start()
+    _let_the_sweep_finish(tmp_path)
     _wait_until_stopped(studio)
 
 
@@ -193,6 +213,7 @@ def test_stop_refuses_a_running_sweep_unless_forced(tmp_path, local):
     stop_args = lr.build_parser().parse_args(["stop"])
     with pytest.raises(SystemExit, match="still running"):
         lr.stop(stop_args, studio)
+    _let_the_sweep_finish(tmp_path)
     _wait_until_stopped(studio)
     lr.stop(stop_args, studio)
     assert not lr.studio_is_running(studio)

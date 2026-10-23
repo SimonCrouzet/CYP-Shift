@@ -74,6 +74,14 @@ DEEP = {
     "model.boosted.n_estimators": 1000,
     "model.boosted.learning_rate": 0.03,
 }
+
+#: A fixed measurement panel for comparing readouts: the screen as a response head, and Veith
+#: potency and max-response together.
+PANEL = {
+    "sources.veith": True,
+    "sources.qhts_representation": "both",
+    "multifidelity.screen_strategy": "response_head",
+}
 #: Every auxiliary source at once -- the big-pool check (known to dilute, re-tested here).
 ALL_AUX = {
     "sources.octant": True,
@@ -398,6 +406,28 @@ REGRESSION: dict[str, dict] = {
         "model.kind": "graph",
         **OCT_TOX,
         "model.graph.per_target_heads": True,
+    },
+    # One independent output head per (target, assay) potency pair and per-target response heads
+    # on the shared encoder (the reference recipes' masked output table).
+    "graph_measurement_heads": {"model.kind": "graph", "model.graph.per_measurement_heads": True},
+    "graph_octant_tox21_measurement_heads": {
+        "model.kind": "graph",
+        **OCT_TOX,
+        "model.graph.per_measurement_heads": True,
+    },
+    # The readout-architecture comparison on one fixed, full measurement panel (screen response
+    # + Veith potency and max-response), so a difference is the readout and not the data: the
+    # conditioned shared readout (control), per-target potency heads, and the full table.
+    "graph_panel": {"model.kind": "graph", **PANEL},
+    "graph_panel_per_target_heads": {
+        "model.kind": "graph",
+        **PANEL,
+        "model.graph.per_target_heads": True,
+    },
+    "graph_panel_measurement_heads": {
+        "model.kind": "graph",
+        **PANEL,
+        "model.graph.per_measurement_heads": True,
     },
     # Wide readout FFN over the default encoder (the reference recipes' wide-FFN shape).
     "graph_ffn1024": {"model.kind": "graph", "model.graph.ffn_hidden": 1024},

@@ -307,3 +307,153 @@ def test_censored_point_target_is_masked_under_point_objectives_only():
     point = GraphNetwork(loss="absolute")._datapoints(frame, labelled=True)
     assert np.isfinite(soft[0].y[VALUE])  # dead-zone keeps the one-sided bound
     assert np.isnan(point[0].y[VALUE])  # the point objective drops the censored row
+
+
+def _table_predictor(**kwargs):
+    """A measurement-table graph and its predictor, with every head zeroed to a distinct constant
+    (value head ``p`` outputs ``p + 1``; response task ``k``'s head for target ``i`` outputs
+    ``100 * (k + 1) + i``) so which head a row selects can be read off the output."""
+    net = GraphNetwork(per_measurement_heads=True, **kwargs)
+    mpnn = net._build()
+    predictor = mpnn.predictor
+    with torch.no_grad():
+        for heads in (predictor.value_heads, *predictor.response_heads):
+            heads.w1.zero_(), heads.b1.zero_(), heads.w2.zero_()
+        predictor.value_heads.b2.copy_(torch.arange(predictor.value_heads.b2.numel()) + 1.0)
+        for task, heads in enumerate(predictor.response_heads):
+            heads.b2.copy_(torch.arange(heads.b2.numel()) + 100.0 * (task + 1))
+    predictor.eval()
+    return net, mpnn.message_passing.output_dim, predictor
+
+
+def test_measurement_table_has_one_potency_head_per_target_assay_pair():
+    """Independent output table: a potency head per (target, assay) pair, a response head per
+    target for each response task, all on the one shared encoder."""
+    from cypshift.models.graph import _MeasurementTableRegressionFFN
+
+    net = GraphNetwork(per_measurement_heads=True, response_assays=("luminescent_max_response",))
+    predictor = net._build().predictor
+    assert isinstance(predictor, _MeasurementTableRegressionFFN)
+    assert predictor.value_heads.w1.shape[0] == len(net.targets) * len(net.assays)
+    assert len(predictor.response_heads) == 1
+    assert predictor.response_heads[0].w1.shape[0] == len(net.targets)
+
+
+def test_measurement_table_selects_the_rows_own_target_assay_head():
+    """Read through the real conditioning encoder: a (target, assay) pair selects its own head,
+    and the same target under another assay selects a different one -- the independence that
+    per_target_heads (one potency head per target, shared across assays) does not have."""
+    from cypshift.data.assembly import encode_conditions
+
+    net, offset, predictor = _table_predictor(response_assays=("luminescent_max_response",))
+    frame = pd.DataFrame(
+        {
+            "target": ["CYP1A2", "CYP2D6", "CYP2D6", "CYP3A4"],
+            "assay": [
+                "direct_inhibition_drc",
+                "direct_inhibition_drc",
+                "tdi_drc",
+                "luminescent_ac50",
+            ],
+        }
+    )
+    conditioning = torch.tensor(encode_conditions(frame, "factorised", net.targets, net.assays))
+    out = predictor(torch.cat([torch.zeros(len(frame), offset), conditioning], dim=1))
+    n_assays = len(net.assays)
+    for row, (target, assay) in enumerate(zip(frame["target"], frame["assay"], strict=True)):
+        expected = net.targets.index(target) * n_assays + net.assays.index(assay) + 1
+        assert out[row, VALUE].item() == pytest.approx(expected)
+        # the response column is selected by target alone
+        assert out[row, 3].item() == pytest.approx(100 + net.targets.index(target))
+    assert out[1, VALUE].item() != out[2, VALUE].item()  # CYP2D6 direct vs tdi: different heads
+
+
+def test_measurement_table_head_width_follows_ffn_hidden_and_dropout():
+    net = GraphNetwork(per_measurement_heads=True, ffn_hidden=96, dropout=0.25)
+    predictor = net._build().predictor
+    assert predictor.value_heads.w1.shape[2] == 96
+    assert predictor.value_heads.dropout.p == pytest.approx(0.25)
+    assert (
+        GraphNetwork(per_measurement_heads=True)._build().predictor.value_heads.w1.shape[2] == 128
+    )
+
+
+def test_measurement_table_needs_the_factorised_one_hot_layout():
+    with pytest.raises(ValueError, match="factorised"):
+        GraphNetwork(per_measurement_heads=True, conditioning="metadata")
+
+
+def test_measurement_table_trains_only_the_pairs_it_sees():
+    """A real fit: heads for the pairs present in the data move; the head of a pair that never
+    appears gets no gradient and is exactly unchanged -- the heads are independent, and the response
+    head moves only for the target that carried response data."""
+    import lightning.pytorch as pl
+
+    response = "luminescent_max_response"
+    rng = np.random.default_rng(0)
+    smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC", "c1ccncc1", "CCOCC", "CC(C)O"]
+    rows = []
+    for smi in smiles:
+        for target, assay in (
+            ("CYP2D6", "direct_inhibition_drc"),
+            ("CYP3A4", "direct_inhibition_drc"),
+            ("CYP3A4", "fluorogenic_pic50"),
+            ("CYP2D6", response),
+        ):
+            value = float(rng.uniform(0, 1) if assay == response else rng.uniform(4, 7))
+            spread = 0.0 if assay == response else 0.3
+            rows.append(
+                {
+                    "SMILES": smi,
+                    "target": target,
+                    "assay": assay,
+                    "source": "challenge",
+                    "value": value,
+                    "conf_low": value - spread,
+                    "conf_high": value + spread,
+                    "is_censored": False,
+                    "weight": 1.0,
+                }
+            )
+    settings = {
+        "hidden": 32,
+        "depth": 2,
+        "ffn_hidden": 32,
+        "response_assays": (response,),
+        "per_measurement_heads": True,
+    }
+    net = GraphNetwork(epochs=3, batch_size=16, n_members=1, **settings)
+    net.fit(pd.DataFrame(rows))
+    trained = net._members[0].predictor
+    pl.seed_everything(0, workers=True)  # the fit's member-0 seed, so this rebuild is its init
+    initial = GraphNetwork(**settings)._build().predictor
+
+    n_assays = len(net.assays)
+
+    def pair(target: str, assay: str) -> int:
+        return net.targets.index(target) * n_assays + net.assays.index(assay)
+
+    def moved(index: int) -> float:
+        delta = trained.value_heads.w2[index] - initial.value_heads.w2[index]
+        return float(delta.detach().abs().max())
+
+    for seen in (
+        pair("CYP2D6", "direct_inhibition_drc"),
+        pair("CYP3A4", "direct_inhibition_drc"),
+        pair("CYP3A4", "fluorogenic_pic50"),
+    ):
+        assert moved(seen) > 1e-4
+    for unseen in (
+        pair("CYP1A2", "direct_inhibition_drc"),
+        pair("CYP2D6", "tdi_drc"),
+        pair("CYP2C9", "fluorogenic_pic50"),
+    ):
+        assert moved(unseen) == 0.0
+
+    def response_moved(target: str) -> float:
+        index = net.targets.index(target)
+        delta = trained.response_heads[0].w2[index] - initial.response_heads[0].w2[index]
+        return float(delta.detach().abs().max())
+
+    assert response_moved("CYP2D6") > 1e-4 and response_moved("CYP1A2") == 0.0
+    assert np.isfinite(net.predict(smiles[:3]).samples).all()

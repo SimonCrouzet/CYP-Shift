@@ -32,6 +32,7 @@ prediction time.
 """
 
 import logging
+import math
 from pathlib import Path
 
 import numpy as np
@@ -389,6 +390,91 @@ class _PerTargetHeadsRegressionFFN(cpnn.RegressionFFN):
     train_step = forward
 
 
+class _BatchedHeads(nn.Module):
+    """``n_heads`` independent two-layer MLP heads on one input, evaluated in a single einsum.
+
+    A ``ModuleList`` of small heads costs a Python loop and a handful of kernel launches per head
+    per step, which is slow when the number of heads is a product of two vocabularies. Stacking
+    the weights as ``(heads, ...)`` tensors evaluates every head at once. Each head is a separate
+    set of weights and shares nothing with the others; initialisation matches ``nn.Linear``.
+    """
+
+    def __init__(self, n_heads: int, input_dim: int, hidden: int, dropout: float) -> None:
+        super().__init__()
+        bound_in, bound_out = 1.0 / math.sqrt(input_dim), 1.0 / math.sqrt(hidden)
+        self.w1 = nn.Parameter(
+            torch.empty(n_heads, input_dim, hidden).uniform_(-bound_in, bound_in)
+        )
+        self.b1 = nn.Parameter(torch.empty(n_heads, hidden).uniform_(-bound_in, bound_in))
+        self.w2 = nn.Parameter(torch.empty(n_heads, hidden).uniform_(-bound_out, bound_out))
+        self.b2 = nn.Parameter(torch.empty(n_heads).uniform_(-bound_out, bound_out))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """``(batch, input_dim) -> (batch, n_heads)``: every head's scalar output."""
+        hidden = torch.relu(torch.einsum("bi,pih->bph", z, self.w1) + self.b1)
+        return torch.einsum("bph,ph->bp", self.dropout(hidden), self.w2) + self.b2
+
+
+class _MeasurementTableRegressionFFN(cpnn.RegressionFFN):
+    """RegressionFFN reading each ``(target, measurement)`` pair from its own output head.
+
+    The potency (value) task has one independent head per ``(target, assay)`` pair, selected by
+    the outer product of the row's target and assay one-hots; every response task (a qHTS max
+    response, a screen fraction, a raw log2FC) has one independent head per target, selected by
+    the target one-hot. Pairs a row never carries are masked by the loss and never trained, so
+    the table is the "masked multi-task output table" of the reference recipes, with the message-
+    passing encoder shared. A head sees only its own measurements: unlike a conditioned shared
+    readout, an auxiliary assay (Octant, Tox21, the screen) cannot move the scored assay's output
+    directly and informs it only through the shared encoder.
+
+    Distinct from ``per_target_heads`` (one potency head per target, shared across assays) and
+    from ``separate_trunks`` (a separate encoder per isoform). The target and assay one-hots are
+    the first two conditioning blocks, so they sit at ``target_offset`` and ``assay_offset`` in
+    ``Z``; that layout only exists for ``factorised`` conditioning.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_offset: int,
+        n_targets: int,
+        assay_offset: int,
+        n_assays: int,
+        n_response: int,
+        head_hidden: int = 128,
+        head_dropout: float = 0.0,
+        value_index: int = VALUE,
+        response_index: int = RESPONSE,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.target_offset, self.n_targets = target_offset, n_targets
+        self.assay_offset, self.n_assays = assay_offset, n_assays
+        self.value_index, self.response_index = value_index, response_index
+        self.value_heads = _BatchedHeads(
+            n_targets * n_assays, self.input_dim, head_hidden, head_dropout
+        )
+        self.response_heads = nn.ModuleList(
+            _BatchedHeads(n_targets, self.input_dim, head_hidden, head_dropout)
+            for _ in range(n_response)
+        )
+
+    def forward(self, Z: torch.Tensor) -> torch.Tensor:  # noqa: N803 -- chemprop's Predictor API
+        base = self.ffn(Z)
+        targets = Z[:, self.target_offset : self.target_offset + self.n_targets]
+        assays = Z[:, self.assay_offset : self.assay_offset + self.n_assays]
+        # The (target, assay) one-hot pair is a one-hot over the product vocabulary.
+        pair = (targets.unsqueeze(2) * assays.unsqueeze(1)).reshape(len(Z), -1)
+        replaced = base.clone()
+        replaced[:, self.value_index] = (pair * self.value_heads(Z)).sum(dim=1)
+        for task, heads in enumerate(self.response_heads):
+            replaced[:, self.response_index + task] = (targets * heads(Z)).sum(dim=1)
+        return self.output_transform(replaced)
+
+    train_step = forward
+
+
 class GraphNetwork:
     """Chemprop D-MPNN conditioned on target and assay through its readout."""
 
@@ -420,6 +506,7 @@ class GraphNetwork:
         adapt_target: str = "none",
         adapt_hidden: int = 64,
         per_target_heads: bool = False,
+        per_measurement_heads: bool = False,
         ffn_hidden: int = 0,
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
@@ -470,6 +557,15 @@ class GraphNetwork:
         #: Give every target its own value-task output head on the shared encoder (shared trunk,
         #: independent heads), rather than one shared readout. Mutually exclusive with the adapter.
         self.per_target_heads = per_target_heads
+        #: Give every ``(target, measurement)`` pair its own output head on the shared encoder (see
+        #: :class:`_MeasurementTableRegressionFFN`). Needs the separable target/assay one-hots of
+        #: ``factorised`` conditioning; mutually exclusive with the other readout variants.
+        self.per_measurement_heads = per_measurement_heads
+        if per_measurement_heads and conditioning != "factorised":
+            raise ValueError(
+                "per_measurement_heads reads the target and assay one-hots, which only "
+                f"conditioning='factorised' lays out; got {conditioning!r}"
+            )
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
@@ -663,6 +759,25 @@ class GraphNetwork:
             predictor = _PerTargetHeadsRegressionFFN(
                 target_offset=message_passing.output_dim,
                 n_targets=len(self.targets),
+                head_hidden=self.ffn_hidden if self.ffn_hidden > 0 else 128,
+                head_dropout=self.dropout,
+                n_tasks=self._n_label,
+                input_dim=input_dim,
+                criterion=criterion,
+                dropout=self.dropout,
+                **ffn_kwargs,
+            )
+        elif self.per_measurement_heads:
+            # Shared encoder, one output head per (target, assay) for potency and one per target
+            # for each response task. The one-hot blocks are the first two conditioning blocks,
+            # placed right after the encoder output. Head width and dropout follow the same rule as
+            # the per-target heads (ffn_hidden when set, else 128; the model dropout).
+            predictor = _MeasurementTableRegressionFFN(
+                target_offset=message_passing.output_dim,
+                n_targets=len(self.targets),
+                assay_offset=message_passing.output_dim + len(self.targets),
+                n_assays=len(self.assays),
+                n_response=len(self.response_assays),
                 head_hidden=self.ffn_hidden if self.ffn_hidden > 0 else 128,
                 head_dropout=self.dropout,
                 n_tasks=self._n_label,

@@ -408,6 +408,13 @@ class GraphConfig:
     #: the target one-hot. Distinct from ``separate_trunks`` (a separate encoder per isoform) and
     #: from the adapter (one shared head plus a gated residual); rejected with either. Swept.
     per_target_heads: bool = False
+    #: Give every ``(target, measurement)`` pair its own output head on the shared message-passing
+    #: encoder: one potency head per ``(target, assay)`` and one head per target for each response
+    #: task, selected by the row's one-hots. Finer than ``per_target_heads`` (which shares a
+    #: potency head across assays); an auxiliary assay then informs the scored one only through
+    #: the encoder. Needs ``conditioning.strategy='factorised'`` and the shared trunk; rejected
+    #: with the other readout variants. Swept.
+    per_measurement_heads: bool = False
     #: Hidden width of the readout FFN, set independently of the message-passing width
     #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
     #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
@@ -683,6 +690,11 @@ class ExperimentConfig:
                     "model.graph.per_target_heads is wired only into the graph model, not "
                     f"{self.model.kind!r}"
                 )
+            if self.model.graph.per_measurement_heads:
+                raise ValueError(
+                    "model.graph.per_measurement_heads is wired only into the graph model, not "
+                    f"{self.model.kind!r}"
+                )
         if self.model.kind == "graph":
             if self.features.molecular_embedding != "none":
                 raise ValueError(
@@ -733,6 +745,29 @@ class ExperimentConfig:
                     "model.graph.per_target_heads and model.graph.adapt_target are alternative "
                     "shared-trunk readouts; enable only one"
                 )
+            if self.model.graph.per_measurement_heads:
+                # The table is a third alternative readout on the shared trunk, and its gate reads
+                # the factorised one-hot layout.
+                rivals = [
+                    name
+                    for name, on in (
+                        ("separate_trunks", self.model.graph.separate_trunks),
+                        ("adapt_target", self.model.graph.adapt_target != "none"),
+                        ("per_target_heads", self.model.graph.per_target_heads),
+                    )
+                    if on
+                ]
+                if rivals:
+                    raise ValueError(
+                        "model.graph.per_measurement_heads is an alternative to "
+                        f"{', '.join('model.graph.' + r for r in rivals)}; enable only one"
+                    )
+                if self.conditioning.strategy != "factorised":
+                    raise ValueError(
+                        "model.graph.per_measurement_heads needs conditioning.strategy="
+                        f"'factorised' (separable target/assay one-hots), not "
+                        f"{self.conditioning.strategy!r}"
+                    )
             point_or_rank = self.model.point_loss_weight > 0 or self.model.ranking_loss_weight > 0
             if point_or_rank and self.model.objective != "soft_threshold":
                 # The point and ranking terms layer onto the soft-threshold loss only; _build

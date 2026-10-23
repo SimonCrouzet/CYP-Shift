@@ -184,6 +184,29 @@ class TestCapabilityContract:
                 "model.graph.adapt_target": "CYP2D6",
                 "model.graph.per_target_heads": True,
             },
+            # The (target, measurement) table is an alternative readout on the shared trunk, and
+            # its gate reads the factorised one-hot layout.
+            {"model.kind": "boosted", "model.graph.per_measurement_heads": True},
+            {
+                "model.kind": "graph",
+                "model.graph.per_measurement_heads": True,
+                "model.graph.per_target_heads": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.per_measurement_heads": True,
+                "model.graph.adapt_target": "CYP2D6",
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.per_measurement_heads": True,
+                "model.graph.separate_trunks": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.per_measurement_heads": True,
+                "conditioning.strategy": "metadata",
+            },
             # The point/ranking terms layer onto the soft-threshold loss only.
             {
                 "model.kind": "graph",
@@ -213,6 +236,15 @@ class TestCapabilityContract:
             },
             {"model.kind": "graph", "model.graph.adapt_target": "CYP2D6"},
             {"model.kind": "graph", "model.graph.per_target_heads": True},
+            {"model.kind": "graph", "model.graph.per_measurement_heads": True},
+            # The full panel the table is for: screen + both Veith quantities on the table.
+            {
+                "model.kind": "graph",
+                "model.graph.per_measurement_heads": True,
+                "sources.veith": True,
+                "sources.qhts_representation": "both",
+                "multifidelity.screen_strategy": "response_head",
+            },
             {
                 "model.kind": "graph",
                 "model.point_loss_weight": 0.5,
