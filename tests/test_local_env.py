@@ -134,3 +134,39 @@ def test_the_dry_run_plan_redacts_every_secret(monkeypatch: pytest.MonkeyPatch) 
     for name in ("WANDB_API_KEY", "TABPFN_TOKEN", "HF_TOKEN"):
         assert f"{name}='***'" in blob or f"{name}=***" in blob
     assert "visible-project" in blob  # only secrets are masked
+
+
+def test_the_wandb_key_falls_back_to_what_wandb_login_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`wandb login` writes ~/.netrc and exports nothing; the launcher must still find the key."""
+    netrc_file = tmp_path / ".netrc"
+    netrc_file.write_text("machine api.wandb.ai\n  login user\n  password netrc-key\n")
+    netrc_file.chmod(0o600)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    assert lr.wandb_api_key() == "netrc-key"
+    assert lr.wandb_env(True)["WANDB_API_KEY"] == "netrc-key"
+
+    monkeypatch.setenv("WANDB_API_KEY", "exported-key")  # an exported key wins
+    assert lr.wandb_api_key() == "exported-key"
+
+
+def test_no_wandb_key_anywhere_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))  # no .netrc here
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    assert lr.wandb_api_key() is None
+    assert "WANDB_API_KEY" not in lr.wandb_env(True)
+
+
+def test_launch_with_wandb_but_no_key_fails_before_any_cloud_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lr, "wandb_api_key", lambda: None)
+
+    def forbidden(*_: object, **__: object) -> None:
+        raise AssertionError("the cloud must not be touched without a key")
+
+    monkeypatch.setattr(lr, "open_studio", forbidden)
+    with pytest.raises(SystemExit, match="wandb login"):
+        lr.launch(_launch_args(wandb=True, dry_run=False))

@@ -772,8 +772,8 @@ def wandb_start() -> None:
     Off by default: only ``CYP_WANDB`` (any value) turns it on, and ``wandb`` is imported lazily,
     so neither the dependency nor an account is needed for an ordinary local run. Project and
     entity come from the standard ``WANDB_PROJECT`` / ``WANDB_ENTITY`` env; the run is named by the
-    code revision so it lines up with the results namespace. A missing package warns and the sweep
-    continues -- W&B is a monitor, never a gate on the run.
+    code revision so it lines up with the results namespace. A missing package or a failed init
+    (no key, no network) warns and the sweep continues -- W&B is a monitor, never a gate on the run.
     """
     global _WANDB_RUN
     if not os.environ.get("CYP_WANDB"):
@@ -783,19 +783,23 @@ def wandb_start() -> None:
     except ImportError:
         logger.warning("CYP_WANDB is set but wandb is not installed (pip install wandb); skipping")
         return
-    _WANDB_RUN = wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "cyp-shift"),
-        entity=os.environ.get("WANDB_ENTITY"),
-        name=REV,
-        job_type="sweep",
-        config={
-            "rev": REV,
-            "n_folds": N_FOLDS,
-            "members": NUM_MEMBERS or "family default",
-            "n_regression": len(REGRESSION),
-            "n_tdi": len(TDI),
-        },
-    )
+    try:
+        _WANDB_RUN = wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "cyp-shift"),
+            entity=os.environ.get("WANDB_ENTITY"),
+            name=REV,
+            job_type="sweep",
+            config={
+                "rev": REV,
+                "n_folds": N_FOLDS,
+                "members": NUM_MEMBERS or "family default",
+                "n_regression": len(REGRESSION),
+                "n_tdi": len(TDI),
+            },
+        )
+    except Exception as error:  # noqa: BLE001 -- auth, network or settings: never fail the sweep
+        logger.warning("W&B init failed (%s); continuing without it", type(error).__name__)
+        return
     logger.info("W&B run live: %s", getattr(_WANDB_RUN, "url", "(no url)"))
 
 

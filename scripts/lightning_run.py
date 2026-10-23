@@ -29,6 +29,7 @@ the Studio root, which is where both the shell and the file API start.
 
 import argparse
 import logging
+import netrc
 import os
 import shlex
 import shutil
@@ -105,17 +106,34 @@ def data_tar_sources(include_external: bool) -> list[str]:
     return sources
 
 
+def wandb_api_key() -> str | None:
+    """The local W&B key: ``WANDB_API_KEY`` if set, else the one ``wandb login`` stored in
+    ``~/.netrc``. ``wandb login`` does not export the variable, so without this fallback a logged-in
+    machine would forward no key and the detached remote run could not authenticate."""
+    key = os.environ.get("WANDB_API_KEY")
+    if key:
+        return key
+    try:
+        entry = netrc.netrc().authenticators("api.wandb.ai")
+    except (OSError, netrc.NetrcParseError):
+        return None
+    return entry[2] if entry and entry[2] else None
+
+
 def wandb_env(enabled: bool) -> dict[str, str]:
     """The W&B environment to forward to the remote sweep when ``--wandb`` is on.
 
-    Turns the sweep's ``CYP_WANDB`` gate on and carries whichever standard W&B variables are set
-    locally (the API key for non-interactive auth, the project/entity for where the run lands), so
-    the remote run reports to the same account and project without an interactive ``wandb login``.
+    Turns the sweep's ``CYP_WANDB`` gate on and carries the API key (for non-interactive auth) and
+    whichever of ``WANDB_PROJECT`` / ``WANDB_ENTITY`` are set locally (where the run lands), so the
+    remote run reports to the same account and project without an interactive ``wandb login``.
     """
     if not enabled:
         return {}
     env = {"CYP_WANDB": "1"}
-    for name in ("WANDB_API_KEY", "WANDB_PROJECT", "WANDB_ENTITY"):
+    key = wandb_api_key()
+    if key:
+        env["WANDB_API_KEY"] = key
+    for name in ("WANDB_PROJECT", "WANDB_ENTITY"):
         value = os.environ.get(name)
         if value:
             env[name] = value
@@ -358,6 +376,13 @@ def launch(
     resolver: Callable = resolve_machine,
 ) -> None:
     """Start (or resume) the sweep on the persistent Studio, detached."""
+    if args.wandb and not wandb_api_key():
+        # Before any cloud call: a detached remote run with no key could not authenticate, and
+        # would only show it in a log nobody is watching.
+        raise SystemExit(
+            "--wandb needs a W&B key to forward: run `wandb login`, or set WANDB_API_KEY "
+            "(e.g. in local.machine.env)"
+        )
     studio = studio or open_studio(args)
     revision = args.rev or git_revision(args.ref)
     archive = build_code_archive(Path(args.archive), args.ref)

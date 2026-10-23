@@ -53,3 +53,17 @@ def test_wandb_log_row_logs_a_table_and_scalars_to_an_active_run(monkeypatch):
     assert metrics["configs_done"] == 1
     assert metrics["ST_RAE/reg/graph"] == 0.78
     assert "results" in metrics  # the running table is logged too
+
+
+def test_wandb_start_survives_a_failed_init(monkeypatch):
+    """A remote run with no usable key makes wandb.init raise; the sweep carries on without it."""
+    import types
+
+    def refuse(**_):
+        raise RuntimeError("api_key not configured (no-tty)")
+
+    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(init=refuse))
+    monkeypatch.setenv("CYP_WANDB", "1")
+    monkeypatch.setattr(night_run, "_WANDB_RUN", None)
+    night_run.wandb_start()
+    assert night_run._WANDB_RUN is None
