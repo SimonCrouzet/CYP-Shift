@@ -263,20 +263,14 @@ def merge_results(local_csv: Path, incoming_csv: Path) -> int:
     return added
 
 
-def extract_results(archive: Path, repo_root: Path) -> int:
-    """Unpack a downloaded results archive into ``repo_root``, merging the results CSV.
+def install_results(staging: Path, repo_root: Path) -> int:
+    """Copy a staged results tree into ``repo_root``, merging the results CSV.
 
-    Bundles, best-config JSONs and submissions are extracted in place (bundles are namespaced by
+    Bundles, best-config JSONs and submissions are copied in place (bundles are namespaced by
     revision, so they cannot collide); ``data/night_results.csv`` goes through
-    :func:`merge_results`.
-    Returns the number of result rows added.
+    :func:`merge_results`. Provider-neutral: the Studio path stages a tarball, the Modal path stages
+    files read from its volume. Returns the number of result rows added.
     """
-    staging = repo_root / "scratch" / "lightning_extract"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
-    with tarfile.open(archive) as tar:
-        tar.extractall(staging, filter="data")  # "data" filter: no absolute paths or escapes
     added = 0
     for source in staging.rglob("*"):
         if not source.is_file():
@@ -288,6 +282,21 @@ def extract_results(archive: Path, repo_root: Path) -> int:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    return added
+
+
+def extract_results(archive: Path, repo_root: Path) -> int:
+    """Unpack a downloaded results archive into ``repo_root``, merging the results CSV.
+
+    Returns the number of result rows added (see :func:`install_results`).
+    """
+    staging = repo_root / "scratch" / "lightning_extract"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    with tarfile.open(archive) as tar:
+        tar.extractall(staging, filter="data")  # "data" filter: no absolute paths or escapes
+    added = install_results(staging, repo_root)
     shutil.rmtree(staging)
     return added
 

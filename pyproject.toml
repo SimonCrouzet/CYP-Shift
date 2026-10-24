@@ -31,6 +31,9 @@ track = ["wandb>=0.17"]
 # Lightning AI SDK, used only by scripts/lightning_run.py to launch the sweep on a Studio GPU.
 # Not in `dev`: it is a local orchestration tool, imported lazily, and not exercised by the suite.
 cloud = ["lightning-sdk>=0.1"]
+# Modal SDK, used only by scripts/modal_run.py (the alternative to Lightning when its API is not
+# reachable). Same status as `cloud`: local orchestration, imported lazily, not in `dev`.
+modal = ["modal>=1.0"]
 
 # The developer install pulls in every runtime extra, because the test suite covers
 # all of them. A `dev` install that cannot collect the tests is not a dev install.

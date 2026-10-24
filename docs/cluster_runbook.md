@@ -122,6 +122,27 @@ Do not compare numbers across these — they are not the same split:
 - scaffold-CV ranks configs in the right order (it correctly put graph below boosted, octant+tox21 below plain graph, both confirmed live), but is ~0.12–0.18 optimistic in absolute ST-RAE — never read the CV number as a live score.
 - Track CV **R²** and the predicted-σ / true-σ ratio, not CV ST-RAE. ST-RAE on CV is nearly blind to the calibration gap that is actually costing us live.
 
+## Run it on Modal (when Lightning's API is not reachable)
+
+`scripts/modal_run.py` is the same flow on Modal. The sweep runs as a named, **detached Sandbox** with a GPU; all state lives on a persistent **Volume** mounted at `/vol` (`data/`, the best-config JSONs, submissions, the HuggingFace cache, `sweep.log`), so a Sandbox that ends is continued by the next `launch`. Billing stops when the Sandbox ends.
+
+```bash
+pip install 'cypshift[modal]'                           # the Modal SDK (local orchestration only)
+# credentials: MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in local.machine.env, or `modal token set`
+python scripts/modal_run.py launch --dry-run --wandb --data-external   # the plan; no SDK, no cloud
+python scripts/modal_run.py launch --gpu L4 --wandb --data-external
+python scripts/modal_run.py status                      # running / completed / failed / stopped, rows, log tail
+python scripts/modal_run.py fetch                       # download + merge results (safe mid-run)
+python scripts/modal_run.py stop                        # terminate the Sandbox; the Volume is kept
+```
+
+- The image is `debian-slim` + the `pyproject.toml` dependencies and the `nn`/`tfm`/`track` extras (so it needs no conda). Modal caches it until those change; the committed code is mounted at container start, so a code change does not rebuild it. `launch` ships the **committed** tree (`git archive`), so commit first.
+- The entry script symlinks `data/`, `submissions/` and `configs/night_best*.json` into the Volume, so the sweep needs no change and every output is durable. It records the sweep's exit status in `sweep.exit`: `status` reports `completed` (0), `failed` (non-zero) or `stopped` (no file: terminated, or the 24 h Sandbox cap). In the last two, `launch` resumes from the recorded rows.
+- Data is uploaded to the Volume **once** (marker `/data/.cyp_synced`; `--refresh-data` resends). Use `--data-external` on the first launch: the auxiliary-source configs need it.
+- `--gpu` is any Modal GPU string (`T4`, `L4`, `A10`, `L40S`, `A100-40GB`, `A100-80GB`, `H100`); `--max-hours` is the Sandbox timeout and is capped at 24. `--runtime gvisor|vm` is passed only when given.
+- Tokens are forwarded as a Modal Secret (never in the plain environment or the plan output): `TABPFN_TOKEN` and the HuggingFace token whenever available, the W&B key with `--wandb` (refused up front when none can be found).
+- `--wait` blocks until the Sandbox ends and then fetches. A tail of `/vol/sweep.log` is what `status` shows.
+
 ## Tokens: `local.machine.env`
 
 Per-machine tokens live in `local.machine.env` at the repo root. It is gitignored (and so absent from `git archive`, i.e. never shipped to the Studio), and `scripts/lightning_run.py`, `scripts/night_run.py`, `scripts/check_env.py` and the `cypshift` CLI load it at start (`cypshift.local_env`).
@@ -132,6 +153,7 @@ Per-machine tokens live in `local.machine.env` at the repo root. It is gitignore
 | `LIGHTNING_TEAMSPACE` + `LIGHTNING_USERNAME` (or `LIGHTNING_ORG`) | the teamspace the Studio lives in and its owner; the SDK needs both (or pass `--teamspace` and `--user`/`--org`). `CYP_LAI_TEAMSPACE` / `CYP_LAI_STUDIO` are launcher defaults for `--teamspace` / `--studio` |
 | `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` (the key falls back to the `wandb login` entry in `~/.netrc`; `launch --wandb` refuses to start without one) |
 | `TABPFN_TOKEN` | the `tfm_*` configs; forwarded by `launch` when set |
+| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | the Modal SDK (alternative: `modal token set`) |
 | `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set, else the token `hf auth login` stored |
 
 Format is `NAME=value`, one per line (`export`, quotes and `#` comments are accepted). A variable already exported in the shell wins over the file, and a blank value is ignored, so the shipped template with empty values is inert. `CYP_LOCAL_ENV=/path/to/file` points the loader elsewhere, to keep tokens outside the checkout. Only variable names are ever logged; a malformed line is reported by number, never by content.
