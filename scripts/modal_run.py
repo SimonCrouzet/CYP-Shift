@@ -232,12 +232,36 @@ def build_image(modal: object, args: argparse.Namespace, stage: Path) -> object:
     )
 
 
+def _is_missing_path(error: Exception) -> bool:
+    """Whether ``error`` is the SDK's "no such path in the Volume". Verified against modal 1.6.2:
+    ``listdir`` / ``iterdir`` raise ``modal.exception.NotFoundError("No such file or directory")``
+    (a ``GRPCError``, not a ``FileNotFoundError``) while ``read_file`` raises the builtin. Matched
+    by class name so the helper needs no SDK import; a missing *Volume* raises the same class and
+    is ruled out beforehand by :func:`open_volume`."""
+    return isinstance(error, FileNotFoundError) or type(error).__name__ == "NotFoundError"
+
+
+def open_volume(modal: object, name: str) -> object:
+    """An existing Volume, resolved now: a missing one is a SystemExit here, so a later
+    ``NotFoundError`` on a path can only mean the path is absent."""
+    volume = modal.Volume.from_name(name)
+    try:
+        volume.hydrate()
+    except Exception as error:
+        if not _is_missing_path(error):
+            raise
+        raise SystemExit(f"Volume {name!r} does not exist yet: run `launch` first") from error
+    return volume
+
+
 def volume_has(volume: object, path: str) -> bool:
     """Whether ``path`` exists in the Volume. Only a clean not-found counts as absent: any other
     failure propagates, so a flaky connection cannot trigger a needless re-upload of the data."""
     try:
         volume.listdir(path)
-    except FileNotFoundError:
+    except Exception as error:
+        if not _is_missing_path(error):
+            raise
         return False
     return True
 
@@ -268,7 +292,9 @@ def read_text(volume: object, path: str) -> str | None:
     """A small text file from the Volume, or None if it is not there (yet)."""
     try:
         return b"".join(volume.read_file(path)).decode(errors="replace")
-    except FileNotFoundError:
+    except Exception as error:
+        if not _is_missing_path(error):
+            raise
         return None
 
 
@@ -316,7 +342,7 @@ def launch(args: argparse.Namespace, modal: object | None = None) -> object:
 
 def read_status(modal: object, args: argparse.Namespace) -> dict:
     """The Sandbox and Volume state as a :func:`parse_status` record."""
-    volume = modal.Volume.from_name(args.volume)
+    volume = open_volume(modal, args.volume)
     log = read_text(volume, f"/{LOG_FILE}") or ""
     return parse_status(
         running_sandbox(modal, args.app) is not None,
@@ -341,7 +367,7 @@ def status(args: argparse.Namespace, modal: object | None = None) -> dict:
 def fetch(args: argparse.Namespace, modal: object | None = None) -> int:
     """Download the result files from the Volume into the repo; returns result rows added."""
     modal = modal or _require_modal()
-    volume = modal.Volume.from_name(args.volume)
+    volume = open_volume(modal, args.volume)
     staging = Path(args.archive_dir) / "modal_extract"
     if staging.exists():
         shutil.rmtree(staging)
@@ -350,7 +376,9 @@ def fetch(args: argparse.Namespace, modal: object | None = None) -> int:
     for remote in RESULT_PATHS:
         try:
             entries = [e for e in volume.iterdir(f"/{remote}", recursive=True) if _is_file(e)]
-        except FileNotFoundError:
+        except Exception as error:
+            if not _is_missing_path(error):
+                raise
             continue  # this output has not been written (a members-screening run skips some)
         for entry in entries:
             target = staging / entry.path.lstrip("/")

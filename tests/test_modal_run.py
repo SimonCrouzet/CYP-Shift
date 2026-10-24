@@ -32,11 +32,15 @@ class FakeVolume:
     def _key(self, path: str) -> str:
         return path.strip("/")
 
+    def hydrate(self) -> "FakeVolume":
+        return self
+
     def listdir(self, path: str) -> list[str]:
         key = self._key(path)
         hits = [f for f in self.files if f == key or f.startswith(key + "/")]
         if not hits:
-            raise FileNotFoundError(path)
+            # modal 1.6.2: listdir / iterdir raise the SDK's NotFoundError, not FileNotFoundError.
+            raise NotFoundError("No such file or directory")
         return hits
 
     def iterdir(self, path: str, recursive: bool = True):
@@ -46,7 +50,7 @@ class FakeVolume:
     def read_file(self, path: str):
         key = self._key(path)
         if key not in self.files:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(path)  # read_file does raise the builtin
         yield self.files[key]
 
     @contextmanager
@@ -67,6 +71,16 @@ class FakeVolume:
 
         volume.uploads += 1
         yield Batch()
+
+
+class MissingVolume:
+    """What ``Volume.from_name`` returns for a Volume that was never created."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def hydrate(self) -> None:
+        raise NotFoundError(f"Volume {self.name!r} not found in environment 'main'")
 
 
 class FakeSandbox:
@@ -108,7 +122,9 @@ def make_fake_modal() -> types.SimpleNamespace:
         return live[-1]
 
     def volume_from_name(name, create_if_missing=False, **_):
-        return volumes.setdefault(name, FakeVolume())
+        if create_if_missing:
+            return volumes.setdefault(name, FakeVolume())
+        return volumes.get(name) or MissingVolume(name)
 
     return types.SimpleNamespace(
         App=types.SimpleNamespace(lookup=lambda name, create_if_missing=False: f"app:{name}"),
@@ -340,7 +356,7 @@ def test_status_reads_the_volume_and_the_sandbox(local, capsys) -> None:
 
 def test_fetch_merges_the_results_csv_and_copies_the_rest(local) -> None:
     modal = make_fake_modal()
-    volume = modal.Volume.from_name("cyp-shift-sweep")
+    volume = modal.Volume.from_name("cyp-shift-sweep", create_if_missing=True)
     volume.files["data/night_results.csv"] = b"rev,name\nabc,remote\n"
     volume.files["data/run_bundles/abc/b.json"] = b"{}"
     volume.files["configs/night_best.json"] = b'{"k": 1}'
@@ -359,7 +375,24 @@ def test_fetch_merges_the_results_csv_and_copies_the_rest(local) -> None:
 
 
 def test_fetch_with_nothing_on_the_volume_is_not_an_error(local) -> None:
-    assert mr.fetch(parse(), make_fake_modal()) == 0
+    modal = make_fake_modal()
+    modal.Volume.from_name("cyp-shift-sweep", create_if_missing=True)
+    assert mr.fetch(parse(), modal) == 0
+
+
+def test_status_and_fetch_before_any_launch_say_to_launch_first(local) -> None:
+    """A missing Volume raises the same NotFoundError as a missing path; it is ruled out first."""
+    modal = make_fake_modal()
+    for command in (mr.status, mr.fetch):
+        with pytest.raises(SystemExit, match="run `launch` first"):
+            command(parse(), modal)
+
+
+def test_a_missing_path_is_absent_whichever_error_the_sdk_raises() -> None:
+    assert mr._is_missing_path(NotFoundError("No such file or directory"))
+    assert mr._is_missing_path(FileNotFoundError("/sweep.exit"))
+    assert not mr._is_missing_path(ConnectionError("blip"))
+    assert mr.volume_has(FakeVolume(), mr.DATA_MARKER) is False
 
 
 def test_stop_terminates_only_a_running_sandbox(local, capsys) -> None:
@@ -401,3 +434,11 @@ def test_the_image_chain_builds_offline_with_the_real_sdk(local) -> None:
     stage = mr.stage_code(Path("a.tar.gz"), Path("stage"), "HEAD")
     image = mr.build_image(modal, parse(), stage)
     assert image is not None  # lazy: constructed, not built; no network call was needed
+
+
+def test_the_real_sdk_not_found_error_counts_as_a_missing_path() -> None:
+    """Pins the class the live listdir raised ("No such file or directory") to the helper."""
+    modal = pytest.importorskip("modal")
+    error = modal.exception.NotFoundError("No such file or directory")
+    assert not isinstance(error, FileNotFoundError)
+    assert mr._is_missing_path(error)
