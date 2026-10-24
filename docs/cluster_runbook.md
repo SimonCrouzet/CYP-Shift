@@ -141,7 +141,7 @@ python scripts/modal_run.py stop                        # terminate the Sandbox;
 - Data is uploaded to the Volume **once** (marker `/data/.cyp_synced`; `--refresh-data` resends). Use `--data-external` on the first launch: the auxiliary-source configs need it.
 - `--gpu` is any Modal GPU string (`T4`, `L4`, `A10`, `L40S`, `A100-40GB`, `A100-80GB`, `H100`); `--max-hours` is the Sandbox timeout and is capped at 24. `--runtime gvisor|vm` is passed only when given.
 - Tokens are forwarded as a Modal Secret (never in the plain environment or the plan output): `TABPFN_TOKEN` and the HuggingFace token whenever available, the W&B key with `--wandb` (refused up front when none can be found).
-- `--wait` blocks until the Sandbox ends and then fetches. A tail of `/vol/sweep.log` is what `status` shows.
+- `--wait` blocks until the Sandbox ends and then fetches. A tail of `sweep.log` is what `status` shows, read *inside* the running Sandbox (`Sandbox.exec tail`): the sweep holds the log open for the whole run and a client sees an open file on the Volume only after it is closed (observed: absent for 10+ min), whereas `night_results.csv` is closed after every write and `fetch` sees it promptly. Once the Sandbox has ended, `status` falls back to the Volume copy.
 
 ## Tokens: `local.machine.env`
 

@@ -88,6 +88,13 @@ class FakeSandbox:
         self.args, self.kwargs = args, kwargs
         self.object_id = "sb-fake"
         self.running = True
+        self.log: str | None = None  # what `tail` prints inside the Sandbox; None: exec fails
+
+    def exec(self, *argv: str, timeout: int | None = None):
+        if self.log is None:
+            raise ConnectionError("exec unavailable")
+        out = types.SimpleNamespace(read=lambda: self.log)
+        return types.SimpleNamespace(stdout=out, wait=lambda: 0)
 
     def get_dashboard_url(self) -> str:
         return "https://modal.example/sb-fake"
@@ -347,7 +354,12 @@ def test_status_reads_the_volume_and_the_sandbox(local, capsys) -> None:
     volume.files["sweep.log"] = b"one\ntwo\nthree\n"
     running = mr.status(parse(), modal)
     assert running["outcome"] == "running" and running["rows"] == 2
-    assert "three" in capsys.readouterr().out
+    assert "three" in capsys.readouterr().out  # exec fails: falls back to the Volume copy
+
+    modal._sandboxes[0].log = "live tail\n"  # the Volume copy of an open log lags the Sandbox's
+    mr.status(parse(), modal)
+    out = capsys.readouterr().out
+    assert "live tail" in out and "three" not in out
 
     modal._sandboxes[0].running = False
     volume.files["sweep.exit"] = b"0\n"

@@ -340,12 +340,37 @@ def launch(args: argparse.Namespace, modal: object | None = None) -> object:
     return sandbox
 
 
+def live_log(sandbox: object, lines: int = 5) -> str | None:
+    """The log tail read *inside* the running Sandbox, or None if that is not possible.
+
+    The Volume copy of the log lags: the sweep holds ``sweep.log`` open for its whole run and a
+    client sees it only once it is closed (observed live: absent from the Volume listing for 10+
+    minutes while the Sandbox already held 14 KB), whereas ``night_results.csv`` is closed after
+    every write and shows up promptly."""
+    try:
+        process = sandbox.exec("tail", "-n", str(lines), f"{MOUNT}/{LOG_FILE}", timeout=30)
+        text = process.stdout.read()
+        process.wait()
+    except Exception as error:
+        logger.warning(
+            "could not read the log in the Sandbox (%s); using the Volume copy",
+            type(error).__name__,
+        )
+        return None
+    return text or None
+
+
 def read_status(modal: object, args: argparse.Namespace) -> dict:
     """The Sandbox and Volume state as a :func:`parse_status` record."""
     volume = open_volume(modal, args.volume)
-    log = read_text(volume, f"/{LOG_FILE}") or ""
+    sandbox = running_sandbox(modal, args.app)
+    log = (
+        (live_log(sandbox) if sandbox is not None else None)
+        or read_text(volume, f"/{LOG_FILE}")
+        or ""
+    )
     return parse_status(
-        running_sandbox(modal, args.app) is not None,
+        sandbox is not None,
         read_text(volume, f"/{EXIT_FILE}"),
         read_text(volume, "/data/night_results.csv"),
         "\n".join(log.splitlines()[-5:]),
