@@ -303,7 +303,10 @@ def test_launch_uploads_the_data_once_and_starts_a_detached_sandbox(local, monke
     volume = modal._volumes["cyp-shift-sweep"]
     assert volume.files["data/raw/train.csv"] == b"a,b\n1,2\n"
     assert volume.files["data/external/aux.csv"] == b"c\n3\n"
-    assert "data/.cyp_synced" in volume.files
+    assert mr.marker_sources(volume.files["data/.cyp_synced"].decode()) == {
+        "data/raw",
+        "data/external",
+    }
 
     kwargs = sandbox.kwargs
     assert sandbox.args[:2] == ("bash", "-c")
@@ -326,6 +329,31 @@ def test_a_second_launch_does_not_resend_the_data(local) -> None:
     modal._sandboxes[1].running = False
     mr.launch(parse("--refresh-data"), modal)
     assert volume.uploads == 2
+
+
+def test_adding_external_data_after_a_raw_only_launch_ships_the_external_caches(local) -> None:
+    """The review's reproduction: the marker used to be a bare ``ok``, so a later
+    ``--data-external`` launch uploaded nothing and the Volume kept only ``data/raw``."""
+    modal = make_fake_modal()
+    mr.launch(parse(), modal)
+    volume = modal._volumes["cyp-shift-sweep"]
+    assert "data/external/aux.csv" not in volume.files
+    modal._sandboxes[0].running = False
+
+    mr.launch(parse("--data-external"), modal)
+    assert volume.files["data/external/aux.csv"] == b"c\n3\n"
+    assert volume.uploads == 2
+    modal._sandboxes[1].running = False
+    mr.launch(parse("--data-external"), modal)
+    assert volume.uploads == 2  # complete now: nothing resent
+
+
+def test_a_legacy_ok_marker_is_read_as_raw_only(local) -> None:
+    modal = make_fake_modal()
+    volume = modal.Volume.from_name("cyp-shift-sweep", create_if_missing=True)
+    volume.files["data/.cyp_synced"] = b"ok"  # what the first launcher version wrote
+    mr.launch(parse("--data-external"), modal)
+    assert volume.files["data/external/aux.csv"] == b"c\n3\n"
 
 
 def test_launch_refuses_while_a_sweep_is_running(local) -> None:
@@ -404,7 +432,7 @@ def test_a_missing_path_is_absent_whichever_error_the_sdk_raises() -> None:
     assert mr._is_missing_path(NotFoundError("No such file or directory"))
     assert mr._is_missing_path(FileNotFoundError("/sweep.exit"))
     assert not mr._is_missing_path(ConnectionError("blip"))
-    assert mr.volume_has(FakeVolume(), mr.DATA_MARKER) is False
+    assert mr.read_text(FakeVolume(), mr.DATA_MARKER) is None
 
 
 def test_stop_terminates_only_a_running_sandbox(local, capsys) -> None:
@@ -420,11 +448,11 @@ def test_a_flaky_listing_does_not_trigger_a_data_reupload(local) -> None:
     """Only a clean not-found means 'absent'; any other failure must propagate."""
 
     class Flaky(FakeVolume):
-        def listdir(self, path: str):
+        def read_file(self, path: str):
             raise ConnectionError("network blip")
 
     with pytest.raises(ConnectionError):
-        mr.volume_has(Flaky(), mr.DATA_MARKER)
+        mr.sync_data(Flaky(), parse())
 
 
 # --- contract with the real SDK (skipped until `modal` is installed) -----------------------------

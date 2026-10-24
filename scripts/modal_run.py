@@ -39,7 +39,10 @@ from lightning_run import (
     data_tar_sources,
     git_revision,
     install_results,
+    marker_sources,
+    marker_text,
     token_env,
+    unsynced_sources,
     wandb_api_key,
     wandb_env,
 )
@@ -56,7 +59,8 @@ VOLUME_NAME = "cyp-shift-sweep"
 #: Where the Volume is mounted, and where the committed code is mounted, inside the Sandbox.
 MOUNT = "/vol"
 WORKDIR = "/root/cyp-shift"
-#: Written (inside the Volume) after the first successful data upload, so later launches skip it.
+#: Written (inside the Volume) after a successful data upload; its JSON content lists the data
+#: paths the Volume holds, so a later launch ships only what it does not have.
 DATA_MARKER = "/data/.cyp_synced"
 LOG_FILE = "sweep.log"
 #: The sweep's exit status, written by the entry script; absent while it runs or if it was killed.
@@ -186,8 +190,8 @@ def plan_launch(args: argparse.Namespace) -> list[str]:
         f"({len(image_requirements(PYPROJECT))} requirements incl. extras "
         f"{','.join(IMAGE_EXTRAS)}); code mounted at {WORKDIR}; cached by Modal",
         f"abort if Sandbox {SANDBOX_NAME!r} is already running in app {args.app!r}",
-        f"volume {args.volume!r}: upload {' '.join(data_tar_sources(args.data_external))} once "
-        f"(marker {DATA_MARKER}; --refresh-data resends)",
+        f"volume {args.volume!r}: upload {' '.join(data_tar_sources(args.data_external))} unless "
+        f"the marker {DATA_MARKER} already records it (--refresh-data resends)",
         f"Sandbox.create(bash -c <sweep script>, volumes={{{MOUNT!r}: {args.volume}}}, "
         + ", ".join(f"{key}={value!r}" for key, value in options.items())
         + (", secrets=[" + ", ".join(f"{name}=***" for name in secret) + "]" if secret else "")
@@ -254,29 +258,28 @@ def open_volume(modal: object, name: str) -> object:
     return volume
 
 
-def volume_has(volume: object, path: str) -> bool:
-    """Whether ``path`` exists in the Volume. Only a clean not-found counts as absent: any other
-    failure propagates, so a flaky connection cannot trigger a needless re-upload of the data."""
-    try:
-        volume.listdir(path)
-    except Exception as error:
-        if not _is_missing_path(error):
-            raise
-        return False
-    return True
-
-
 def sync_data(volume: object, args: argparse.Namespace) -> bool:
-    """Upload the data to the Volume once (or again with ``--refresh-data``); True if it did."""
-    if volume_has(volume, DATA_MARKER) and not args.refresh_data:
-        logger.info("data already on the volume (marker %s); not re-uploading", DATA_MARKER)
+    """Upload the data paths the Volume does not hold yet; True if it uploaded anything.
+
+    The marker records which paths were shipped, so a later launch that adds ``--data-external``
+    to an earlier raw-only upload ships just the external caches; ``--refresh-data`` resends all.
+    A listing failure other than a clean not-found propagates (see :func:`read_text`): a flaky
+    connection must not read as "nothing synced" and re-send 500 MB.
+    """
+    requested = data_tar_sources(args.data_external)
+    recorded = read_text(volume, DATA_MARKER)
+    todo = unsynced_sources(requested, recorded, args.refresh_data)
+    if not todo:
+        logger.info("data already on the volume (%s); not re-uploading", ", ".join(requested))
         return False
-    sources = data_tar_sources(args.data_external)
-    logger.info("uploading %s to the volume", " + ".join(sources))
+    logger.info("uploading %s to the volume", " + ".join(todo))
     with volume.batch_upload(force=True) as batch:
-        for source in sources:
+        for source in todo:
             batch.put_directory(source, f"/{source}")
-        batch.put_file(io.BytesIO(b"ok"), DATA_MARKER)
+        batch.put_file(
+            io.BytesIO(marker_text(marker_sources(recorded) | set(requested)).encode()),
+            DATA_MARKER,
+        )
     return True
 
 

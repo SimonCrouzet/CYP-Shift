@@ -207,6 +207,42 @@ def test_data_is_uploaded_once_and_skipped_afterwards(tmp_path, local):
     assert lr.sync_data(studio, refreshed, Path(refreshed.data_archive)) is True
 
 
+def test_adding_external_data_after_a_raw_only_sync_ships_the_external_caches(tmp_path, local):
+    """The marker records what was shipped. A raw-only sync followed by ``--data-external`` used to
+    skip on the marker's mere presence and leave the Studio with the smaller panel."""
+    (local / "data" / "external").mkdir()
+    (local / "data" / "external" / "aux.csv").write_text("c\n3\n")
+    studio = FakeStudio(tmp_path / "studio", running=True)
+    raw_only = _launch_args(tmp_path)
+    assert lr.sync_data(studio, raw_only, Path(raw_only.data_archive)) is True
+    remote = studio.root / lr.DEFAULT_REMOTE_DIR
+    assert not (remote / "data" / "external").exists()
+
+    both = _launch_args(tmp_path, "--data-external")
+    assert lr.sync_data(studio, both, Path(both.data_archive)) is True
+    assert (remote / "data" / "external" / "aux.csv").read_text() == "c\n3\n"
+    assert lr.marker_sources((remote / lr.DATA_MARKER).read_text()) == {
+        "data/raw",
+        "data/external",
+    }
+    assert lr.sync_data(studio, both, Path(both.data_archive)) is False  # now complete
+    assert lr.sync_data(studio, raw_only, Path(raw_only.data_archive)) is False  # a subset
+
+
+def test_a_legacy_marker_counts_as_raw_only(tmp_path, local):
+    """Earlier launchers wrote an empty / ``ok`` marker that did not say what was shipped; it is
+    read as the core data only, so the external caches are re-sent rather than assumed present."""
+    (local / "data" / "external").mkdir()
+    (local / "data" / "external" / "aux.csv").write_text("c\n3\n")
+    studio = FakeStudio(tmp_path / "studio", running=True)
+    remote = studio.root / lr.DEFAULT_REMOTE_DIR
+    (remote / "data").mkdir(parents=True)
+    (remote / lr.DATA_MARKER).write_text("")
+    args = _launch_args(tmp_path, "--data-external")
+    assert lr.sync_data(studio, args, Path(args.data_archive)) is True
+    assert (remote / "data" / "external" / "aux.csv").exists()
+
+
 def test_stop_refuses_a_running_sweep_unless_forced(tmp_path, local):
     studio = FakeStudio(tmp_path / "studio")
     lr.launch(_launch_args(tmp_path), studio=studio, resolver=lambda name: name)

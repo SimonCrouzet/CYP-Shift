@@ -28,6 +28,7 @@ the Studio root, which is where both the shell and the file API start.
 """
 
 import argparse
+import json
 import logging
 import netrc
 import os
@@ -104,6 +105,39 @@ def data_tar_sources(include_external: bool) -> list[str]:
     if include_external:
         sources.append("data/external")
     return sources
+
+
+def marker_sources(text: str | None) -> set[str]:
+    """The data sources a sync marker records as already on the remote.
+
+    The marker is JSON ``{"sources": [...]}``. A marker with any other content (the bare ``ok`` /
+    empty file earlier launchers wrote, which did not say what was shipped) counts as the core
+    ``data/raw`` only -- every sync has always shipped that -- so a later request for the
+    auxiliary caches re-sends them rather than silently training on a smaller panel. ``None``
+    (no marker) is nothing synced.
+    """
+    if text is None:
+        return set()
+    try:
+        sources = json.loads(text)["sources"]
+        return {str(source) for source in sources}
+    except (ValueError, KeyError, TypeError):
+        return {"data/raw"}
+
+
+def marker_text(sources: set[str] | list[str]) -> str:
+    """The marker file content for ``sources`` (sorted, so it is stable)."""
+    return json.dumps({"sources": sorted(set(sources))})
+
+
+def unsynced_sources(requested: list[str], marker: str | None, refresh: bool) -> list[str]:
+    """The requested data paths still to ship: all of them with ``refresh``, else those the marker
+    does not record. A raw-only sync followed by a request that adds ``data/external`` therefore
+    ships the external caches instead of skipping on the mere presence of the marker."""
+    if refresh:
+        return list(requested)
+    synced = marker_sources(marker)
+    return [source for source in requested if source not in synced]
 
 
 def wandb_api_key() -> str | None:
@@ -429,19 +463,26 @@ def sync_code(studio: object, args: argparse.Namespace, archive: Path) -> None:
 
 
 def sync_data(studio: object, args: argparse.Namespace, data_archive: Path) -> bool:
-    """Upload the data once. Returns whether it uploaded (False when already synced)."""
+    """Upload the data paths the Studio does not yet have. Returns whether it uploaded.
+
+    The marker records which paths were shipped, so a later launch that adds ``--data-external``
+    to an earlier raw-only sync ships just the external caches; ``--refresh-data`` resends all.
+    """
     remote_dir = args.remote_dir
-    if not args.refresh_data:
-        _, code = studio.run_with_exit_code(f"test -f {remote_dir}/{DATA_MARKER}")
-        if code == 0:
-            logger.info("data already on the Studio; skipping upload (--refresh-data to resend)")
-            return False
+    requested = data_tar_sources(args.data_external)
+    text, code = studio.run_with_exit_code(f"cat {remote_dir}/{DATA_MARKER}")
+    recorded = text if code == 0 else None
+    todo = unsynced_sources(requested, recorded, args.refresh_data)
+    if not todo:
+        logger.info("data already on the Studio (%s); skipping upload", ", ".join(requested))
+        return False
     data_archive.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["tar", "czf", str(data_archive), *data_tar_sources(args.data_external)], check=True
-    )
+    subprocess.run(["tar", "czf", str(data_archive), *todo], check=True)
     upload_checked(studio, data_archive, f"{remote_dir}/data.tar.gz")
-    studio.run(f"cd {remote_dir} && tar xzf data.tar.gz && touch {DATA_MARKER}")
+    marker = marker_text(marker_sources(recorded) | set(requested))
+    studio.run(
+        f"cd {remote_dir} && tar xzf data.tar.gz && printf %s {shlex.quote(marker)} > {DATA_MARKER}"
+    )
     return True
 
 
@@ -576,8 +617,8 @@ def plan_launch(args: argparse.Namespace) -> list[str]:
         f"open Studio {args.studio!r}; start it on {args.machine} only if not already running",
         f"abort if a sweep is already running in {args.remote_dir}",
         f"upload code tarball -> {args.remote_dir}/code.tar.gz, extract (every launch)",
-        f"data: tar {' '.join(data_tar_sources(args.data_external))}, upload and extract once "
-        f"(marker {DATA_MARKER}; --refresh-data resends)",
+        f"data: tar {' '.join(data_tar_sources(args.data_external))}, upload and extract what the "
+        f"marker {DATA_MARKER} does not record (--refresh-data resends all)",
     ]
     if args.setup:
         steps.append("remote: " + setup_command(args.remote_dir) + "  (check-first, idempotent)")
