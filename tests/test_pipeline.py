@@ -65,6 +65,82 @@ def test_inverse_variance_weighting_excludes_response_rows_and_absent_uncertaint
     assert out.loc[0, "weight"] == pytest.approx(1.0)
 
 
+def _potency_and_screen_rows():
+    """The review's probe: one direct potency with a width-2 interval, one screen fraction with
+    the curve model's width-0.2 construction band, and a pseudo-potency from the isotonic map."""
+    return pd.DataFrame(
+        {
+            "assay": ["direct_inhibition_drc", "direct_inhibition_screen"],
+            "value": [5.0, 0.3],
+            "conf_low": [4.0, 0.2],
+            "conf_high": [6.0, 0.4],
+            "is_censored": [False, False],
+            "weight": [1.0, 0.3],
+        }
+    )
+
+
+def test_the_curve_models_screen_rows_are_responses_for_precision_weighting():
+    """``direct_inhibition_screen`` is an inhibited fraction under the curve model: reading its
+    +-0.1 construction band as a potency interval turned the 0.3 screen/direct weight ratio into
+    30 (weights 0.0419 / 1.258 for the probe below). The tag is excluded only for that model."""
+    from cypshift.pipeline import precision_response_assays
+
+    curve = ExperimentConfig()
+    curve.override("model.kind", "curve")
+    out = weight_by_inverse_variance(
+        _potency_and_screen_rows(), response_assays=precision_response_assays(curve)
+    )
+    assert out["weight"].tolist() == pytest.approx([1.0, 0.3])  # screen untouched
+
+    unguarded = weight_by_inverse_variance(_potency_and_screen_rows())
+    assert unguarded.loc[1, "weight"] / unguarded.loc[0, "weight"] == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize("kind", ["boosted", "neural", "graph"])
+def test_other_families_keep_precision_weighting_their_screen_pseudo_potencies(kind):
+    """Their screen rows are isotonic pIC50 pseudo-labels with a real interval, which the
+    weighting handles as potencies: the tag must stay eligible for them."""
+    from cypshift.pipeline import precision_response_assays
+
+    config = ExperimentConfig()
+    config.override("model.kind", kind)
+    assert "direct_inhibition_screen" not in precision_response_assays(config)
+
+
+def test_the_realized_inventory_is_logged_per_source_assay_and_target(caplog):
+    """A run's trained-on data is read off this table, not off the requested flags: a source whose
+    loader failed (or an enzyme a cache lacks) shows as a missing row or a zero cell."""
+    import logging
+
+    from cypshift.pipeline import log_realized_inventory
+
+    observations = pd.DataFrame(
+        {
+            "source": ["screen", None, "veith"],
+            "assay": [
+                "direct_inhibition_screen_response",
+                "direct_inhibition_drc",
+                "luminescent_ac50",
+            ],
+            "target": ["CYP1A2", "CYP3A4", "CYP1A2"],
+            "weight": [0.3, 1.0, 0.5],
+        }
+    )
+    with caplog.at_level(logging.INFO, logger="cypshift.pipeline"):
+        table = log_realized_inventory(observations)
+    assert (
+        table.loc[("challenge", "direct_inhibition_drc"), "CYP3A4"] == 1
+    )  # a missing source -> challenge
+    assert table.loc[("veith", "luminescent_ac50"), "CYP3A4"] == 0  # a zero cell is visible
+    assert table["weight"].to_dict() == {
+        ("challenge", "direct_inhibition_drc"): 1.0,
+        ("screen", "direct_inhibition_screen_response"): 0.3,
+        ("veith", "luminescent_ac50"): 0.5,
+    }
+    assert "realized training table: 3 rows" in caplog.text
+
+
 def test_every_declared_model_kind_can_be_built():
     for kind in ("boosted", "neural", "graph"):
         config = ExperimentConfig()

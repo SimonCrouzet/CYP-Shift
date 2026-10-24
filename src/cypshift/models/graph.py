@@ -508,6 +508,8 @@ class GraphNetwork:
         per_target_heads: bool = False,
         per_measurement_heads: bool = False,
         ffn_hidden: int = 0,
+        learning_rate: float = 0.0,
+        warmup_epochs: int = 2,
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -568,6 +570,10 @@ class GraphNetwork:
             )
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
+        #: Peak rate of chemprop's warmup / decay schedule (0 keeps its 1e-4 / 1e-3 / 1e-4) and the
+        #: warmup length; the initial and final rates follow a set peak at a tenth of it.
+        self.learning_rate = learning_rate
+        self.warmup_epochs = warmup_epochs
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -794,7 +800,32 @@ class GraphNetwork:
                 dropout=self.dropout,
                 **ffn_kwargs,
             )
-        return cpmodels.MPNN(message_passing, cpnn.MeanAggregation(), predictor)
+        schedule: dict[str, float] = {"warmup_epochs": self.warmup_epochs}
+        if self.learning_rate > 0:
+            schedule.update(
+                init_lr=self.learning_rate / 10,
+                max_lr=self.learning_rate,
+                final_lr=self.learning_rate / 10,
+            )
+        return cpmodels.MPNN(message_passing, cpnn.MeanAggregation(), predictor, **schedule)
+
+    @staticmethod
+    def _log_capacity(model: cpmodels.MPNN) -> None:
+        """Log the built network's size: encoder and readout parameters, and the encoder's output
+        width. Equal ``hidden`` / ``ffn_hidden`` settings do not mean equal capacity (independent
+        heads replicate an MLP per task, and a pretrained checkpoint fixes the encoder width), so a
+        readout comparison is read against these counts."""
+
+        def count(module: object) -> int:
+            return sum(parameter.numel() for parameter in module.parameters())
+
+        logger.info(
+            "graph network: %d parameters (encoder %d, readout %d); encoder output width %d",
+            count(model),
+            count(model.message_passing),
+            count(model.predictor),
+            model.message_passing.output_dim,
+        )
 
     def fit(self, observations: pd.DataFrame) -> "GraphNetwork":
         """Train on the observation table."""
@@ -842,6 +873,8 @@ class GraphNetwork:
                 dataset, batch_size=self.batch_size, num_workers=self.num_workers
             )
             model = self._build()
+            if member == 0:
+                self._log_capacity(model)
             trainer = pl.Trainer(
                 max_epochs=self.epochs,
                 accelerator="auto",

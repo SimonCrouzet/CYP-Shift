@@ -419,6 +419,14 @@ class GraphConfig:
     #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
     #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
     ffn_hidden: int = 0
+    #: Peak learning rate of chemprop's warmup-then-decay schedule. ``0`` keeps the library's
+    #: defaults (initial / peak / final ``1e-4 / 1e-3 / 1e-4``); a positive value sets the peak
+    #: and puts the initial and final rates at a tenth of it, keeping chemprop's 10:1 ratios.
+    #: The fine-tuning question -- a pretrained encoder may want a lower peak than a random one
+    #: -- is this knob; it is not an established optimum. Swept.
+    learning_rate: float = 0.0
+    #: Linear-warmup epochs of that schedule; the default is chemprop's own. Swept.
+    warmup_epochs: int = 2
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);
@@ -621,6 +629,11 @@ class ExperimentConfig:
             raise ValueError(
                 f"multifidelity.screen_strategy={self.multifidelity.screen_strategy!r} needs a "
                 f"model with a response head: model.kind='graph', not {self.model.kind!r}"
+            )
+        if self.model.graph.learning_rate < 0 or self.model.graph.warmup_epochs < 0:
+            raise ValueError(
+                "model.graph.learning_rate (0 keeps chemprop's schedule) and "
+                "model.graph.warmup_epochs must be non-negative"
             )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")

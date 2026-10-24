@@ -142,6 +142,8 @@ def build_model(
             per_target_heads=config.model.graph.per_target_heads,
             per_measurement_heads=config.model.graph.per_measurement_heads,
             ffn_hidden=config.model.graph.ffn_hidden,
+            learning_rate=config.model.graph.learning_rate,
+            warmup_epochs=config.model.graph.warmup_epochs,
             response_assays=tuple(response_assays),
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,
@@ -402,10 +404,37 @@ def assemble_training_data(
             auxiliary = auxiliary.assign(source="_pooled")
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
     if config.training.inverse_variance_weighting:
-        observations = weight_by_inverse_variance(observations)
+        observations = weight_by_inverse_variance(
+            observations, response_assays=precision_response_assays(config)
+        )
     if config.training.macro_balance:
         observations = balance_macro_weights(observations)
+    log_realized_inventory(observations)
     return observations, screen_model
+
+
+def log_realized_inventory(observations: pd.DataFrame) -> pd.DataFrame:
+    """Log what the training table actually holds -- rows per target for each (source, assay), and
+    the total weight each carries -- and return it.
+
+    A requested source can contribute fewer endpoint blocks than its name suggests (an auxiliary
+    loader that fails is logged and skipped, and a response cache can lack an enzyme), so a
+    configuration name does not show which data a run trained on; this line does.
+    """
+    source = (
+        observations["source"].fillna("challenge")
+        if "source" in observations.columns
+        else pd.Series("challenge", index=observations.index)
+    )
+    keys = [source.rename("source"), observations["assay"], observations["target"]]
+    counts = observations.groupby(keys).size().unstack(fill_value=0)
+    counts["weight"] = observations.groupby(keys[:2])["weight"].sum().round(1)
+    logger.info(
+        "realized training table: %d rows (rows per target; total weight):\n%s",
+        len(observations),
+        counts.to_string(),
+    )
+    return counts
 
 
 #: Assays whose label is a response quantity (an inhibited fraction, a raw log2 fold-change, or a
@@ -415,7 +444,31 @@ def assemble_training_data(
 _RESPONSE_ASSAYS = frozenset({RESPONSE_ASSAY, SCREEN_RESPONSE_ASSAY, SCREEN_LOG2FC_ASSAY})
 
 
-def weight_by_inverse_variance(observations: pd.DataFrame, floor: float = 0.1) -> pd.DataFrame:
+#: The screen tag the curve model's physical screen rows carry. The tag is shared with the
+#: legacy isotonic pseudo-potency rows of the other families, so it is a response only for the
+#: curve model; see :func:`precision_response_assays`.
+_SCREEN_ASSAY = "direct_inhibition_screen"
+
+
+def precision_response_assays(config: ExperimentConfig) -> frozenset[str]:
+    """The assays whose rows are responses, not potencies, for this configuration.
+
+    ``direct_inhibition_screen`` is backend-dependent. The curve model reads the screen as the
+    inhibited fraction at one concentration (a response in [0, 1] with a fixed +-``screen_noise``
+    construction band), whereas every other family maps it through the isotonic calibration onto
+    a pIC50 and keeps it as a potency row, which is legitimately precision-weighted. Excluding
+    the tag globally would change the latter, so only the curve model adds it.
+    """
+    if config.model.kind == "curve":
+        return _RESPONSE_ASSAYS | {_SCREEN_ASSAY}
+    return _RESPONSE_ASSAYS
+
+
+def weight_by_inverse_variance(
+    observations: pd.DataFrame,
+    floor: float = 0.1,
+    response_assays: frozenset[str] = _RESPONSE_ASSAYS,
+) -> pd.DataFrame:
     """Scale each measured potency interval's weight by the inverse of its interval variance.
 
     A measurement's credible-interval width is a precision proxy: a tight band is a confident
@@ -428,8 +481,10 @@ def weight_by_inverse_variance(observations: pd.DataFrame, floor: float = 0.1) -
     did not enforce. Three kinds of row are now excluded explicitly:
 
     * **Censored (one-sided) rows**, which have no two-sided interval.
-    * **Response-task rows** (``_RESPONSE_ASSAYS``): the screen fraction carries a fixed +-0.1
-      construction band and the qHTS response carries ``low == high == value``, both in response
+    * **Response-task rows** (``response_assays``, by default ``_RESPONSE_ASSAYS``; the curve
+      model's screen fraction is added by :func:`precision_response_assays`): the screen
+      fraction carries a fixed +-0.1 construction band and the qHTS response carries
+      ``low == high == value``, both in response
       units, not pIC50; reading those as tight potencies gave every one the maximum precision
       factor and swamped the scored potency rows.
     * **Zero-width rows** (``width <= 0``): a missing credible interval is filled with
@@ -442,7 +497,7 @@ def weight_by_inverse_variance(observations: pd.DataFrame, floor: float = 0.1) -
     width = high - low
     censored = out["is_censored"].to_numpy(bool) if "is_censored" in out.columns else False
     is_response = (
-        out["assay"].isin(_RESPONSE_ASSAYS).to_numpy()
+        out["assay"].isin(response_assays).to_numpy()
         if "assay" in out.columns
         else np.zeros(len(out), bool)
     )

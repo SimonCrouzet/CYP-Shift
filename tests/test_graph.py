@@ -51,6 +51,33 @@ def test_ffn_hidden_sets_the_readout_width_independently_of_the_encoder():
     assert _ffn_hidden_width(GraphNetwork()._build()) == 300  # default, unset
 
 
+def test_graph_learning_rate_sets_the_schedule_and_the_default_keeps_chemprops():
+    """``model.graph.learning_rate`` is the peak of the warmup/decay schedule, with the initial and
+    final rates a tenth of it; unset it leaves chemprop's own 1e-4 / 1e-3 / 1e-4 and 2 warmup
+    epochs, so existing configs are unchanged."""
+    default = GraphNetwork()._build()
+    assert (default.init_lr, default.max_lr, default.final_lr) == (1e-4, 1e-3, 1e-4)
+    assert default.warmup_epochs == 2
+
+    tuned = GraphNetwork(learning_rate=3e-4, warmup_epochs=4)._build()
+    assert tuned.max_lr == pytest.approx(3e-4)
+    assert tuned.init_lr == pytest.approx(3e-5) and tuned.final_lr == pytest.approx(3e-5)
+    assert tuned.warmup_epochs == 4
+
+
+def test_the_graph_learning_rate_reaches_the_model_from_the_config():
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import build_model
+
+    config = ExperimentConfig()
+    config.override("model.kind", "graph")
+    config.override("model.graph.learning_rate", 1e-4)
+    assert build_model(config).learning_rate == pytest.approx(1e-4)
+    config.override("model.graph.learning_rate", -1.0)
+    with pytest.raises(ValueError, match="non-negative"):
+        config.validate()
+
+
 @pytest.mark.skipif(not CHEMELEON_CACHE.exists(), reason="CheMeleon encoder not downloaded")
 def test_freeze_toggle_controls_encoder_gradients():
     """pretraining_finetune=False freezes the CheMeleon encoder; the default trains it."""
