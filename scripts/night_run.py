@@ -82,7 +82,18 @@ PANEL = {
     "sources.veith": True,
     "sources.qhts_representation": "both",
     "multifidelity.screen_strategy": "response_head",
+    # Pinned so a shared-versus-independent readout comparison is not also a width comparison:
+    # chemprop's shared FFN defaults to 300 while the independent heads default to 128 when
+    # ``ffn_hidden`` is 0. 300 is the shared default, so shared-readout cells are unchanged;
+    # hidden width equal still leaves the independent heads with more parameters (one MLP per task).
+    "model.graph.ffn_hidden": 300,
 }
+#: Initialise the graph encoder from CheMeleon (the checkpoint fixes the message-passing width).
+CHEMELEON = {"model.graph.pretraining": "chemeleon"}
+#: Independent output heads per (target, assay) potency pair and per-target response heads.
+MEASUREMENT_HEADS = {"model.graph.per_measurement_heads": True}
+#: The graph-backbone dose-response curve model, the base of the graph-curve variants.
+GRAPH_CURVE = {"model.kind": "curve", "model.curve.backbone": "graph"}
 #: Every auxiliary source at once -- the big-pool check (known to dilute, re-tested here).
 ALL_AUX = {
     "sources.octant": True,
@@ -646,6 +657,120 @@ REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
 REGRESSION.update(_feature_sweep("boosted_fs", {}))
 
 
+def _panel_grid() -> dict[str, dict]:
+    """The full-panel comparison grid: {random, CheMeleon} x {shared, per-measurement readout} x
+    {inhibited fraction, raw log2FC screen}, always with the screen and both Veith quantities.
+
+    Two of the eight cells are declared by hand above (``graph_panel`` and
+    ``graph_panel_measurement_heads``, random + fraction); this adds the other six under the same
+    naming, so every cell has the same folds, objective, sources and budgets and a difference is one
+    factor. ``graph_panel_per_target_heads`` stays as the intermediate readout control.
+    """
+    grid = {}
+    for init, pretraining in (("", {}), ("_chemeleon", CHEMELEON)):
+        for screen, strategy in (("", "response_head"), ("_log2fc", "log2fc_response")):
+            for readout, heads in (("", {}), ("_measurement_heads", MEASUREMENT_HEADS)):
+                name = f"graph_panel{init}{screen}{readout}"
+                if name not in REGRESSION:
+                    grid[name] = {
+                        "model.kind": "graph",
+                        **PANEL,
+                        "multifidelity.screen_strategy": strategy,
+                        **pretraining,
+                        **heads,
+                    }
+    return grid
+
+
+REGRESSION.update(_panel_grid())
+REGRESSION.update(
+    {
+        # Matched screen-off controls for the random and the pretrained shared-readout panel cell:
+        # the same Veith potency + max-response and readout width, with the screen removed, so the
+        # difference to ``graph_panel`` / ``graph_panel_chemeleon`` is what the screen adds.
+        "graph_panel_no_screen": {
+            "model.kind": "graph",
+            **PANEL,
+            "sources.screen": False,
+            "multifidelity.screen_strategy": "extra_rows",
+        },
+        "graph_panel_chemeleon_no_screen": {
+            "model.kind": "graph",
+            **PANEL,
+            **CHEMELEON,
+            "sources.screen": False,
+            "multifidelity.screen_strategy": "extra_rows",
+        },
+        # Capacity control for the readout comparison: at width 300 the per-measurement heads hold
+        # ~29x the shared readout's parameters (an MLP per task), so a win there could be capacity.
+        # 128 is the width the independent heads default to.
+        "graph_panel_measurement_heads_ffn128": {
+            "model.kind": "graph",
+            **{**PANEL, "model.graph.ffn_hidden": 128},
+            **MEASUREMENT_HEADS,
+        },
+        # The loss on the panel: MAE in place of the soft-threshold interval loss.
+        "graph_panel_mae": {"model.kind": "graph", **PANEL, "model.objective": "absolute"},
+        "graph_panel_chemeleon_mae": {
+            "model.kind": "graph",
+            **PANEL,
+            **CHEMELEON,
+            "model.objective": "absolute",
+        },
+        # CheMeleon + raw screen + both Veith quantities + measurement heads, with ChEMBL added
+        # (default weighting, and with the near-auxiliary rows capped at half the challenge weight).
+        # The no-ChEMBL cell is ``graph_panel_chemeleon_log2fc_measurement_heads`` in the grid, so
+        # the ingredient is read off that pair, not off the combined recipe alone.
+        "graph_panel_chemeleon_log2fc_measurement_heads_chembl": {
+            "model.kind": "graph",
+            **PANEL,
+            **CHEMELEON,
+            **MEASUREMENT_HEADS,
+            "multifidelity.screen_strategy": "log2fc_response",
+            "sources.chembl": True,
+        },
+        "graph_panel_chemeleon_log2fc_measurement_heads_chembl_budget_half": {
+            "model.kind": "graph",
+            **PANEL,
+            **CHEMELEON,
+            **MEASUREMENT_HEADS,
+            "multifidelity.screen_strategy": "log2fc_response",
+            "sources.chembl": True,
+            "auxiliary.per_endpoint_budget": 0.5,
+        },
+        # Graph-backbone curve variants (``CURVE_HP`` only moves the fingerprint-MLP backbone):
+        # FiLM conditioning, a lower learning rate, longer training, and a frozen CheMeleon encoder.
+        "curve_graph_film": {**GRAPH_CURVE, "model.curve.conditioning": "film"},
+        "curve_graph_learning_rate0p0003": {**GRAPH_CURVE, "model.curve.learning_rate": 0.0003},
+        "curve_graph_epochs100": {**GRAPH_CURVE, "model.curve.epochs": 100},
+        "curve_graph_chemeleon_frozen": {
+            **GRAPH_CURVE,
+            "model.curve.pretraining": "chemeleon",
+            "model.curve.pretraining_finetune": False,
+        },
+    }
+)
+# Task budgets on the panel itself. The realized table (see ``log_realized_inventory``) shows the
+# auxiliary Veith rows carrying ~10x the challenge labels' total weight, so the auxiliary budget
+# and the screen weight are first-order questions here, not tuning: cap the scored enzymes'
+# near-auxiliary rows at a fraction of their challenge weight, and vary the screen weight.
+REGRESSION.update(
+    _ofat(
+        "graph_panel",
+        {"model.kind": "graph", **PANEL},
+        {
+            "auxiliary.per_endpoint_budget": [0.25, 0.5],
+            "multifidelity.screen_weight": [0.1, 0.6],
+        },
+    )
+)
+#: Fine-tuning learning rate: the peak of chemprop's warmup/decay schedule (default 1e-3, which
+#: ``graph`` / ``graph_chemeleon`` already run), for a random and a pretrained encoder.
+GRAPH_LR = {"model.graph.learning_rate": [0.0001, 0.0003]}
+REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, GRAPH_LR))
+REGRESSION.update(_ofat("graph_chemeleon", {"model.kind": "graph", **CHEMELEON}, GRAPH_LR))
+
+
 #: Name markers for the genuinely-untested config axes this run was reordered to measure
 #: first: auxiliary selection (ChEMBL max_distance / weighting / scored_weight), screen weight,
 #: the feature-set sweep, TabPFN PCA width, ECFP6, and the neural-only conditioning strategies.
@@ -690,6 +815,59 @@ TDI.update(
         CURVE_HP,
     )
 )
+
+#: Run first, ahead of the curated order, because they answer the questions the 2026-10-24 review
+#: put at the top: the reference points (plain graph, pretrained graph, and the best submitted
+#: recipe), the 2x2x2 panel grid with its readout controls, the matched screen-off controls, the
+#: loss, auxiliary budget and screen weight on the panel, the fine-tuning learning rate, the
+#: combined ChEMBL recipe with its no-ChEMBL control, and the graph-backbone curve variants. An
+#: interrupted run then spends its window on these rather than on the older feature and boosted
+#: questions.
+PRIORITY_REGRESSION = (
+    "graph",
+    "graph_chemeleon",
+    "graph_octant_tox21",
+    "graph_panel",
+    "graph_panel_measurement_heads",
+    "graph_panel_chemeleon",
+    "graph_panel_chemeleon_measurement_heads",
+    "graph_panel_log2fc",
+    "graph_panel_log2fc_measurement_heads",
+    "graph_panel_chemeleon_log2fc",
+    "graph_panel_chemeleon_log2fc_measurement_heads",
+    "graph_panel_per_target_heads",
+    "graph_panel_measurement_heads_ffn128",
+    "graph_panel_no_screen",
+    "graph_panel_chemeleon_no_screen",
+    "graph_panel_mae",
+    "graph_panel_chemeleon_mae",
+    "graph_panel_per_endpoint_budget0p25",
+    "graph_panel_per_endpoint_budget0p5",
+    "graph_panel_screen_weight0p1",
+    "graph_panel_screen_weight0p6",
+    "graph_learning_rate0p0001",
+    "graph_learning_rate0p0003",
+    "graph_chemeleon_learning_rate0p0001",
+    "graph_chemeleon_learning_rate0p0003",
+    "graph_panel_chemeleon_log2fc_measurement_heads_chembl",
+    "graph_panel_chemeleon_log2fc_measurement_heads_chembl_budget_half",
+    "curve_graph",
+    "curve_graph_chemeleon",
+    "curve_graph_film",
+    "curve_graph_learning_rate0p0003",
+    "curve_graph_epochs100",
+    "curve_graph_chemeleon_frozen",
+)
+#: A representative TDI comparison, also run early: the fingerprint-MLP curve against the same
+#: curve head on a random and on a CheMeleon graph backbone.
+PRIORITY_TDI = ("curve_heads", "curve_graph_heads", "curve_graph_chemeleon_heads")
+for _name, _pool in (
+    *((n, REGRESSION) for n in PRIORITY_REGRESSION),
+    *((n, TDI) for n in PRIORITY_TDI),
+):
+    if _name not in _pool:  # fail at import, not hours into a run
+        raise KeyError(f"priority config {_name!r} is not declared")
+
 
 #: One CV repeat (each seed is a full N_FOLDS cross-validation). The sweep is large and the
 #: GPU families are slow, so one repeat; the CV already predicts every compound once, and the
@@ -990,25 +1168,34 @@ def main() -> None:
     )
 
     logger.info(
+        "=== Priority: %d regression + %d TDI configs first ===",
+        len(PRIORITY_REGRESSION),
+        len(PRIORITY_TDI),
+    )
+    run_phase("reg", {name: REGRESSION[name] for name in PRIORITY_REGRESSION}, SEEDS)
+    run_phase("tdi", {name: TDI[name] for name in PRIORITY_TDI}, SEEDS)
+
+    logger.info(
         "=== Regression: %d configs, %d-fold CV x %d ===", len(REGRESSION), N_FOLDS, len(SEEDS)
     )
-    run_phase("reg", REGRESSION, SEEDS)
+    run_phase("reg", REGRESSION, SEEDS)  # the priority entries are already recorded and skipped
     regression = ranked_means("reg")
     logger.info("\nRegression (mean macro ST-RAE, lower better):\n%s", regression.to_string())
+
+    # Refit the best of each track on all data and write a candidate submission. Not
+    # auto-uploaded: the ST-RAE level is optimistic, so judge the bundles on Spearman first. The
+    # regression candidate is written before the TDI sweep, so a window that ends in the TDI
+    # configs still leaves it.
+    if not regression.empty:
+        best = regression.index[0]
+        logger.info("=== Best regression: %s (%.4f) ===", best, regression.loc[best, "mean"])
+        write_submission("regression", REGRESSION[best], SUBMISSION, BEST_CONFIG)
 
     logger.info("=== TDI: %d curve configs, %d-fold CV x %d ===", len(TDI), N_FOLDS, len(SEEDS))
     run_phase("tdi", TDI, SEEDS)
     tdi = ranked_mcc("tdi")
     if not tdi.empty:
         logger.info("\nTDI (mean macro MCC, higher better):\n%s", tdi.to_string())
-
-    # Refit the best of each track on all data and write a candidate submission. Not
-    # auto-uploaded: the ST-RAE level is optimistic, so judge the bundles on Spearman first.
-    if not regression.empty:
-        best = regression.index[0]
-        logger.info("=== Best regression: %s (%.4f) ===", best, regression.loc[best, "mean"])
-        write_submission("regression", REGRESSION[best], SUBMISSION, BEST_CONFIG)
-    if not tdi.empty:
         best_tdi = tdi.index[0]
         logger.info("=== Best TDI: %s (MCC %.4f) ===", best_tdi, tdi.loc[best_tdi, "mean"])
         write_submission("classification", TDI[best_tdi], TDI_SUBMISSION, TDI_BEST_CONFIG)
