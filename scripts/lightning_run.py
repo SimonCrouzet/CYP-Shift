@@ -320,20 +320,39 @@ def resolve_machine(name: str) -> object:
     return getattr(machine_enum, key)
 
 
-def teamspace_hint() -> str:
-    """The authenticated account's teamspaces and their owners, for the unresolved-teamspace error.
+def _describe_failure(error: Exception) -> str:
+    """One short line for an SDK failure. Cloud errors can carry a whole HTML page as their text,
+    so only the type, the HTTP status when there is one, and a clipped first line are kept."""
+    status = getattr(error, "status", None)
+    first = (str(error).strip().splitlines() or [""])[0][:120]
+    return f"{type(error).__name__}{f' {status}' if status else ''}: {first}"
 
-    Best effort: a network, auth or SDK-internals failure yields an empty hint rather than masking
-    the real error. ``_get_authed_user`` is the SDK's own (private) resolver of the logged-in user.
+
+def teamspace_hint() -> str:
+    """Where this account's teamspaces live, for the unresolved-teamspace error.
+
+    Lists the logged-in user's teamspaces and each organization's, labelled by owner kind so it is
+    clear whether to pass ``--user`` or ``--org``. Best effort, but never silent: a failure is
+    reported in the hint (a regional block or bad credentials look the same as "nothing to list"
+    otherwise) and never replaces the error it explains. ``_get_authed_user`` is the SDK's own
+    (private) resolver of the logged-in user.
     """
     try:
         from lightning_sdk.utils.resolve import _get_authed_user
 
         user = _get_authed_user()
-        listed = [f"{ts.name} (owner: {ts.owner.name})" for ts in user.teamspaces]
-    except Exception:  # noqa: BLE001 -- a hint must never replace the error it explains
-        return ""
-    return f" Logged in as {user.name}; teamspaces: {', '.join(listed) or '(none)'}."
+        owners = [("user", user), *[("org", org) for org in user.organizations]]
+    except Exception as error:  # noqa: BLE001 -- a hint must never replace the error it explains
+        return f" (could not look up your account to suggest one: {_describe_failure(error)})"
+    parts = []
+    for kind, owner in owners:
+        try:
+            names = [ts.name for ts in owner.teamspaces]
+        except Exception as error:  # noqa: BLE001 -- keep the owners that did list
+            parts.append(f"{kind} {owner.name!r}: unreadable ({_describe_failure(error)})")
+            continue
+        parts.append(f"{kind} {owner.name!r}: {', '.join(repr(n) for n in names) or '(none)'}")
+    return " Your account's teamspaces -- " + "; ".join(parts) + "."
 
 
 def open_studio(args: argparse.Namespace) -> object:

@@ -362,7 +362,7 @@ def test_other_value_errors_are_not_rewritten(monkeypatch):
 
 
 def test_the_teamspace_hint_never_raises(monkeypatch):
-    """With the SDK unreachable (or unauthenticated) the hint is empty, not an exception."""
+    """With the SDK unavailable the hint says so, rather than raising or going silent."""
     import builtins
 
     real_import = builtins.__import__
@@ -373,4 +373,60 @@ def test_the_teamspace_hint_never_raises(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", refuse)
-    assert lr.teamspace_hint() == ""
+    hint = lr.teamspace_hint()
+    assert "could not look up your account" in hint and "ImportError" in hint
+
+
+def _install_fake_account(monkeypatch, owners, fail_lookup=None):
+    """A fake ``lightning_sdk.utils.resolve`` whose authed user owns ``owners`` (name -> names)."""
+    import types
+
+    class Owner:
+        def __init__(self, name, teamspaces):
+            self.name = name
+            self._teamspaces = teamspaces
+
+        @property
+        def teamspaces(self):
+            if isinstance(self._teamspaces, Exception):
+                raise self._teamspaces
+            return [types.SimpleNamespace(name=n) for n in self._teamspaces]
+
+    def authed():
+        if fail_lookup:
+            raise fail_lookup
+        user = Owner("me", owners["me"])
+        user.organizations = [Owner(n, t) for n, t in owners.items() if n != "me"]
+        return user
+
+    module = types.ModuleType("lightning_sdk.utils.resolve")
+    module._get_authed_user = authed
+    monkeypatch.setitem(sys.modules, "lightning_sdk", types.ModuleType("lightning_sdk"))
+    monkeypatch.setitem(sys.modules, "lightning_sdk.utils", types.ModuleType("lightning_sdk.utils"))
+    monkeypatch.setitem(sys.modules, "lightning_sdk.utils.resolve", module)
+
+
+def test_the_teamspace_hint_names_user_and_org_teamspaces(monkeypatch):
+    _install_fake_account(monkeypatch, {"me": [], "my-org": ["main", "scratch"]})
+    hint = lr.teamspace_hint()
+    assert "user 'me': (none)" in hint
+    assert "org 'my-org': 'main', 'scratch'" in hint
+
+
+def test_the_teamspace_hint_reports_why_it_failed_not_silence(monkeypatch):
+    class BlockedError(Exception):
+        status = 403
+
+    _install_fake_account(
+        monkeypatch, {"me": []}, fail_lookup=BlockedError("Forbidden\n<html>" + "x" * 500)
+    )
+    hint = lr.teamspace_hint()
+    assert "BlockedError 403: Forbidden" in hint
+    assert "<html>" not in hint  # only the first line, never a page of HTML
+
+
+def test_one_unreadable_owner_does_not_hide_the_others(monkeypatch):
+    _install_fake_account(monkeypatch, {"me": ["solo"], "my-org": RuntimeError("no access")})
+    hint = lr.teamspace_hint()
+    assert "user 'me': 'solo'" in hint
+    assert "org 'my-org': unreadable (RuntimeError: no access)" in hint
