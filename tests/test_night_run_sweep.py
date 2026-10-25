@@ -2,6 +2,7 @@
 is a clean factorial with matched controls, the priority entries exist, and the run order puts
 them (and the regression candidate) first."""
 
+import dataclasses
 import itertools
 import sys
 from pathlib import Path
@@ -95,6 +96,60 @@ def test_the_qhts_representation_is_crossed_with_every_family_that_can_read_it(p
             ("both", True),
             ("both", False),
         }, (base, cells)
+
+
+#: Data-side fields no entry varies, each with the reason.
+DATA_SIDE_NOT_SWEPT = {
+    "data.directory": "location of the challenge files",
+    "data.holdout_fraction": "holdout path only; the sweep runs scaffold cross-validation",
+    "data.n_similarity_bins": "holdout path only; the sweep runs scaffold cross-validation",
+    "data.n_matching_rounds": "holdout path only; the sweep runs scaffold cross-validation",
+    "data.seed": "fixed so that configurations are compared on the same folds and seed",
+    "sources.structure": "needs the Boltz cofold cache, which is empty",
+    "multifidelity.screen_model_hidden": "screen helper width; the graph cannot take that helper",
+    "training.preset": "curriculum; the graph ignores stage settings",
+    "training.stages": "curriculum; the graph ignores stage settings",
+}
+
+
+def test_every_data_side_field_is_varied_by_some_entry_or_excluded_for_a_stated_reason():
+    swept = {key for overrides in night_run.REGRESSION.values() for key in overrides}
+    config = ExperimentConfig()
+    for section in ("data", "sources", "auxiliary", "multifidelity", "training"):
+        for field in dataclasses.fields(getattr(config, section)):
+            key = f"{section}.{field.name}"
+            assert key in swept or key in DATA_SIDE_NOT_SWEPT, (
+                f"{key} is neither swept nor excluded"
+            )
+    assert not set(DATA_SIDE_NOT_SWEPT) & swept  # an exclusion stays true
+
+
+def test_the_data_side_group_holds_the_model_fixed_and_covers_the_source_sets():
+    names = night_run.DATA_SIDE_REGRESSION
+    assert len(set(names)) == len(names) and set(names) <= set(night_run.REGRESSION)
+    assert all(_resolved(night_run.REGRESSION[n]).model.kind == "graph" for n in names)
+    source_sets = {
+        frozenset(
+            source
+            for source in night_run.AUXILIARY_SOURCES
+            if getattr(_resolved(night_run.REGRESSION[n]).sources, source)
+        )
+        for n in names
+    }
+    sources = night_run.AUXILIARY_SOURCES
+    wanted = {frozenset()} | {
+        frozenset(c) for k in (1, 2) for c in itertools.combinations(sources, k)
+    }
+    wanted |= {frozenset(("octant", "tox21", extra)) for extra in sources[2:]} | {
+        frozenset(sources)
+    }
+    assert wanted <= source_sets
+    # cheap configurations first: the number of large sources never decreases along the queue
+    heavy = [
+        sum(bool(night_run.REGRESSION[n].get(f"sources.{s}")) for s in night_run.HEAVY_SOURCES)
+        for n in names
+    ]
+    assert heavy == sorted(heavy)
 
 
 def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
@@ -263,6 +318,7 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     night_run.main()
 
     assert calls == [
+        ("reg", night_run.DATA_SIDE_REGRESSION),
         ("reg", night_run.QHTS_REGRESSION),
         ("tdi", night_run.QHTS_TDI),
         ("reg", night_run.UNMEASURED_REGRESSION),

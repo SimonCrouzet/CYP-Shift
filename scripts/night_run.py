@@ -785,6 +785,88 @@ QHTS_REGRESSION = tuple(
 )
 QHTS_TDI = tuple(_qhts_grid(TDI, ("curve_heads",)))
 
+#: Data-side options swept around the best recipe measured so far, with the model held fixed:
+#: the graph with Octant and active-only Tox21 auxiliaries. Three groups: (1) the source SET, every
+#: subset of the six auxiliary sources of size one and two, the best recipe plus each remaining
+#: source, and all six; (2) one-factor passes on the screen, the TDI assay condition, dedup,
+#: Tox21 inactives, per-endpoint budget and the row weighting; (3) one-factor passes on the
+#: auxiliary-selection fields, which act only when ChEMBL is on, around the best recipe plus ChEMBL.
+#: The qHTS representation and its inactives are the grid above (``QHTS_REGRESSION``).
+DATA_BASE = "graph_octant_tox21"
+AUXILIARY_SOURCES = ("octant", "tox21", "chembl", "sair", "veith", "novartis")
+HEAVY_SOURCES = ("chembl", "sair", "veith")
+
+
+def _source_set_name(subset: tuple[str, ...]) -> str:
+    return "graph_src_" + ("_".join(subset) if subset else "none")
+
+
+def _source_sets() -> list[tuple[str, ...]]:
+    sets = [()]
+    for size in (1, 2):
+        sets += list(itertools.combinations(AUXILIARY_SOURCES, size))
+    best = ("octant", "tox21")
+    sets += [best + (source,) for source in AUXILIARY_SOURCES if source not in best]
+    sets.append(AUXILIARY_SOURCES)
+    return sets
+
+
+def _data_side_regression() -> tuple[str, ...]:
+    base = REGRESSION[DATA_BASE]
+    base_chembl = {**base, "sources.chembl": True}
+    panels: dict[str, dict] = {}
+    for subset in _source_sets():
+        panels[_source_set_name(subset)] = {
+            "model.kind": "graph",
+            **{f"sources.{source}": True for source in subset},
+        }
+    panels.update(
+        _ofat(
+            DATA_BASE,
+            base,
+            {
+                "sources.screen": [False],
+                "multifidelity.screen_strategy": ["response_head", "log2fc_response"],
+                "multifidelity.screen_weight": [0.1, 0.6, 1.0],
+                "data.dedup_mode": ["inchikey_block"],
+                "auxiliary.tox21_include_inactives": [True],
+                "auxiliary.per_endpoint_budget": [0.25, 0.5, 1.0],
+                "training.macro_balance": [True],
+                "training.inverse_variance_weighting": [True],
+            },
+        )
+    )
+    with_tdi = {**base, "sources.tdi_assay_condition": True}
+    panels[f"{DATA_BASE}_tdi"] = with_tdi
+    panels.update(_ofat(f"{DATA_BASE}_tdi", with_tdi, {"multifidelity.tdi_weight": [0.25, 1.0]}))
+    panels[f"{DATA_BASE}_chembl"] = base_chembl
+    panels.update(
+        _ofat(
+            f"{DATA_BASE}_chembl",
+            base_chembl,
+            {
+                "auxiliary.max_distance": [0.0, 3.0],
+                "auxiliary.weighting": ["uniform"],
+                "auxiliary.scale": [0.5, 2.0],
+                "auxiliary.target_weight": [0.3, 3.0],
+                "auxiliary.scored_weight": [0.5, 2.0],
+                "auxiliary.per_endpoint_budget": [0.5],
+            },
+        )
+    )
+    names = list(dict.fromkeys(_add_distinct(REGRESSION, panels)))
+    # the qHTS representation cells of the best recipe belong to the same group
+    names += [n for n in QHTS_REGRESSION if n.startswith("graph_octant_tox21_veith")]
+
+    def cost(name: str) -> int:
+        config = REGRESSION[name]
+        return sum(bool(config.get(f"sources.{source}")) for source in HEAVY_SOURCES)
+
+    return tuple(sorted(dict.fromkeys(names), key=cost))
+
+
+DATA_SIDE_REGRESSION = _data_side_regression()
+
 #: Fields no entry above varies: input width and optimiser batch of the neural network and the
 #: curve, the learned enzyme-embedding width, the graph warmup, and the graph-curve encoder depth.
 REGRESSION.update(
@@ -1465,6 +1547,11 @@ def main() -> None:
         NUM_WORKERS,
         members,
     )
+
+    logger.info(
+        "=== Data side on %s: %d regression configs ===", DATA_BASE, len(DATA_SIDE_REGRESSION)
+    )
+    run_phase("reg", {name: REGRESSION[name] for name in DATA_SIDE_REGRESSION}, SEEDS)
 
     logger.info(
         "=== qHTS representation x model family: %d regression, %d TDI ===",
