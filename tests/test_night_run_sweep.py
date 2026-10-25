@@ -228,6 +228,44 @@ def test_greedy_reuses_the_name_of_a_recipe_that_is_already_declared(monkeypatch
     assert not any(name.startswith("greedy_") for batch in ran for name in batch)
 
 
+def test_greedy_step_sets_its_implied_source_instead_of_waiting_for_it(monkeypatch, tmp_path):
+    step = night_run.GreedyStep(
+        "sources.qhts_representation", ("max_response",), implies=(("sources.veith", True),)
+    )
+    ran = _greedy_world(
+        monkeypatch,
+        tmp_path,
+        lambda cfg: 0.70 - (0.02 if cfg.get("sources.qhts_representation") else 0.0),
+    )
+    final = night_run.run_greedy(night_run.DATA_BASE, (step,), margin=0.005)
+    (candidate,) = ran[-1].values()
+    assert candidate["sources.veith"] is True  # the base has no Veith; the step turned it on
+    assert candidate["sources.qhts_representation"] == "max_response"
+    assert final["sources.veith"] is True and final["sources.qhts_representation"] == "max_response"
+    path = json.loads((tmp_path / "greedy_path.json").read_text())
+    assert path["recipe"]["sources.veith"] is True
+
+
+def test_no_greedy_step_waits_on_the_veith_source_being_adopted():
+    steps = {step.key: step for step in night_run.GREEDY_STEPS}
+    for key in ("sources.qhts_representation", "auxiliary.include_qhts_inactives"):
+        assert ("sources.veith", True) in steps[key].implies
+        assert ("sources.veith", True) not in steps[key].requires
+    assert not any(("sources.veith", True) in step.requires for step in night_run.GREEDY_STEPS)
+
+
+def test_every_qhts_greedy_candidate_is_a_valid_configuration_without_prior_veith():
+    base = dict(night_run.REGRESSION[night_run.DATA_BASE])
+    assert not base.get("sources.veith")
+    for key in ("sources.qhts_representation", "auxiliary.include_qhts_inactives"):
+        step = next(s for s in night_run.GREEDY_STEPS if s.key == key)
+        for value in step.values:
+            config = ExperimentConfig()
+            for field, setting in {**base, **dict(step.implies), key: value}.items():
+                config.override(field, setting)
+            config.validate()
+
+
 def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
     fast, slow = night_run.UNMEASURED_REGRESSION, night_run.UNMEASURED_REGRESSION_SLOW
     assert len(set(fast)) == len(fast)

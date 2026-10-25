@@ -879,11 +879,13 @@ DATA_SIDE_REGRESSION = _data_side_regression()
 @dataclasses.dataclass(frozen=True)
 class GreedyStep:
     """One data-side field and the values tried for it, when the current recipe satisfies
-    ``requires`` (pairs of field and value that must already hold)."""
+    ``requires`` (pairs of field and value that must already hold). ``implies`` are fields every
+    candidate of the step sets itself, so the step does not wait on another step adopting them."""
 
     key: str
     values: tuple
     requires: tuple[tuple[str, object], ...] = ()
+    implies: tuple[tuple[str, object], ...] = ()
 
 
 _VEITH = (("sources.veith", True),)
@@ -901,8 +903,8 @@ GREEDY_STEPS = (
     GreedyStep("sources.novartis", (True,)),
     GreedyStep("sources.octant", (False,)),
     GreedyStep("sources.tox21", (False,)),
-    GreedyStep("sources.qhts_representation", ("max_response", "both"), _VEITH),
-    GreedyStep("auxiliary.include_qhts_inactives", (False,), _VEITH),
+    GreedyStep("sources.qhts_representation", ("max_response", "both"), implies=_VEITH),
+    GreedyStep("auxiliary.include_qhts_inactives", (False,), implies=_VEITH),
     GreedyStep("sources.screen", (False,)),
     GreedyStep("multifidelity.screen_strategy", ("response_head", "log2fc_response"), _SCREEN),
     GreedyStep("multifidelity.screen_weight", (0.1, 0.6, 1.0), _SCREEN),
@@ -953,11 +955,12 @@ def run_greedy(base_name: str, steps: tuple[GreedyStep, ...], margin: float = AD
             logger.info("greedy %02d %s: skipped, precondition not met", number, step.key)
             continue
         candidates: dict[str, dict] = {}
+        current_key = _resolved_key(current)
         for value in step.values:
-            if _setting(current, step.key) == value:
-                continue
-            overrides = {**current, step.key: value}
+            overrides = {**current, **dict(step.implies), step.key: value}
             key = _resolved_key(overrides)
+            if key == current_key:
+                continue
             if key not in declared:
                 digest = hashlib.sha1(key.encode()).hexdigest()[:6]
                 tag = str(value).replace(".", "p").replace("-", "m")
@@ -979,10 +982,12 @@ def run_greedy(base_name: str, steps: tuple[GreedyStep, ...], margin: float = AD
         best_score = score_of(best)
         listing = ", ".join(f"{n}={score_of(n):.4f}" for n in candidates)
         if best_score <= base_score - margin:
+            adopted = ", ".join(
+                f"{key}={candidates[best][key]!r}" for key in (*dict(step.implies), step.key)
+            )
             logger.info(
-                "greedy %02d %s: ADOPT %s=%r (%.4f -> %.4f); tried %s",
-                number, step.key, step.key, candidates[best][step.key], base_score, best_score,
-                listing,
+                "greedy %02d %s: ADOPT %s (%.4f -> %.4f); tried %s",
+                number, step.key, adopted, base_score, best_score, listing,
             )  # fmt: skip
             current, current_name = candidates[best], best
             path.append({"step": step.key, "name": best, "score": best_score})
