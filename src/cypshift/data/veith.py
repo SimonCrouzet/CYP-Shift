@@ -69,16 +69,18 @@ def detection_limit_pic50(raw: pd.DataFrame) -> float | None:
 
 
 def _max_response(named: pd.DataFrame) -> pd.DataFrame:
-    """All screened compounds as a 0-1 max-response magnitude (not a pIC50).
+    """All screened compounds as a 0-1 inhibition magnitude at the maximal curve response.
 
-    The maximal curve response keeps the inactives as real low-response measurements, and
-    is the signal the graph model's auxiliary response head is trained on. A different
-    quantity from potency, so it never shares the pIC50 scale.
+    ``Max_Response`` is a signed percent activity, negative for inhibition (AID 883: Active
+    median -82.4, Inactive median +0.6), so the value is ``-Max_Response / 100`` clipped to
+    [0, 1]; the activation side clips to 0. The inactives stay as real low-response
+    measurements. This is the signal the graph model's auxiliary response head is trained on,
+    a different quantity from potency, so it never shares the pIC50 scale.
     """
     if "Max_Response" not in named.columns:
         raise KeyError("cannot use max_response: deposit has no 'Max_Response' column")
     screened = named[named["PUBCHEM_ACTIVITY_OUTCOME"].isin(["Active", "Inactive"])].copy()
-    screened["value"] = (pd.to_numeric(screened["Max_Response"], errors="coerce") / 100.0).clip(
+    screened["value"] = (-pd.to_numeric(screened["Max_Response"], errors="coerce") / 100.0).clip(
         0, 1
     )
     screened = screened.dropna(subset=["value"])
@@ -181,8 +183,12 @@ def load_auxiliary(
     if enzyme not in AID:
         return pd.DataFrame(columns=columns)
     cache.mkdir(parents=True, exist_ok=True)
+    # "_response_inhibition" marks the sign-corrected response: the "_response" caches written
+    # before it hold ``+Max_Response / 100`` (inhibitors at 0) and are not reused.
     suffix = (
-        "_response" if representation == "max_response" else ("_full" if include_inactives else "")
+        "_response_inhibition"
+        if representation == "max_response"
+        else ("_full" if include_inactives else "")
     )
     path = cache / f"veith_{enzyme}{suffix}.csv"
     if path.exists():

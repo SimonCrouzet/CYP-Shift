@@ -416,6 +416,47 @@ def test_veith_both_representation_emits_potency_and_response_without_losing_pot
     assert "CYP1A2" not in set(rows[rows["assay"] == RESPONSE_ASSAY]["target"])
 
 
+def test_tox21_takes_the_qhts_representation_and_gives_cyp1a2_a_response(monkeypatch):
+    """Tox21 is a qHTS source: max_response puts its rows on the response assay, both keeps the
+    potency rows as well, and Tox21 supplies the CYP1A2 response the old Veith deposit lacks."""
+    import cypshift.pipeline as pipe
+    from cypshift.data.assembly import RESPONSE_ASSAY
+
+    monkeypatch.setattr("cypshift.data.sequences.sequence_for", lambda name, *a, **k: "M")
+    monkeypatch.setattr("cypshift.data.auxiliary.site_distances", lambda scored, cands: None)
+    monkeypatch.setattr("cypshift.data.auxiliary.select_auxiliaries", lambda *a, **k: [])
+
+    def fake_veith(enzyme, smiles, *a, representation="pic50", **k):
+        if representation == "max_response" and enzyme == "CYP1A2":
+            raise KeyError("deposit has no 'Max_Response' column")
+        return pd.DataFrame({"SMILES": ["CCO"], "value": [0.4], "target": enzyme})
+
+    def fake_tox21(enzyme, smiles, *a, representation="pic50", **k):
+        value = 0.7 if representation == "max_response" else 5.5
+        return pd.DataFrame({"SMILES": ["CCN"], "value": [value], "target": enzyme})
+
+    monkeypatch.setattr("cypshift.data.veith.load_auxiliary", fake_veith)
+    monkeypatch.setattr("cypshift.data.tox21.load_auxiliary", fake_tox21)
+    for representation in ("max_response", "both"):
+        config = ExperimentConfig()
+        config.override("model.kind", "graph")
+        config.sources.veith = True
+        config.sources.tox21 = True
+        config.override("sources.qhts_representation", representation)
+        config.auxiliary.max_distance = 0.0
+        rows = pipe.auxiliary_observations(config, _retained())
+        response = rows[rows["assay"] == RESPONSE_ASSAY]
+        assert set(response["target"]) == {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"}
+        assert set(response[response["target"] == "CYP1A2"]["SMILES"]) == {"CCN"}  # Tox21 only
+        assert ("luminescent_ac50" in set(rows["assay"])) == (representation == "both")
+
+    tox21_only = ExperimentConfig()
+    tox21_only.override("model.kind", "neural")
+    tox21_only.sources.tox21 = True
+    tox21_only.override("sources.qhts_representation", "max_response")
+    assert pipe.response_feature_route(tox21_only)
+
+
 def test_auxiliary_is_absent_when_the_source_is_unreachable(monkeypatch):
     """A run must not fail for lack of an auxiliary source (no network, no cache).
 

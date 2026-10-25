@@ -236,6 +236,18 @@ class TestCapabilityContract:
             config.override(key, value)
         config.validate()  # no raise
 
+    @pytest.mark.parametrize("kind", ["graph", "boosted", "neural", "curve"])
+    @pytest.mark.parametrize("source", ["veith", "tox21"])
+    def test_max_response_takes_any_qhts_source(self, kind, source):
+        config = ExperimentConfig.load()
+        for key, value in {
+            "model.kind": kind,
+            f"sources.{source}": True,
+            "sources.qhts_representation": "max_response",
+        }.items():
+            config.override(key, value)
+        config.validate()  # no raise
+
     @pytest.mark.parametrize(
         "overrides",
         [

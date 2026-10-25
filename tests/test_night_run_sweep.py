@@ -246,19 +246,25 @@ def test_greedy_step_sets_its_implied_source_instead_of_waiting_for_it(monkeypat
     assert path["recipe"]["sources.veith"] is True
 
 
+def test_the_qhts_representation_is_tried_on_the_recipes_own_qhts_sources_then_with_veith():
+    steps = [s for s in night_run.GREEDY_STEPS if s.key == "sources.qhts_representation"]
+    assert [s.implies for s in steps] == [(), (("sources.veith", True),)]
+    assert all(s.values == ("max_response", "both") for s in steps)
+
+
 def test_no_greedy_step_waits_on_the_veith_source_being_adopted():
     steps = {step.key: step for step in night_run.GREEDY_STEPS}
-    for key in ("sources.qhts_representation", "auxiliary.include_qhts_inactives"):
-        assert ("sources.veith", True) in steps[key].implies
-        assert ("sources.veith", True) not in steps[key].requires
+    assert ("sources.veith", True) in steps["auxiliary.include_qhts_inactives"].implies
     assert not any(("sources.veith", True) in step.requires for step in night_run.GREEDY_STEPS)
 
 
 def test_every_qhts_greedy_candidate_is_a_valid_configuration_without_prior_veith():
     base = dict(night_run.REGRESSION[night_run.DATA_BASE])
     assert not base.get("sources.veith")
-    for key in ("sources.qhts_representation", "auxiliary.include_qhts_inactives"):
-        step = next(s for s in night_run.GREEDY_STEPS if s.key == key)
+    for step in night_run.GREEDY_STEPS:
+        if step.key not in ("sources.qhts_representation", "auxiliary.include_qhts_inactives"):
+            continue
+        key = step.key
         for value in step.values:
             config = ExperimentConfig()
             for field, setting in {**base, **dict(step.implies), key: value}.items():

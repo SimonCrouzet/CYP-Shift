@@ -895,7 +895,9 @@ _SCREEN = (("sources.screen", True),)
 #: Greedy search over the data side: each step tries its values on the current recipe, the best
 #: one replaces the current recipe if it beats it by more than ``ADOPT_MARGIN``, and the next
 #: step runs on the result. Sources first (what is trained on), then how the rows are
-#: represented and weighted, then the fields that only act once their source is on.
+#: represented and weighted, then the fields that only act once their source is on. The qHTS
+#: representation runs twice: on the qHTS sources the recipe already holds (Tox21), then with
+#: Veith switched on as well.
 GREEDY_STEPS = (
     GreedyStep("sources.chembl", (True,)),
     GreedyStep("sources.sair", (True,)),
@@ -903,6 +905,7 @@ GREEDY_STEPS = (
     GreedyStep("sources.novartis", (True,)),
     GreedyStep("sources.octant", (False,)),
     GreedyStep("sources.tox21", (False,)),
+    GreedyStep("sources.qhts_representation", ("max_response", "both")),
     GreedyStep("sources.qhts_representation", ("max_response", "both"), implies=_VEITH),
     GreedyStep("auxiliary.include_qhts_inactives", (False,), implies=_VEITH),
     GreedyStep("sources.screen", (False,)),

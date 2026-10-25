@@ -119,6 +119,11 @@ QHTS_REPRESENTATIONS = ("pic50", "max_response", "both")
 #: fingerprint backbone only: the graph backbone has no extra-feature input.
 RESPONSE_FEATURE_KINDS = ("boosted", "neural", "curve")
 
+#: The sources that are qHTS deposits, so ``sources.qhts_representation`` applies to them: each
+#: ships a fitted potency and a ``Max_Response`` per compound (Veith's CYP1A2 deposit has no
+#: ``Max_Response``; Tox21 ships it for every enzyme).
+QHTS_SOURCES = ("veith", "tox21")
+
 #: How auxiliary rows are matched against the challenge set for dedup: exact canonical SMILES,
 #: or the coarser InChIKey connectivity block.
 DEDUP_MODES = ("canonical_smiles", "inchikey_block")
@@ -245,12 +250,13 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
-    #: How Veith qHTS enters: as a pooled ``pic50`` (default), as a 0-1 ``max_response`` on its
-    #: own assay, or ``both`` -- the potency rows pooled onto the luminescent-AC50 assay *and* the
-    #: max-response rows on the response head in the same run, so the graph panel carries Veith
-    #: potency and response at once (the reference recipe's coexisting qHTS tasks). A data-side
-    #: choice, but ``max_response``/``both`` need a model with a response head, so validation
-    #: requires model.kind=graph + veith for them.
+    #: How the qHTS sources (:data:`QHTS_SOURCES`: Veith, Tox21) enter: as a pooled ``pic50``
+    #: (default), as a 0-1 ``max_response`` on its own assay, or ``both`` -- the potency rows
+    #: pooled onto the luminescent-AC50 assay *and* the max-response rows on the response head in
+    #: the same run, so the graph panel carries potency and response at once (the reference
+    #: recipe's coexisting qHTS tasks). A data-side choice; ``max_response``/``both`` need a model
+    #: that reads the response (the graph's response head, or a helper model for the feature
+    #: kinds) and one of the qHTS sources on.
     qhts_representation: str = "pic50"
     #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
     #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
@@ -626,10 +632,12 @@ class ExperimentConfig:
             feature_route = self.model.kind in RESPONSE_FEATURE_KINDS and not (
                 self.model.kind == "curve" and self.model.curve.backbone == "graph"
             )
-            if not (self.sources.veith and (self.model.kind == "graph" or feature_route)):
+            has_qhts = any(getattr(self.sources, name) for name in QHTS_SOURCES)
+            if not (has_qhts and (self.model.kind == "graph" or feature_route)):
                 raise ValueError(
                     f"sources.qhts_representation={self.sources.qhts_representation!r} needs "
-                    "sources.veith and either model.kind='graph' (response head) or one of "
+                    f"one of the qHTS sources {QHTS_SOURCES} on and either model.kind='graph' "
+                    "(response head) or one of "
                     f"{RESPONSE_FEATURE_KINDS} (helper-model features; a curve needs the "
                     "'mlp' backbone)"
                 )

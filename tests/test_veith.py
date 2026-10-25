@@ -101,15 +101,27 @@ def test_max_response_keeps_all_screened_on_a_0_1_scale():
         {
             "PUBCHEM_ACTIVITY_OUTCOME": ["Active", "Inactive", "Inconclusive"],
             "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO", "CCC", "CCCC"],
-            "Max_Response": [95.0, 3.0, 50.0],
+            "Max_Response": [-95.0, 3.0, -50.0],
             "Potency": [1.0, None, None],
         }
     )
     out = _clean(raw, representation="max_response").set_index("SMILES")
     assert set(out.index) == {"CCO", "CCC"}  # inconclusive dropped, inactive kept
-    assert out.loc["CCO", "value"] == pytest.approx(0.95)
-    assert out.loc["CCC", "value"] == pytest.approx(0.03)
+    assert out.loc["CCO", "value"] == pytest.approx(0.95)  # inhibition is the negative side
+    assert out.loc["CCC", "value"] == 0.0  # activation clips to zero
     assert not out["is_censored"].any()
+
+
+def test_max_response_of_an_inhibitor_is_high_not_zero():
+    raw = pd.DataFrame(
+        {
+            "PUBCHEM_ACTIVITY_OUTCOME": ["Active", "Inactive"],
+            "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO", "CCC"],
+            "Max_Response": [-82.4, -9.5],
+        }
+    )
+    out = _clean(raw, representation="max_response").set_index("SMILES")["value"]
+    assert out["CCO"] > out["CCC"]
 
 
 def test_max_response_needs_its_column():

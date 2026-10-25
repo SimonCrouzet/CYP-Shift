@@ -34,6 +34,7 @@ from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
+    QHTS_SOURCES,
     RESPONSE_FEATURE_KINDS,
     SCREEN_STRATEGIES,
     ExperimentConfig,
@@ -628,7 +629,7 @@ def response_feature_route(config: ExperimentConfig) -> bool:
     for the max-response; the graph consumes it through its own response head instead.
     """
     return (
-        config.sources.veith
+        (config.sources.veith or config.sources.tox21)
         and config.sources.qhts_representation in ("max_response", "both")
         and config.model.kind in RESPONSE_FEATURE_KINDS
     )
@@ -681,17 +682,18 @@ def auxiliary_frames(
         "tox21": "luminescent_ac50",
         "novartis": "reversible_pic50",
     }
-    # The graph's auxiliary response head wants Veith as a 0-1 max-response on its own
-    # assay, not a pooled pIC50; only that model requests it, so other models are untouched.
-    # ``both`` keeps the pooled pIC50 assay *and* additionally emits the response rows, so the
-    # one panel carries Veith potency and response at once.
+    # The qHTS sources (Veith, Tox21) can enter as a 0-1 max-response on its own assay instead
+    # of a pooled pIC50 (``max_response``); the graph reads it through its response head, the
+    # other kinds through a helper model. ``both`` keeps the pooled pIC50 assay *and*
+    # additionally emits the response rows, so the one panel carries potency and response at once.
     response_mode = config.sources.qhts_representation == "max_response"
     both_mode = config.sources.qhts_representation == "both"
     # Source-stratified conditioning keeps same-chemistry sources (veith+tox21, chembl+sair)
     # as separate rows instead of pooling them, so the graph can condition on the source.
     source_heads = config.model.kind == "graph" and config.model.graph.source_heads
     if response_mode:
-        assay_by_source["veith"] = RESPONSE_ASSAY
+        for qhts_source in QHTS_SOURCES:
+            assay_by_source[qhts_source] = RESPONSE_ASSAY
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
@@ -739,30 +741,26 @@ def auxiliary_frames(
         # Group the enabled datasets by their assay context, so sources of one detection
         # chemistry (veith+tox21, chembl+sair) pool together while different chemistries
         # stay distinct rows the calibration can offset apart.
-        # Veith takes the representation/inactive flags; the other loaders ignore them.
-        veith_kwargs = (
-            {"representation": "max_response"}
-            if response_mode
-            else {"include_inactives": config.auxiliary.include_qhts_inactives}
-        )
-        extra_kwargs = {
-            "veith": veith_kwargs,
+        # The qHTS loaders take the representation and inactive flags; the others ignore them.
+        potency_kwargs = {
+            "veith": {"include_inactives": config.auxiliary.include_qhts_inactives},
             "tox21": {"include_inactives": config.auxiliary.tox21_include_inactives},
+        }
+        extra_kwargs = {
+            name: {"representation": "max_response"} if response_mode else kwargs
+            for name, kwargs in potency_kwargs.items()
         }
         by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
         for name in datasets:
-            # A source usually contributes one (kwargs, assay) spec; Veith in ``both`` mode
-            # contributes two -- the pooled potency onto luminescent_ac50 and the max-response
-            # onto the response head -- so the panel carries both qHTS quantities at once. Each
-            # spec loads under its own try, so a representation a given deposit cannot supply
-            # (the old CYP1A2 deposit has no Max_Response column) drops only that quantity, not
-            # the enzyme's other rows.
-            if name == "veith" and both_mode:
+            # A source usually contributes one (kwargs, assay) spec; a qHTS source in ``both``
+            # mode contributes two -- the pooled potency onto luminescent_ac50 and the
+            # max-response onto the response head -- so the panel carries both qHTS quantities at
+            # once. Each spec loads under its own try, so a representation a given deposit cannot
+            # supply (the old Veith CYP1A2 deposit has no Max_Response column) drops only that
+            # quantity, not the enzyme's other rows.
+            if name in QHTS_SOURCES and both_mode:
                 specs = [
-                    (
-                        {"include_inactives": config.auxiliary.include_qhts_inactives},
-                        "luminescent_ac50",
-                    ),
+                    (potency_kwargs[name], "luminescent_ac50"),
                     ({"representation": "max_response"}, RESPONSE_ASSAY),
                 ]
             else:

@@ -55,7 +55,38 @@ AID = {
 }
 
 
-def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
+def _max_response(raw: pd.DataFrame) -> pd.DataFrame:
+    """Active and Inactive compounds as a 0-1 inhibition magnitude at the maximal curve response.
+
+    ``Max_Response-Replicate_*`` is a signed percent activity, negative for inhibition (CYP1A2,
+    AID 1671199: Active median -78.0, Inactive median -14.7). The value is the median over
+    replicates of ``-Max_Response / 100`` clipped to [0, 1], then the median over the compound's
+    records: the convention of :func:`cypshift.data.veith._max_response`. Inconclusive compounds
+    are dropped. Unlike the Veith CYP1A2 deposit, every enzyme here ships the column.
+    """
+    smiles_column = "PUBCHEM_EXT_DATASOURCE_SMILES"
+    columns = [c for c in raw.columns if c.startswith("Max_Response-Replicate")]
+    if not columns:
+        raise KeyError("Tox21 deposit has no 'Max_Response-Replicate' columns")
+    screened = raw[
+        raw[smiles_column].notna() & raw["PUBCHEM_ACTIVITY_OUTCOME"].isin(["Active", "Inactive"])
+    ].copy()
+    response = screened[columns].apply(pd.to_numeric, errors="coerce").median(axis=1)
+    screened["value"] = (-response / 100.0).clip(0, 1)
+    grouped = (
+        screened.dropna(subset=["value"])
+        .groupby(smiles_column)["value"]
+        .median()
+        .reset_index()
+        .rename(columns={smiles_column: "SMILES"})
+    )
+    grouped["is_censored"] = False
+    return grouped
+
+
+def _clean(
+    raw: pd.DataFrame, include_inactives: bool = False, representation: str = "pic50"
+) -> pd.DataFrame:
     """Tox21 re-screen records into ``(SMILES, value, is_censored)`` rows on the pIC50 scale.
 
     Keeps active compounds and takes the median ``Potency`` (AC50 in micromolar) across the
@@ -63,8 +94,11 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
     the compounds the campaign called inactive -- which carry no potency -- are kept as
     censored rows (``is_censored=True``) with value :data:`INACTIVE_PIC50_BOUND`, i.e. an upper
     bound on pIC50. Without the flag they are dropped (the historic behaviour), rather than
-    turned into an invented point estimate.
+    turned into an invented point estimate. ``representation="max_response"`` returns
+    :func:`_max_response` instead and ignores ``include_inactives``.
     """
+    if representation == "max_response":
+        return _max_response(raw)
     smiles_column = "PUBCHEM_EXT_DATASOURCE_SMILES"
     with_smiles = raw[raw[smiles_column].notna()]
     active = with_smiles[with_smiles["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
@@ -112,13 +146,16 @@ def load_auxiliary(
     cache: Path = DEFAULT_CACHE,
     dedup_mode: str = "canonical_smiles",
     include_inactives: bool = False,
+    representation: str = "pic50",
 ) -> pd.DataFrame:
-    """Cleaned, challenge-deduplicated Tox21 pIC50 rows for one enzyme.
+    """Cleaned, challenge-deduplicated Tox21 rows for one enzyme.
 
-    Returns columns ``SMILES``, ``value``, ``is_censored``, ``target``. Empty for any enzyme
-    Tox21 does not cover. Downloads and caches on first use, since the PubChem paging is slow
-    and the answer does not change; the active-only and with-inactives cleanings are cached
-    under separate names so one never masquerades as the other.
+    Returns columns ``SMILES``, ``value``, ``is_censored``, ``target``. ``representation`` chooses
+    the quantity: ``pic50`` (fitted potency) or ``max_response`` (a 0-1 inhibition magnitude for
+    the response head). Empty for any enzyme Tox21 does not cover. Downloads and caches on first
+    use, since the PubChem paging is slow and the answer does not change; the active-only,
+    with-inactives and max-response cleanings are cached under separate names so one never
+    masquerades as another.
     """
     if enzyme not in AID:
         return pd.DataFrame(columns=["SMILES", "value", "is_censored", "target"])
@@ -126,11 +163,17 @@ def load_auxiliary(
     # The suffix versions the cache: "_cmax" marks the highest-tested-concentration inactive
     # bound, so a cache written under the earlier plausibility-floor value is not reused.
     suffix = "_with_inactives_cmax" if include_inactives else ""
+    if representation == "max_response":
+        suffix = "_response"
     path = cache / f"tox21_{enzyme}{suffix}.csv"
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(download_assay(AID[enzyme]), include_inactives=include_inactives)
+        frame = _clean(
+            download_assay(AID[enzyme]),
+            include_inactives=include_inactives,
+            representation=representation,
+        )
         frame.to_csv(path, index=False)
         logger.info("Tox21: cached %d %s compounds", len(frame), enzyme)
     deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
