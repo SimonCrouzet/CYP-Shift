@@ -60,6 +60,52 @@ def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
     assert not set(fast) & set(slow)
 
 
+def _dense_block_flags(overrides: dict) -> tuple[bool, bool, bool]:
+    features = _resolved(overrides).features
+    return (
+        features.use_physicochemical,
+        features.use_mechanistic,
+        features.use_ionization_geometry,
+    )
+
+
+@pytest.mark.parametrize("base_name", ["graph", "graph_octant_tox21"])
+def test_all_eight_dense_block_combinations_are_declared_for_the_graph(base_name):
+    entries = {
+        name: overrides
+        for name, overrides in night_run.REGRESSION.items()
+        if name == base_name
+        or name.startswith(f"{base_name}_fs_")
+        or (base_name == "graph" and name == "graph_ionization")
+    }
+    flags = [_dense_block_flags(overrides) for overrides in entries.values()]
+    assert len(flags) == len(set(flags))  # no combination twice
+    assert set(flags) == set(itertools.product((False, True), repeat=3))
+
+
+def test_the_tabular_and_neural_families_get_the_full_feature_set_panel():
+    for prefix in ("tfm_fs", "boosted_fs", "neural_fs"):
+        assert len([n for n in night_run.REGRESSION if n.startswith(f"{prefix}_")]) >= 6
+    assert len([n for n in night_run.TDI if n.startswith("curve_fs_")]) >= 6
+    assert len([n for n in night_run.TDI if n.startswith("curve_graph_heads_fs_")]) == 7
+
+
+def test_each_enzyme_descriptor_source_is_swept_alone_and_all_together():
+    from cypshift.data.conditioning import DESCRIPTOR_SOURCES
+
+    for pool, template, field in (
+        (night_run.REGRESSION, "neural_cond_descriptor_{}", "conditioning.descriptor_sources"),
+        (night_run.TDI, "curve_descriptor_{}", "model.curve.descriptor_sources"),
+        (night_run.TDI, "curve_graph_descriptor_{}", "model.curve.descriptor_sources"),
+    ):
+        swept = {
+            template.format(s): pool[template.format(s)][field] for s in night_run.DESCRIPTOR_SETS
+        }
+        alone = {sources[0] for sources in swept.values() if len(sources) == 1}
+        assert alone == set(DESCRIPTOR_SOURCES) - {"curated"}
+        assert set(swept[template.format("all")]) == set(DESCRIPTOR_SOURCES)
+
+
 def test_the_unmeasured_first_tiers_are_in_cost_order():
     def kind(name):
         return night_run.REGRESSION[name].get("model.kind", "boosted")

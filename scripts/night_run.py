@@ -29,6 +29,8 @@ config is one full cross-validation; the GPU families make this long, hence a si
     /mnt/wsl/ext/envs/cypshift/bin/python scripts/night_run.py
 """
 
+import dataclasses
+import itertools
 import logging
 import os
 import subprocess
@@ -39,6 +41,7 @@ import pandas as pd
 
 from cypshift.cli import submit
 from cypshift.config import CLASSIFICATION_ENDPOINTS
+from cypshift.data.conditioning import DESCRIPTOR_SOURCES
 from cypshift.eval.scoring import MACRO_LABEL
 from cypshift.experiment import ExperimentConfig
 from cypshift.local_env import load_local_env
@@ -650,11 +653,101 @@ def _feature_sweep(prefix: str, base: dict) -> dict[str, dict]:
     return {f"{prefix}_{name}": {**base, **overrides} for name, overrides in FEATURE_SETS.items()}
 
 
-# Sweep the feature set for the tabular models, where the input representation is the lever
-# (TabPFN especially; the boosted baseline for comparison). The graph ignores the fingerprint
-# -- it learns its own -- so its block sweep rides on the dense/conditioning knobs elsewhere.
+# Sweep the feature set for the tabular models and the neural network, where the input
+# representation is the lever (TabPFN especially; the boosted baseline for comparison).
 REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
 REGRESSION.update(_feature_sweep("boosted_fs", {}))
+
+
+def _resolved_key(overrides: dict) -> str:
+    """The fully resolved settings of one entry, for comparing entries under different names."""
+    config = ExperimentConfig()
+    for key, value in overrides.items():
+        config.override(key, value)
+    return repr(dataclasses.asdict(config))
+
+
+def _add_distinct(pool: dict[str, dict], new: dict[str, dict]) -> None:
+    """Add the entries whose resolved settings no declared entry already has."""
+    declared = {_resolved_key(overrides) for overrides in pool.values()}
+    for name, overrides in new.items():
+        key = _resolved_key(overrides)
+        if key not in declared:
+            pool[name] = overrides
+            declared.add(key)
+
+
+#: The dense blocks a graph encoder reads beside the molecular graph (as ``x_d``). The Morgan
+#: fingerprint is not an input there, and the MAMMAL embedding enters through
+#: ``model.graph.pretraining``.
+GRAPH_DENSE_BLOCKS = {
+    "physchem": "features.use_physicochemical",
+    "mechanistic": "features.use_mechanistic",
+    "ionization": "features.use_ionization_geometry",
+}
+
+
+def _dense_block_sweep(prefix: str, base: dict) -> dict[str, dict]:
+    """Every on/off combination of :data:`GRAPH_DENSE_BLOCKS` on top of a base config."""
+    sweep = {}
+    for flags in itertools.product((False, True), repeat=len(GRAPH_DENSE_BLOCKS)):
+        on = [name for name, flag in zip(GRAPH_DENSE_BLOCKS, flags, strict=True) if flag]
+        blocks = dict(zip(GRAPH_DENSE_BLOCKS.values(), flags, strict=True))
+        sweep[f"{prefix}_fs_{'_'.join(on) or 'none'}"] = {**base, **blocks}
+    return sweep
+
+
+#: Enzyme descriptor sources for the descriptor-conditioned models, each alone and all together.
+#: ``curated`` alone is the existing ``neural_cond_descriptor`` / ``curve_descriptor`` entry.
+DESCRIPTOR_SETS = {
+    **{source: (source,) for source in DESCRIPTOR_SOURCES if source != "curated"},
+    "all": tuple(DESCRIPTOR_SOURCES),
+}
+
+_add_distinct(REGRESSION, _feature_sweep("neural_fs", {"model.kind": "neural"}))
+_add_distinct(REGRESSION, _dense_block_sweep("graph", {"model.kind": "graph"}))
+_add_distinct(
+    REGRESSION, _dense_block_sweep("graph_octant_tox21", {"model.kind": "graph", **OCT_TOX})
+)
+_add_distinct(TDI, _feature_sweep("curve_fs", TDI["curve_heads"]))
+_add_distinct(TDI, _dense_block_sweep("curve_graph_heads", TDI["curve_graph_heads"]))
+for _set, _sources in DESCRIPTOR_SETS.items():
+    REGRESSION[f"neural_cond_descriptor_{_set}"] = {
+        "model.kind": "neural",
+        "conditioning.strategy": "descriptor",
+        "conditioning.descriptor_sources": _sources,
+    }
+    TDI[f"curve_descriptor_{_set}"] = {
+        **TDI["curve_descriptor"],
+        "model.curve.descriptor_sources": _sources,
+    }
+    TDI[f"curve_graph_descriptor_{_set}"] = {
+        **TDI["curve_graph_descriptor"],
+        "model.curve.descriptor_sources": _sources,
+    }
+
+#: Fields no entry above varies: input width and optimiser batch of the neural network and the
+#: curve, the learned enzyme-embedding width, the graph warmup, and the graph-curve encoder depth.
+REGRESSION.update(
+    _ofat(
+        "neural",
+        {"model.kind": "neural"},
+        {"model.neural.batch_size": [128, 512], "features.fingerprint_bits": [1024, 2048]},
+    )
+)
+REGRESSION.update(
+    _ofat(
+        "neural_cond_embedding",
+        {"model.kind": "neural", "conditioning.strategy": "embedding"},
+        {"conditioning.embedding_dim": [4, 16]},
+    )
+)
+REGRESSION.update(_ofat("tfm", {"model.kind": "tfm"}, {"features.fingerprint_bits": [1024, 2048]}))
+REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, {"model.graph.warmup_epochs": [0, 5]}))
+TDI.update(_ofat("curve_heads", TDI["curve_heads"], {"model.curve.batch_size": [128, 512]}))
+TDI.update(
+    _ofat("curve_graph_heads", TDI["curve_graph_heads"], {"model.curve.graph_depth": [2, 4]})
+)
 
 
 def _panel_grid() -> dict[str, dict]:
@@ -826,6 +919,26 @@ TDI.update(
 #: options and not repeated old ones. Configs measured earlier on this revision are skipped by
 #: ``run_phase`` and are not listed.
 UNMEASURED_REGRESSION = (
+    "neural_fs_fp",
+    "neural_fs_dense",
+    "neural_fs_dense_ion",
+    "neural_fs_dense_emb",
+    "neural_fs_emb",
+    "neural_fs_full",
+    "neural_cond_embedding_embedding_dim4",
+    "neural_cond_embedding_embedding_dim16",
+    "neural_cond_descriptor_pocket",
+    "neural_cond_descriptor_zscales",
+    "neural_cond_descriptor_srs",
+    "neural_cond_descriptor_site",
+    "neural_cond_descriptor_ctd",
+    "neural_cond_descriptor_all",
+    "neural_batch_size128",
+    "neural_batch_size512",
+    "neural_fingerprint_bits1024",
+    "neural_fingerprint_bits2048",
+    "tfm_fingerprint_bits1024",
+    "tfm_fingerprint_bits2048",
     "tfm_fs_fp",
     "tfm_fs_dense",
     "tfm_fs_fp_dense",
@@ -840,6 +953,21 @@ UNMEASURED_REGRESSION = (
     "neural_learning_rate0p0003",
     "neural_learning_rate0p003",
     "neural_epochs100",
+    "graph_fs_none",
+    "graph_fs_ionization",
+    "graph_fs_mechanistic",
+    "graph_fs_mechanistic_ionization",
+    "graph_fs_physchem",
+    "graph_fs_physchem_ionization",
+    "graph_octant_tox21_fs_none",
+    "graph_octant_tox21_fs_ionization",
+    "graph_octant_tox21_fs_mechanistic",
+    "graph_octant_tox21_fs_mechanistic_ionization",
+    "graph_octant_tox21_fs_physchem",
+    "graph_octant_tox21_fs_physchem_ionization",
+    "graph_octant_tox21_fs_physchem_mechanistic_ionization",
+    "graph_warmup_epochs0",
+    "graph_warmup_epochs5",
     "graph_chembl_dist0",
     "graph_chembl_dist3",
     "graph_chembl_dist3_target_lo",
@@ -892,6 +1020,20 @@ UNMEASURED_REGRESSION = (
 #: The whole TDI track: no TDI config has a completed row at any revision. MLP-backbone curves
 #: first, then the graph-backbone curves.
 UNMEASURED_TDI = (
+    "curve_fs_fp",
+    "curve_fs_dense",
+    "curve_fs_dense_ion",
+    "curve_fs_dense_emb",
+    "curve_fs_emb",
+    "curve_fs_full",
+    "curve_descriptor_pocket",
+    "curve_descriptor_zscales",
+    "curve_descriptor_srs",
+    "curve_descriptor_site",
+    "curve_descriptor_ctd",
+    "curve_descriptor_all",
+    "curve_heads_batch_size128",
+    "curve_heads_batch_size512",
     "curve_heads",
     "curve_descriptor",
     "curve_film",
@@ -907,6 +1049,21 @@ UNMEASURED_TDI = (
     "curve_epochs100",
     "curve_screen_noise0p05",
     "curve_screen_noise0p2",
+    "curve_graph_heads_fs_none",
+    "curve_graph_heads_fs_ionization",
+    "curve_graph_heads_fs_mechanistic",
+    "curve_graph_heads_fs_mechanistic_ionization",
+    "curve_graph_heads_fs_physchem",
+    "curve_graph_heads_fs_physchem_ionization",
+    "curve_graph_heads_fs_physchem_mechanistic_ionization",
+    "curve_graph_descriptor_pocket",
+    "curve_graph_descriptor_zscales",
+    "curve_graph_descriptor_srs",
+    "curve_graph_descriptor_site",
+    "curve_graph_descriptor_ctd",
+    "curve_graph_descriptor_all",
+    "curve_graph_heads_graph_depth2",
+    "curve_graph_heads_graph_depth4",
     "curve_graph_heads",
     "curve_graph_chemeleon_heads",
     "curve_graph_descriptor",
