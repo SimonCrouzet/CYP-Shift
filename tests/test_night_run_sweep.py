@@ -53,6 +53,10 @@ def test_the_priority_entries_exist_and_are_unique():
     assert len(set(night_run.PRIORITY_REGRESSION)) == len(night_run.PRIORITY_REGRESSION)
     assert set(night_run.PRIORITY_REGRESSION) <= set(night_run.REGRESSION)
     assert set(night_run.PRIORITY_TDI) <= set(night_run.TDI)
+    assert len(set(night_run.PANEL_FOLLOW_UPS)) == len(night_run.PANEL_FOLLOW_UPS)
+    assert set(night_run.PANEL_FOLLOW_UPS) <= set(night_run.REGRESSION)
+    # the two regression tiers partition the review's priority questions: none dropped, none twice
+    assert not set(night_run.PRIORITY_REGRESSION) & set(night_run.PANEL_FOLLOW_UPS)
 
 
 def _grid_cells() -> dict[tuple[str, str, str], dict]:
@@ -110,10 +114,10 @@ def test_the_combined_chembl_recipe_is_the_grid_corner_plus_chembl_only():
         assert combined.multifidelity.screen_strategy == "log2fc_response"
 
 
-def test_the_learning_rate_sweep_brackets_the_default_for_both_encoders():
+def test_the_learning_rate_sweep_brackets_the_default_for_each_base():
     default = ExperimentConfig().model.graph.learning_rate
     assert default == 0.0  # chemprop's own 1e-3 peak; the entries below lower it
-    for base in ("graph", "graph_chemeleon"):
+    for base in ("graph", "graph_chemeleon", "graph_octant_tox21"):
         rates = {
             _resolved(night_run.REGRESSION[f"{base}_learning_rate{tag}"]).model.graph.learning_rate
             for tag in ("0p0001", "0p0003")
@@ -148,6 +152,7 @@ def test_main_runs_the_priority_entries_first_and_writes_the_regression_candidat
     assert calls == [
         ("reg", night_run.PRIORITY_REGRESSION),
         ("tdi", night_run.PRIORITY_TDI),
+        ("reg", night_run.PANEL_FOLLOW_UPS),
         ("reg", tuple(night_run.REGRESSION)),
         ("write", "regression"),
         ("tdi", tuple(night_run.TDI)),

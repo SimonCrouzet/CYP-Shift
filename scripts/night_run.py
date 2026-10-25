@@ -769,6 +769,9 @@ REGRESSION.update(
 GRAPH_LR = {"model.graph.learning_rate": [0.0001, 0.0003]}
 REGRESSION.update(_ofat("graph", {"model.kind": "graph"}, GRAPH_LR))
 REGRESSION.update(_ofat("graph_chemeleon", {"model.kind": "graph", **CHEMELEON}, GRAPH_LR))
+# ... and on the best recipe measured so far (Octant + active-only Tox21 auxiliaries), so the
+# unexplored lever is applied to the incumbent and not only to the plain references.
+REGRESSION.update(_ofat("graph_octant_tox21", {"model.kind": "graph", **OCT_TOX}, GRAPH_LR))
 
 
 #: Name markers for the genuinely-untested config axes this run was reordered to measure
@@ -816,13 +819,15 @@ TDI.update(
     )
 )
 
-#: Run first, ahead of the curated order, because they answer the questions the 2026-10-24 review
-#: put at the top: the reference points (plain graph, pretrained graph, and the best submitted
-#: recipe), the 2x2x2 panel grid with its readout controls, the matched screen-off controls, the
-#: loss, auxiliary budget and screen weight on the panel, the fine-tuning learning rate, the
-#: combined ChEMBL recipe with its no-ChEMBL control, and the graph-backbone curve variants. An
-#: interrupted run then spends its window on these rather than on the older feature and boosted
-#: questions.
+#: Run first, ahead of the curated order. The first nine entries are the reference points (plain
+#: graph, pretrained graph, the best submitted recipe) and the panel grid cells that were
+#: measured on revision 744efbd; a resume under the same ``CYP_REV`` skips them. After them come
+#: the levers that no sweep has measured yet and that are cheap (2-60 min on an L4): the graph
+#: fine-tuning learning rate on the plain, pretrained and best-recipe graph, and the graph-backbone
+#: curve variants. The last three are the controls that decide whether the panel and the
+#: per-measurement heads do anything (screen off; readout width matched to the shared FFN; one
+#: head per target), because the grid alone left per-measurement heads worse by about 0.05 with a
+#: 29x larger readout. Order inside the tier is by cost.
 PRIORITY_REGRESSION = (
     "graph",
     "graph_chemeleon",
@@ -833,36 +838,45 @@ PRIORITY_REGRESSION = (
     "graph_panel_chemeleon_measurement_heads",
     "graph_panel_log2fc",
     "graph_panel_log2fc_measurement_heads",
-    "graph_panel_chemeleon_log2fc",
-    "graph_panel_chemeleon_log2fc_measurement_heads",
-    "graph_panel_per_target_heads",
-    "graph_panel_measurement_heads_ffn128",
-    "graph_panel_no_screen",
-    "graph_panel_chemeleon_no_screen",
-    "graph_panel_mae",
-    "graph_panel_chemeleon_mae",
-    "graph_panel_per_endpoint_budget0p25",
-    "graph_panel_per_endpoint_budget0p5",
-    "graph_panel_screen_weight0p1",
-    "graph_panel_screen_weight0p6",
     "graph_learning_rate0p0001",
     "graph_learning_rate0p0003",
-    "graph_chemeleon_learning_rate0p0001",
-    "graph_chemeleon_learning_rate0p0003",
-    "graph_panel_chemeleon_log2fc_measurement_heads_chembl",
-    "graph_panel_chemeleon_log2fc_measurement_heads_chembl_budget_half",
+    "graph_octant_tox21_learning_rate0p0001",
+    "graph_octant_tox21_learning_rate0p0003",
     "curve_graph",
-    "curve_graph_chemeleon",
     "curve_graph_film",
     "curve_graph_learning_rate0p0003",
     "curve_graph_epochs100",
+    "graph_chemeleon_learning_rate0p0001",
+    "graph_chemeleon_learning_rate0p0003",
+    "curve_graph_chemeleon",
     "curve_graph_chemeleon_frozen",
+    "graph_panel_no_screen",
+    "graph_panel_measurement_heads_ffn128",
+    "graph_panel_per_target_heads",
 )
 #: A representative TDI comparison, also run early: the fingerprint-MLP curve against the same
 #: curve head on a random and on a CheMeleon graph backbone.
 PRIORITY_TDI = ("curve_heads", "curve_graph_heads", "curve_graph_chemeleon_heads")
+#: Further levers stacked on the panel, 90-380 min each on an L4. Run after the priority TDI
+#: comparison and ahead of the older configs, but behind the controls above: the review asks for
+#: these only on a panel recipe that looks promising, and the grid so far has the panel level with
+#: the plain graph (0.668 against 0.675) and behind the Octant/Tox21 graph (0.655). The sweep is a
+#: static queue, so stop the run before this tier if the controls show the panel earns nothing.
+PANEL_FOLLOW_UPS = (
+    "graph_panel_mae",
+    "graph_panel_per_endpoint_budget0p25",
+    "graph_panel_per_endpoint_budget0p5",
+    "graph_panel_screen_weight0p1",
+    "graph_panel_screen_weight0p6",
+    "graph_panel_chemeleon_no_screen",
+    "graph_panel_chemeleon_mae",
+    "graph_panel_chemeleon_log2fc",
+    "graph_panel_chemeleon_log2fc_measurement_heads",
+    "graph_panel_chemeleon_log2fc_measurement_heads_chembl",
+    "graph_panel_chemeleon_log2fc_measurement_heads_chembl_budget_half",
+)
 for _name, _pool in (
-    *((n, REGRESSION) for n in PRIORITY_REGRESSION),
+    *((n, REGRESSION) for n in (*PRIORITY_REGRESSION, *PANEL_FOLLOW_UPS)),
     *((n, TDI) for n in PRIORITY_TDI),
 ):
     if _name not in _pool:  # fail at import, not hours into a run
@@ -1168,12 +1182,14 @@ def main() -> None:
     )
 
     logger.info(
-        "=== Priority: %d regression + %d TDI configs first ===",
+        "=== Priority: %d regression + %d TDI configs, then %d panel follow-ups ===",
         len(PRIORITY_REGRESSION),
         len(PRIORITY_TDI),
+        len(PANEL_FOLLOW_UPS),
     )
     run_phase("reg", {name: REGRESSION[name] for name in PRIORITY_REGRESSION}, SEEDS)
     run_phase("tdi", {name: TDI[name] for name in PRIORITY_TDI}, SEEDS)
+    run_phase("reg", {name: REGRESSION[name] for name in PANEL_FOLLOW_UPS}, SEEDS)
 
     logger.info(
         "=== Regression: %d configs, %d-fold CV x %d ===", len(REGRESSION), N_FOLDS, len(SEEDS)
