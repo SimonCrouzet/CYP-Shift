@@ -149,6 +149,23 @@ def fit_screen_model(
     if wide.empty:
         raise ValueError("no trainable compound has a complete screen row")
 
+    return _fit_network(wide, enzymes, strategy, n_bits, hidden, seed, prefix="screen")
+
+
+def _fit_network(
+    wide: pd.DataFrame,
+    enzymes: list[str],
+    strategy: str,
+    n_bits: int,
+    hidden: int,
+    seed: int,
+    prefix: str,
+) -> ScreenModel:
+    """Fit the helper network on a complete compound x enzyme table and standardise its output.
+
+    ``wide`` has a ``SMILES`` column and one column per entry of ``enzymes``; ``prefix`` names the
+    output columns (``<prefix>_predicted_<enzyme>`` / ``<prefix>_embedding_<i>``).
+    """
     x = featurise(wide["SMILES"].tolist(), n_bits=n_bits)
     y = wide[enzymes].to_numpy(dtype=float)
     # Early stopping holds back 10% as a validation split, which sklearn refuses when
@@ -167,23 +184,89 @@ def fit_screen_model(
     )
     network.fit(x, y)
     logger.info(
-        "fitted %s screen_model on %d compounds over %d enzymes",
+        "fitted %s %s helper model on %d compounds over %d enzymes",
+        prefix,
         strategy,
         len(wide),
         len(enzymes),
     )
     columns = (
-        tuple(f"screen_predicted_{e}" for e in enzymes)
+        tuple(f"{prefix}_predicted_{e}" for e in enzymes)
         if strategy == "predicted_label"
-        else tuple(f"screen_embedding_{i}" for i in range(hidden))
+        else tuple(f"{prefix}_embedding_{i}" for i in range(hidden))
     )
-    screen_model = ScreenModel(network, strategy, n_bits, columns)
+    helper = ScreenModel(network, strategy, n_bits, columns)
     # Standardise on the training compounds only, for the same reason the network is
     # fitted on them only.
-    raw = screen_model._raw(wide["SMILES"].tolist())
-    screen_model.centre = raw.mean(axis=0)
-    screen_model.spread = raw.std(axis=0) + 1e-6
-    return screen_model
+    raw = helper._raw(wide["SMILES"].tolist())
+    helper.centre = raw.mean(axis=0)
+    helper.spread = raw.std(axis=0) + 1e-6
+    return helper
+
+
+#: Output-column prefix of the qHTS max-response helper model.
+RESPONSE_PREFIX = "qhts_response"
+
+
+def fit_response_model(
+    rows: pd.DataFrame, n_bits: int = 2048, hidden: int = DEFAULT_EMBEDDING_WIDTH, seed: int = 0
+) -> ScreenModel:
+    """Fit a helper model on the qHTS max-response rows and return it as an input-feature block.
+
+    ``rows`` is the auxiliary observation table restricted to the max-response assay: one row per
+    (compound, enzyme) with the 0-1 response in ``value``. The network maps a structure to the
+    response each enzyme would show, and its standardised output is handed to a model that has no
+    response head as extra columns (``predicted_label``), the same route the single-concentration
+    screen takes. The response rows come from the auxiliary loaders, which deduplicate against the
+    whole challenge set, so no challenge compound is in the helper's training data.
+
+    Only compounds with a reading for every enzyme present are used: a multi-output network needs
+    a complete target row.
+
+    Raises:
+        ValueError: When ``rows`` is empty or no compound has a complete row.
+    """
+    if rows.empty:
+        raise ValueError("no max-response rows to fit the response helper model on")
+    wide = rows.pivot_table(index="SMILES", columns="target", values="value", aggfunc="mean")
+    enzymes = sorted(wide.columns)
+    wide = wide.dropna(subset=enzymes).reset_index()
+    if wide.empty:
+        raise ValueError("no compound has a max-response reading for every enzyme")
+    return _fit_network(
+        wide[["SMILES", *enzymes]],
+        enzymes,
+        "predicted_label",
+        n_bits,
+        hidden,
+        seed,
+        prefix=RESPONSE_PREFIX,
+    )
+
+
+@dataclass
+class ScreenModelStack:
+    """Several helper models whose standardised outputs form one extra feature block."""
+
+    models: tuple[ScreenModel, ...]
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return tuple(column for model in self.models for column in model.columns)
+
+    def transform(self, smiles: list[str]) -> NDArray[np.float32]:
+        return np.concatenate([model.transform(list(smiles)) for model in self.models], axis=1)
+
+    def __call__(self, smiles: list[str]) -> NDArray[np.float32]:
+        return self.transform(list(smiles))
+
+
+def stack_helper_models(*models: ScreenModel | None) -> ScreenModel | ScreenModelStack | None:
+    """The one helper to hand a model: ``None``, the single model, or their concatenation."""
+    present = tuple(model for model in models if model is not None)
+    if not present:
+        return None
+    return present[0] if len(present) == 1 else ScreenModelStack(present)
 
 
 def screen_model_frame(screen_model: ScreenModel, smiles: list[str]) -> pd.DataFrame:

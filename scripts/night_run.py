@@ -667,14 +667,21 @@ def _resolved_key(overrides: dict) -> str:
     return repr(dataclasses.asdict(config))
 
 
-def _add_distinct(pool: dict[str, dict], new: dict[str, dict]) -> None:
-    """Add the entries whose resolved settings no declared entry already has."""
-    declared = {_resolved_key(overrides) for overrides in pool.values()}
+def _add_distinct(pool: dict[str, dict], new: dict[str, dict]) -> list[str]:
+    """Add the entries whose resolved settings no declared entry already has.
+
+    Returns, for each entry of ``new`` in order, the name under which its settings are declared:
+    its own, or the earlier entry it duplicates.
+    """
+    declared = {_resolved_key(overrides): name for name, overrides in pool.items()}
+    names = []
     for name, overrides in new.items():
         key = _resolved_key(overrides)
         if key not in declared:
             pool[name] = overrides
-            declared.add(key)
+            declared[key] = name
+        names.append(declared[key])
+    return names
 
 
 #: The dense blocks a graph encoder reads beside the molecular graph (as ``x_d``). The Morgan
@@ -725,6 +732,58 @@ for _set, _sources in DESCRIPTOR_SETS.items():
         **TDI["curve_graph_descriptor"],
         "model.curve.descriptor_sources": _sources,
     }
+
+#: The qHTS panel as a data-side axis, crossed with the model families that can read it: Veith
+#: potency with its inactives kept as censored rows (the default), potency from the active
+#: compounds only, the 0-1 max-response alone, and both quantities (with and without the
+#: inactives). The graph reads the max-response through response heads; boosted, neural and the
+#: fingerprint curve read it through a helper model's predicted response (see
+#: ``cypshift.data.screen_model.fit_response_model``).
+QHTS_VARIANTS = {
+    "veith_pic50": {"sources.veith": True},
+    "veith_pic50_active_only": {
+        "sources.veith": True,
+        "auxiliary.include_qhts_inactives": False,
+    },
+    "veith_max_response": {
+        "sources.veith": True,
+        "sources.qhts_representation": "max_response",
+    },
+    "veith_both": {"sources.veith": True, "sources.qhts_representation": "both"},
+    "veith_both_active_only": {
+        "sources.veith": True,
+        "sources.qhts_representation": "both",
+        "auxiliary.include_qhts_inactives": False,
+    },
+}
+
+
+def _qhts_grid(pool: dict[str, dict], bases: tuple[str, ...]) -> list[str]:
+    """Every (base, qHTS variant) cell of ``pool``, as the declared names, cheapest base first."""
+    names: list[str] = []
+    for base in bases:
+        cells = {
+            f"{base}_{tag}": {**pool[base], **variant} for tag, variant in QHTS_VARIANTS.items()
+        }
+        names += _add_distinct(pool, cells)
+    return list(dict.fromkeys(names))
+
+
+QHTS_REGRESSION = tuple(
+    _qhts_grid(
+        REGRESSION,
+        (
+            "neural",
+            "neural_octant_tox21",
+            "boosted",
+            "boosted_octant_tox21",
+            "graph",
+            "graph_octant_tox21",
+            "graph_chemeleon",
+        ),
+    )
+)
+QHTS_TDI = tuple(_qhts_grid(TDI, ("curve_heads",)))
 
 #: Fields no entry above varies: input width and optimiser batch of the neural network and the
 #: curve, the learned enzyme-embedding width, the graph warmup, and the graph-curve encoder depth.
@@ -1406,6 +1465,14 @@ def main() -> None:
         NUM_WORKERS,
         members,
     )
+
+    logger.info(
+        "=== qHTS representation x model family: %d regression, %d TDI ===",
+        len(QHTS_REGRESSION),
+        len(QHTS_TDI),
+    )
+    run_phase("reg", {name: REGRESSION[name] for name in QHTS_REGRESSION}, SEEDS)
+    run_phase("tdi", {name: TDI[name] for name in QHTS_TDI}, SEEDS)
 
     logger.info(
         "=== Never measured first: %d regression, %d TDI, then %d slow regression ===",

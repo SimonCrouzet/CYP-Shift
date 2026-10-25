@@ -49,6 +49,54 @@ def test_no_two_entries_resolve_to_the_same_settings_beyond_the_known_pairs():
     assert duplicates <= KNOWN_DUPLICATES, duplicates - KNOWN_DUPLICATES
 
 
+@pytest.mark.parametrize(
+    ("pool", "bases"),
+    [
+        (
+            "REGRESSION",
+            (
+                "neural",
+                "neural_octant_tox21",
+                "boosted",
+                "boosted_octant_tox21",
+                "graph",
+                "graph_octant_tox21",
+                "graph_chemeleon",
+            ),
+        ),
+        ("TDI", ("curve_heads",)),
+    ],
+)
+def test_the_qhts_representation_is_crossed_with_every_family_that_can_read_it(pool, bases):
+    declared = getattr(night_run, pool)
+    queued = set(getattr(night_run, "QHTS_REGRESSION" if pool == "REGRESSION" else "QHTS_TDI"))
+    assert queued <= set(declared)
+    for base in bases:
+        cells = set()
+        for name in queued:
+            config = _resolved(declared[name])
+            reference = _resolved(declared[base])
+            same_base = (
+                config.model.kind == reference.model.kind
+                and config.sources.octant == reference.sources.octant
+                and config.model.graph.pretraining == reference.model.graph.pretraining
+            )
+            if same_base and config.sources.veith:
+                cells.add(
+                    (
+                        config.sources.qhts_representation,
+                        config.auxiliary.include_qhts_inactives,
+                    )
+                )
+        assert cells == {
+            ("pic50", True),
+            ("pic50", False),
+            ("max_response", True),
+            ("both", True),
+            ("both", False),
+        }, (base, cells)
+
+
 def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
     fast, slow = night_run.UNMEASURED_REGRESSION, night_run.UNMEASURED_REGRESSION_SLOW
     assert len(set(fast)) == len(fast)
@@ -215,6 +263,8 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     night_run.main()
 
     assert calls == [
+        ("reg", night_run.QHTS_REGRESSION),
+        ("tdi", night_run.QHTS_TDI),
         ("reg", night_run.UNMEASURED_REGRESSION),
         ("tdi", night_run.UNMEASURED_TDI),
         ("reg", night_run.UNMEASURED_REGRESSION_SLOW),

@@ -22,13 +22,19 @@ from cypshift.data.assembly import (
 )
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
-from cypshift.data.screen_model import SCREEN_MODEL_STRATEGIES, fit_screen_model
+from cypshift.data.screen_model import (
+    SCREEN_MODEL_STRATEGIES,
+    fit_response_model,
+    fit_screen_model,
+    stack_helper_models,
+)
 from cypshift.data.splits import similarity_matched_holdout, stratified_scaffold_folds
 from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
+    RESPONSE_FEATURE_KINDS,
     SCREEN_STRATEGIES,
     ExperimentConfig,
 )
@@ -396,7 +402,24 @@ def assemble_training_data(
                 retained, screen_labels=labels, tdi=tdi, weights=weights
             )
 
-    auxiliary = auxiliary_observations(config, retained)
+    if response_feature_route(config):
+        auxiliary, response = auxiliary_frames(config, retained)
+        if response.empty:
+            logger.warning(
+                "sources.qhts_representation=%r was requested but no max-response rows were "
+                "realised; the response helper model is skipped",
+                config.sources.qhts_representation,
+            )
+        else:
+            response_model = fit_response_model(
+                response,
+                n_bits=config.features.fingerprint_bits,
+                hidden=config.multifidelity.screen_model_hidden,
+                seed=config.data.seed,
+            )
+            screen_model = stack_helper_models(screen_model, response_model)
+    else:
+        auxiliary = auxiliary_observations(config, retained)
     if not auxiliary.empty:
         # Default the source for any frame that predates the column (external or test frames);
         # it is only read under source-stratified conditioning, where real sources are present.
@@ -598,8 +621,29 @@ def pool_same_assay(data: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def response_feature_route(config: ExperimentConfig) -> bool:
+    """Whether the qHTS max-response reaches the model as helper-model features.
+
+    True for the model kinds without a response head when ``sources.qhts_representation`` asks
+    for the max-response; the graph consumes it through its own response head instead.
+    """
+    return (
+        config.sources.veith
+        and config.sources.qhts_representation in ("max_response", "both")
+        and config.model.kind in RESPONSE_FEATURE_KINDS
+    )
+
+
 def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> pd.DataFrame:
-    """Weighted training rows from auxiliary enzymes, per the auxiliary config.
+    """The weighted auxiliary training rows (:func:`auxiliary_frames`, first frame)."""
+    return auxiliary_frames(config, retained)[0]
+
+
+def auxiliary_frames(
+    config: ExperimentConfig, retained: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Weighted training rows from auxiliary enzymes, per the auxiliary config, and the qHTS
+    max-response rows held apart for a helper model.
 
     Selects enzymes whose binding site is within ``auxiliary.max_distance`` of a scored
     one, pulls their cleaned ChEMBL potencies, and weights each enzyme's rows by
@@ -607,9 +651,11 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     ``target``; the model's encoding vocabulary is widened to fit them while predictions
     stay on the four scored endpoints.
 
-    Returns an empty frame -- and the run trains on the challenge data alone -- when the
+    Returns an empty first frame -- and the run trains on the challenge data alone -- when the
     config admits nothing or the data is unreachable (no network and no cache), so a run
-    never fails for lack of an auxiliary source.
+    never fails for lack of an auxiliary source. The second frame is empty unless the model
+    reads the qHTS max-response through a helper model (:func:`response_feature_route`); then it
+    holds the response rows and the first frame holds none of them.
     """
     from cypshift.config import ISOFORMS
     from cypshift.data import chembl, novartis, octant, sair, tox21, veith
@@ -651,7 +697,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
     empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
     if not datasets:
-        return empty
+        return empty, empty
 
     # Deduplicate against the WHOLE challenge -- every train and test compound, not just
     # this split's retained rows -- so a source row matching a held-out or blinded-test
@@ -679,7 +725,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
     except Exception as error:  # noqa: BLE001 -- any failure means "no relatives"
         logger.info("auxiliary relative selection unavailable (%s)", error)
     if not to_pull:
-        return empty
+        return empty, empty
 
     frames = []
     # Track each requested source's outcome so a named source-ablation that realised no
@@ -791,9 +837,15 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
                 "auxiliary source %r was requested but contributed nothing (%s)", name, reason
             )
     if not frames:
-        return empty
+        return empty, empty
     out = pd.concat(frames, ignore_index=True)
-    if config.auxiliary.per_endpoint_budget > 0:
+    response = empty
+    if response_feature_route(config):
+        # Rows of the response assay train the helper model, not the main model, so they are
+        # held out of the table the per-endpoint budget and the model see.
+        is_response = out["assay"] == RESPONSE_ASSAY
+        response, out = out[is_response], out[~is_response]
+    if config.auxiliary.per_endpoint_budget > 0 and not out.empty:
         out = cap_per_endpoint_budget(out, retained, config.auxiliary.per_endpoint_budget)
     # The realised inventory: how many rows actually entered, by source chemistry and
     # censoring, so a run is judged on what it trained on rather than on what it requested.
@@ -808,7 +860,7 @@ def auxiliary_observations(config: ExperimentConfig, retained: pd.DataFrame) -> 
         out["target"].nunique(),
         inventory.to_string(),
     )
-    return out
+    return out, response
 
 
 def save_run_bundle(

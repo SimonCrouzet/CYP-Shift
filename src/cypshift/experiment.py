@@ -110,8 +110,14 @@ ENSEMBLE_STRATEGIES = ("reseed", "bagging")
 GRAPH_PRETRAINING = ("none", "chemeleon", "mammal")
 
 #: How the Veith qHTS panel is represented: a pooled pIC50, or a 0-1 max-response on its own
-#: assay (which the graph consumes through a separate head).
+#: assay. The graph consumes the max-response through a separate response head; the model kinds in
+#: :data:`RESPONSE_FEATURE_KINDS` consume it as input features from a helper model fitted on it.
 QHTS_REPRESENTATIONS = ("pic50", "max_response", "both")
+
+#: Model kinds that take the qHTS max-response as input features (a helper model fitted on the
+#: response rows, see :mod:`cypshift.data.screen_model`). The curve qualifies with its
+#: fingerprint backbone only: the graph backbone has no extra-feature input.
+RESPONSE_FEATURE_KINDS = ("boosted", "neural", "curve")
 
 #: How auxiliary rows are matched against the challenge set for dedup: exact canonical SMILES,
 #: or the coarser InChIKey connectivity block.
@@ -616,13 +622,17 @@ class ExperimentConfig:
         for value, allowed, name in checks:
             if value not in allowed:
                 raise ValueError(f"{name}={value!r} is not one of {allowed}")
-        if self.sources.qhts_representation in ("max_response", "both") and not (
-            self.model.kind == "graph" and self.sources.veith
-        ):
-            raise ValueError(
-                f"sources.qhts_representation={self.sources.qhts_representation!r} needs a model "
-                "that can consume a response head: model.kind='graph' with sources.veith on"
+        if self.sources.qhts_representation in ("max_response", "both"):
+            feature_route = self.model.kind in RESPONSE_FEATURE_KINDS and not (
+                self.model.kind == "curve" and self.model.curve.backbone == "graph"
             )
+            if not (self.sources.veith and (self.model.kind == "graph" or feature_route)):
+                raise ValueError(
+                    f"sources.qhts_representation={self.sources.qhts_representation!r} needs "
+                    "sources.veith and either model.kind='graph' (response head) or one of "
+                    f"{RESPONSE_FEATURE_KINDS} (helper-model features; a curve needs the "
+                    "'mlp' backbone)"
+                )
         if self.multifidelity.screen_strategy in ("response_head", "log2fc_response") and (
             self.model.kind != "graph"
         ):

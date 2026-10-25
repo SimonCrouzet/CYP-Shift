@@ -222,6 +222,39 @@ class TestCapabilityContract:
         with pytest.raises(ValueError):
             config.validate()
 
+    @pytest.mark.parametrize("kind", ["boosted", "neural", "curve"])
+    @pytest.mark.parametrize("representation", ["max_response", "both"])
+    def test_max_response_is_a_data_side_choice_for_models_without_a_response_head(
+        self, kind, representation
+    ):
+        config = ExperimentConfig.load()
+        for key, value in {
+            "model.kind": kind,
+            "sources.veith": True,
+            "sources.qhts_representation": representation,
+        }.items():
+            config.override(key, value)
+        config.validate()  # no raise
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"model.kind": "boosted", "sources.qhts_representation": "max_response"},
+            {
+                "model.kind": "curve",
+                "model.curve.backbone": "graph",
+                "sources.veith": True,
+                "sources.qhts_representation": "max_response",
+            },
+        ],
+    )
+    def test_max_response_still_needs_veith_and_a_model_that_can_read_it(self, overrides):
+        config = ExperimentConfig.load()
+        for key, value in overrides.items():
+            config.override(key, value)
+        with pytest.raises(ValueError, match="qhts_representation"):
+            config.validate()
+
     def test_supported_combinations_still_validate(self):
         for overrides in (
             {"model.kind": "graph"},

@@ -6,9 +6,12 @@ import pytest
 
 from cypshift.data.screen_model import (
     SCREEN_MODEL_STRATEGIES,
+    ScreenModelStack,
+    fit_response_model,
     fit_screen_model,
     hidden_activations,
     screen_targets,
+    stack_helper_models,
 )
 from cypshift.features.molecular import featurise
 
@@ -126,3 +129,65 @@ def test_hidden_activations_stop_before_the_output_layer(screen, trainable):
     before it."""
     screen_model = fit_screen_model(screen, trainable, "embedding", n_bits=256, hidden=16)
     assert screen_model.transform(SMILES).shape[1] == 16
+
+
+def _response_rows(enzymes=("CYP2C9", "CYP2D6", "CYP3A4")):
+    rows = []
+    for index, smiles in enumerate(SMILES):
+        for offset, enzyme in enumerate(enzymes):
+            rows.append(
+                {
+                    "SMILES": smiles,
+                    "target": enzyme,
+                    "value": ((index * 7 + offset * 3) % 10) / 10,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_response_model_has_one_named_column_per_enzyme_and_standardised_output():
+    model = fit_response_model(_response_rows(), n_bits=64)
+    assert model.columns == (
+        "qhts_response_predicted_CYP2C9",
+        "qhts_response_predicted_CYP2D6",
+        "qhts_response_predicted_CYP3A4",
+    )
+    out = model(SMILES)
+    assert out.shape == (len(SMILES), 3)
+    assert np.allclose(out.mean(axis=0), 0.0, atol=1e-3)  # standardised on its training compounds
+
+
+def test_response_model_uses_only_compounds_with_a_reading_for_every_enzyme():
+    rows = _response_rows()
+    rows = rows[~((rows["SMILES"] == "CCO") & (rows["target"] == "CYP2D6"))]
+    # a compound missing one enzyme is dropped from the fit, the model still fits and predicts it
+    model = fit_response_model(rows, n_bits=64)
+    assert model(["CCO"]).shape == (1, 3)
+
+
+def test_response_model_refuses_no_rows_and_no_complete_compound():
+    with pytest.raises(ValueError, match="no max-response rows"):
+        fit_response_model(_response_rows().iloc[:0])
+    disjoint = pd.DataFrame(
+        {
+            "SMILES": ["CCO", "CCN"],
+            "target": ["CYP2C9", "CYP2D6"],
+            "value": [0.1, 0.2],
+        }
+    )
+    with pytest.raises(ValueError, match="every enzyme"):
+        fit_response_model(disjoint)
+
+
+def test_helpers_stack_into_one_extra_block(screen, trainable):
+    screen_model = fit_screen_model(screen, trainable, "predicted_label", n_bits=64)
+    response = fit_response_model(_response_rows(), n_bits=64)
+    assert stack_helper_models() is None
+    assert stack_helper_models(None, screen_model) is screen_model
+    stack = stack_helper_models(screen_model, response)
+    assert isinstance(stack, ScreenModelStack)
+    assert stack.columns == screen_model.columns + response.columns
+    assert stack(SMILES).shape == (len(SMILES), len(stack.columns))
+    assert np.allclose(stack(SMILES)[:, : len(screen_model.columns)], screen_model(SMILES))
+    # a stack is accepted wherever featurise takes an ``extra`` block
+    assert featurise(SMILES, n_bits=64, extra=stack).shape[1] >= len(stack.columns)

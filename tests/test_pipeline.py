@@ -349,6 +349,40 @@ def test_auxiliary_observations_are_weighted_and_appended(monkeypatch):
     assert (relative["conf_low"] == relative["value"]).all()
 
 
+def test_response_rows_go_to_a_helper_model_for_models_without_a_response_head(monkeypatch):
+    """The graph keeps the max-response rows in its table (response head); boosted, neural and the
+    fingerprint curve get them as a separate frame for the helper model and none in the table."""
+    import cypshift.pipeline as pipe
+    from cypshift.data.assembly import RESPONSE_ASSAY
+
+    monkeypatch.setattr("cypshift.data.sequences.sequence_for", lambda name, *a, **k: "M")
+    monkeypatch.setattr("cypshift.data.auxiliary.site_distances", lambda scored, cands: None)
+    monkeypatch.setattr("cypshift.data.auxiliary.select_auxiliaries", lambda *a, **k: [])
+
+    def fake_veith(enzyme, smiles, *a, representation="pic50", **k):
+        value = 0.4 if representation == "max_response" else 5.0
+        return pd.DataFrame({"SMILES": ["CCO", "CCN"], "value": [value] * 2, "target": enzyme})
+
+    monkeypatch.setattr("cypshift.data.veith.load_auxiliary", fake_veith)
+    for kind in ("graph", "boosted", "neural", "curve"):
+        config = ExperimentConfig()
+        config.override("model.kind", kind)
+        config.sources.veith = True
+        config.override("sources.qhts_representation", "both")
+        config.auxiliary.max_distance = 0.0
+        table, response = pipe.auxiliary_frames(config, _retained())
+        assert (kind != "graph") == pipe.response_feature_route(config)
+        assert "luminescent_ac50" in set(table["assay"])
+        if kind == "graph":
+            assert response.empty and RESPONSE_ASSAY in set(table["assay"])
+        else:
+            assert RESPONSE_ASSAY not in set(table["assay"])
+            assert set(response["assay"]) == {RESPONSE_ASSAY}
+            assert set(response["target"]) == {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"}
+        # the wrapper everything else calls returns the table alone
+        assert pipe.auxiliary_observations(config, _retained()).equals(table)
+
+
 def test_veith_both_representation_emits_potency_and_response_without_losing_potency(monkeypatch):
     """qhts_representation='both' routes Veith potency to the luminescent-AC50 assay and the
     max-response to the response head in one run, and a deposit that cannot supply the response
