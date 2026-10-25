@@ -4,6 +4,7 @@ them (and the regression candidate) first."""
 
 import dataclasses
 import itertools
+import json
 import sys
 from pathlib import Path
 
@@ -150,6 +151,81 @@ def test_the_data_side_group_holds_the_model_fixed_and_covers_the_source_sets():
         for n in names
     ]
     assert heavy == sorted(heavy)
+
+
+def _greedy_world(monkeypatch, tmp_path, score):
+    """Run ``run_greedy`` against a fake measurement: ``score(overrides)`` is a config's macro
+    ST-RAE, or None for one that failed. Returns the list of batches that were run."""
+    ran: list[dict] = []
+    monkeypatch.setattr(night_run, "REGRESSION", dict(night_run.REGRESSION))  # drop new names
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(
+        night_run, "run_phase", lambda phase, configs, seeds: ran.append(dict(configs))
+    )
+
+    def ranked(phase):
+        names = {name: cfg for batch in ran for name, cfg in batch.items()}
+        scores = {name: score(cfg) for name, cfg in names.items()}
+        return pd.DataFrame({"mean": {n: v for n, v in scores.items() if v is not None}})
+
+    monkeypatch.setattr(night_run, "ranked_means", ranked)
+    return ran
+
+
+_CHEMBL_THEN_REACH = (
+    night_run.GreedyStep("sources.chembl", (True,)),
+    night_run.GreedyStep(
+        "auxiliary.max_distance", (0.0, 3.0), requires=(("sources.chembl", True),)
+    ),
+)
+
+
+def test_greedy_adopts_a_clear_winner_and_runs_the_next_step_on_it(monkeypatch, tmp_path):
+    def score(cfg):
+        base = 0.70 - (0.05 if cfg.get("sources.chembl") else 0.0)
+        return base - {0.0: 0.01, 3.0: 0.04}.get(cfg.get("auxiliary.max_distance"), 0.0)
+
+    ran = _greedy_world(monkeypatch, tmp_path, score)
+    final = night_run.run_greedy(night_run.DATA_BASE, _CHEMBL_THEN_REACH, margin=0.005)
+    assert final["sources.chembl"] is True and final["auxiliary.max_distance"] == 3.0
+    reach_batch = ran[-1].values()
+    assert all(cfg["sources.chembl"] is True for cfg in reach_batch)  # run on the adopted recipe
+    path = json.loads((tmp_path / "greedy_path.json").read_text())
+    assert [entry["step"] for entry in path["path"]] == [
+        "base",
+        "sources.chembl",
+        "auxiliary.max_distance",
+    ]
+
+
+def test_greedy_keeps_the_recipe_when_the_gap_is_within_the_margin(monkeypatch, tmp_path):
+    ran = _greedy_world(
+        monkeypatch, tmp_path, lambda cfg: 0.70 - (0.003 if cfg.get("sources.chembl") else 0.0)
+    )
+    final = night_run.run_greedy(night_run.DATA_BASE, _CHEMBL_THEN_REACH, margin=0.005)
+    assert final == night_run.REGRESSION[night_run.DATA_BASE]
+    assert len(ran) == 2  # the base, then the chembl step; the reach step was skipped
+
+
+def test_greedy_skips_a_step_whose_precondition_is_not_met(monkeypatch, tmp_path):
+    ran = _greedy_world(monkeypatch, tmp_path, lambda cfg: 0.70)
+    night_run.run_greedy(night_run.DATA_BASE, _CHEMBL_THEN_REACH[1:], margin=0.005)
+    assert len(ran) == 1  # only the base ran
+
+
+def test_greedy_never_adopts_a_configuration_that_did_not_score(monkeypatch, tmp_path):
+    _greedy_world(monkeypatch, tmp_path, lambda cfg: None if cfg.get("sources.chembl") else 0.70)
+    final = night_run.run_greedy(night_run.DATA_BASE, _CHEMBL_THEN_REACH, margin=0.005)
+    assert "sources.chembl" not in final
+
+
+def test_greedy_reuses_the_name_of_a_recipe_that_is_already_declared(monkeypatch, tmp_path):
+    ran = _greedy_world(monkeypatch, tmp_path, lambda cfg: 0.70)
+    step = night_run.GreedyStep("sources.screen", (False,))
+    night_run.run_greedy(night_run.DATA_BASE, (step,), margin=0.005)
+    declared = [n for n, c in night_run.REGRESSION.items() if c.get("sources.screen") is False]
+    assert set(ran[-1]) <= set(declared)
+    assert not any(name.startswith("greedy_") for batch in ran for name in batch)
 
 
 def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
@@ -303,6 +379,9 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     monkeypatch.setattr(night_run, "wandb_finish", lambda: None)
     monkeypatch.setattr(night_run, "load_local_env", lambda: [])
     monkeypatch.setattr(
+        night_run, "run_greedy", lambda base, steps, *a, **k: calls.append(("greedy", base))
+    )
+    monkeypatch.setattr(
         night_run, "run_phase", lambda phase, configs, seeds: calls.append((phase, tuple(configs)))
     )
     monkeypatch.setattr(
@@ -318,6 +397,7 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     night_run.main()
 
     assert calls == [
+        ("greedy", night_run.DATA_BASE),
         ("reg", night_run.DATA_SIDE_REGRESSION),
         ("reg", night_run.QHTS_REGRESSION),
         ("tdi", night_run.QHTS_TDI),

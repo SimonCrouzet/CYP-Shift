@@ -30,7 +30,9 @@ config is one full cross-validation; the GPU families make this long, hence a si
 """
 
 import dataclasses
+import hashlib
 import itertools
+import json
 import logging
 import os
 import subprocess
@@ -662,8 +664,14 @@ REGRESSION.update(_feature_sweep("boosted_fs", {}))
 def _resolved_key(overrides: dict) -> str:
     """The fully resolved settings of one entry, for comparing entries under different names."""
     config = ExperimentConfig()
-    for key, value in overrides.items():
-        config.override(key, value)
+    experiment_logger = logging.getLogger("cypshift.experiment")
+    previous = experiment_logger.level
+    experiment_logger.setLevel(logging.WARNING)  # ``override`` logs every key at INFO
+    try:
+        for key, value in overrides.items():
+            config.override(key, value)
+    finally:
+        experiment_logger.setLevel(previous)
     return repr(dataclasses.asdict(config))
 
 
@@ -866,6 +874,129 @@ def _data_side_regression() -> tuple[str, ...]:
 
 
 DATA_SIDE_REGRESSION = _data_side_regression()
+
+
+@dataclasses.dataclass(frozen=True)
+class GreedyStep:
+    """One data-side field and the values tried for it, when the current recipe satisfies
+    ``requires`` (pairs of field and value that must already hold)."""
+
+    key: str
+    values: tuple
+    requires: tuple[tuple[str, object], ...] = ()
+
+
+_VEITH = (("sources.veith", True),)
+_CHEMBL = (("sources.chembl", True),)
+_SCREEN = (("sources.screen", True),)
+
+#: Greedy search over the data side: each step tries its values on the current recipe, the best
+#: one replaces the current recipe if it beats it by more than ``ADOPT_MARGIN``, and the next
+#: step runs on the result. Sources first (what is trained on), then how the rows are
+#: represented and weighted, then the fields that only act once their source is on.
+GREEDY_STEPS = (
+    GreedyStep("sources.chembl", (True,)),
+    GreedyStep("sources.sair", (True,)),
+    GreedyStep("sources.veith", (True,)),
+    GreedyStep("sources.novartis", (True,)),
+    GreedyStep("sources.octant", (False,)),
+    GreedyStep("sources.tox21", (False,)),
+    GreedyStep("sources.qhts_representation", ("max_response", "both"), _VEITH),
+    GreedyStep("auxiliary.include_qhts_inactives", (False,), _VEITH),
+    GreedyStep("sources.screen", (False,)),
+    GreedyStep("multifidelity.screen_strategy", ("response_head", "log2fc_response"), _SCREEN),
+    GreedyStep("multifidelity.screen_weight", (0.1, 0.6, 1.0), _SCREEN),
+    GreedyStep("sources.tdi_assay_condition", (True,)),
+    GreedyStep("multifidelity.tdi_weight", (0.25, 1.0), (("sources.tdi_assay_condition", True),)),
+    GreedyStep("auxiliary.tox21_include_inactives", (True,), (("sources.tox21", True),)),
+    GreedyStep("auxiliary.per_endpoint_budget", (0.25, 0.5, 1.0)),
+    GreedyStep("data.dedup_mode", ("inchikey_block",)),
+    GreedyStep("training.macro_balance", (True,)),
+    GreedyStep("training.inverse_variance_weighting", (True,)),
+    GreedyStep("auxiliary.max_distance", (0.0, 3.0), _CHEMBL),
+    GreedyStep("auxiliary.weighting", ("uniform",), _CHEMBL),
+    GreedyStep("auxiliary.scale", (0.5, 2.0), _CHEMBL),
+    GreedyStep("auxiliary.target_weight", (0.3, 3.0), _CHEMBL),
+    GreedyStep("auxiliary.scored_weight", (0.5, 2.0), _CHEMBL),
+)
+
+#: A value replaces the current recipe only if its macro ST-RAE is lower by more than this. Repeats
+#: of one configuration across revisions of this sweep differ by 0.001-0.007 (``graph_octant_tox21``
+#: 0.6553-0.6580 over three revisions, ``graph`` 0.6564-0.6748 over six), so a smaller gap is noise.
+ADOPT_MARGIN = float(os.environ.get("CYP_ADOPT_MARGIN", "0.005"))
+
+
+def _setting(overrides: dict, key: str) -> object:
+    """The value a recipe gives a field: its override, else the field's default."""
+    if key in overrides:
+        return overrides[key]
+    target: object = ExperimentConfig()
+    for part in key.split("."):
+        target = getattr(target, part)
+    return target
+
+
+def run_greedy(base_name: str, steps: tuple[GreedyStep, ...], margin: float = ADOPT_MARGIN) -> dict:
+    """Run ``steps`` as a greedy search from ``base_name`` and return the recipe it ends on.
+
+    Decisions are read back from the results table, so a resumed run repeats them exactly. A
+    candidate that did not score (failed) is never adopted. New recipes are registered in
+    ``REGRESSION`` under a name carrying a hash of their resolved settings, so the same recipe
+    keeps the same name and an already-measured one is not run again.
+    """
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    current, current_name = dict(REGRESSION[base_name]), base_name
+    run_phase("reg", {current_name: current}, SEEDS)
+    path = [{"step": "base", "name": current_name}]
+    for number, step in enumerate(steps, start=1):
+        if any(_setting(current, key) != value for key, value in step.requires):
+            logger.info("greedy %02d %s: skipped, precondition not met", number, step.key)
+            continue
+        candidates: dict[str, dict] = {}
+        for value in step.values:
+            if _setting(current, step.key) == value:
+                continue
+            overrides = {**current, step.key: value}
+            key = _resolved_key(overrides)
+            if key not in declared:
+                digest = hashlib.sha1(key.encode()).hexdigest()[:6]
+                tag = str(value).replace(".", "p").replace("-", "m")
+                name = f"greedy_{step.key.split('.')[-1]}{tag}_{digest}"
+                REGRESSION[name] = overrides
+                declared[key] = name
+            candidates[declared[key]] = overrides
+        if not candidates:
+            continue
+        run_phase("reg", candidates, SEEDS)
+        scores = ranked_means("reg")["mean"]
+
+        def score_of(name: str, scores: pd.Series = scores) -> float:
+            value = scores.get(name, float("nan"))
+            return float("inf") if pd.isna(value) else float(value)
+
+        base_score = score_of(current_name)
+        best = min(candidates, key=score_of)
+        best_score = score_of(best)
+        listing = ", ".join(f"{n}={score_of(n):.4f}" for n in candidates)
+        if best_score <= base_score - margin:
+            logger.info(
+                "greedy %02d %s: ADOPT %s=%r (%.4f -> %.4f); tried %s",
+                number, step.key, step.key, candidates[best][step.key], base_score, best_score,
+                listing,
+            )  # fmt: skip
+            current, current_name = candidates[best], best
+            path.append({"step": step.key, "name": best, "score": best_score})
+        else:
+            logger.info(
+                "greedy %02d %s: keep %s (%.4f); tried %s", number, step.key, current_name,
+                base_score, listing,
+            )  # fmt: skip
+    logger.info("greedy search ended on %s: %s", current_name, json.dumps(current, sort_keys=True))
+    RESULTS.parent.joinpath("greedy_path.json").write_text(
+        json.dumps({"path": path, "recipe": current, "margin": margin}, indent=2, default=list)
+    )
+    return current
+
 
 #: Fields no entry above varies: input width and optimiser batch of the neural network and the
 #: curve, the learned enzyme-embedding width, the graph warmup, and the graph-curve encoder depth.
@@ -1547,6 +1678,14 @@ def main() -> None:
         NUM_WORKERS,
         members,
     )
+
+    logger.info(
+        "=== Greedy data-side search from %s: %d steps, adopt margin %.4f ===",
+        DATA_BASE,
+        len(GREEDY_STEPS),
+        ADOPT_MARGIN,
+    )
+    run_greedy(DATA_BASE, GREEDY_STEPS)
 
     logger.info(
         "=== Data side on %s: %d regression configs ===", DATA_BASE, len(DATA_SIDE_REGRESSION)
