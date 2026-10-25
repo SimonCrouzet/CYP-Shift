@@ -441,10 +441,10 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     night_run.main()
 
     assert calls == [
-        ("greedy", night_run.DATA_BASE),
-        ("reg", night_run.DATA_SIDE_REGRESSION),
         ("reg", night_run.QHTS_REGRESSION),
         ("tdi", night_run.QHTS_TDI),
+        ("greedy", night_run.DATA_BASE),
+        ("reg", night_run.DATA_SIDE_REGRESSION),
         ("reg", night_run.UNMEASURED_REGRESSION),
         ("tdi", night_run.UNMEASURED_TDI),
         ("reg", night_run.UNMEASURED_REGRESSION_SLOW),
@@ -453,3 +453,22 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
         ("tdi", tuple(night_run.TDI)),
         ("write", "classification"),
     ]
+
+
+def test_the_queue_starts_with_the_max_response_on_the_best_recipe():
+    first = night_run.QHTS_REGRESSION[0]
+    recipe = night_run.REGRESSION[first]
+    assert recipe["sources.qhts_representation"] == "max_response"
+    assert recipe["model.kind"] == "graph"
+    assert recipe["sources.novartis"] and recipe["sources.octant"]  # the 0.6415 recipe
+
+
+def test_the_qhts_cells_cover_every_source_that_supplies_a_max_response():
+    from cypshift.data.sources import supplying
+
+    suppliers = supplying("max_response")
+    assert len(suppliers) >= 2
+    cells = night_run.QHTS_VARIANTS
+    for name in suppliers:
+        assert f"{name}_max_response" in cells and f"{name}_both" in cells
+    assert "_".join(suppliers) + "_max_response" in cells  # all of them together

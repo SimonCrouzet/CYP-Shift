@@ -30,6 +30,9 @@ from cypshift.data.sequences import ACCESSIONS
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 DEFAULT_INDEX = Path("data/external/sair.parquet")
 DEFAULT_CACHE = Path("data/external")
 

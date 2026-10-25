@@ -25,6 +25,9 @@ from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 DEFAULT_TSV = Path("data/external/octant/inhibition.tsv")
 #: The only enzyme this source covers.
 OCTANT_ENZYME = "CYP3A4"

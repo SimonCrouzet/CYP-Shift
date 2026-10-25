@@ -44,6 +44,7 @@ import pandas as pd
 from cypshift.cli import submit
 from cypshift.config import CLASSIFICATION_ENDPOINTS
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES
+from cypshift.data.sources import supplying
 from cypshift.eval.scoring import MACRO_LABEL
 from cypshift.experiment import ExperimentConfig
 from cypshift.local_env import load_local_env
@@ -741,33 +742,47 @@ for _set, _sources in DESCRIPTOR_SETS.items():
         "model.curve.descriptor_sources": _sources,
     }
 
+
 #: The qHTS panel as a data-side axis, crossed with the model families that can read it: Veith
 #: potency with its inactives kept as censored rows (the default), potency from the active
 #: compounds only, the 0-1 max-response alone, and both quantities (with and without the
 #: inactives). The graph reads the max-response through response heads; boosted, neural and the
 #: fingerprint curve read it through a helper model's predicted response (see
 #: ``cypshift.data.screen_model.fit_response_model``).
-QHTS_VARIANTS = {
-    "veith_pic50": {"sources.veith": True},
-    "veith_pic50_active_only": {
+def _qhts_variants() -> dict[str, dict]:
+    """The qHTS cells of one base: every source set that can supply a max-response (each such
+    source alone, then all of them together) read as the max-response, as both quantities, and as
+    the potency control, then Veith's potency and both-quantity cells with its inactives dropped.
+    The source sets come from ``cypshift.data.sources``, not from a list of names here."""
+    suppliers = supplying("max_response")
+    source_sets = [(name,) for name in suppliers]
+    if len(suppliers) > 1:
+        source_sets.append(suppliers)
+    variants: dict[str, dict] = {}
+    for representation in ("max_response", "both", "pic50"):
+        for names in source_sets:
+            settings = {f"sources.{name}": True for name in names}
+            if representation != "pic50":
+                settings["sources.qhts_representation"] = representation
+            variants["_".join(names) + f"_{representation}"] = settings
+    variants["veith_pic50_active_only"] = {
         "sources.veith": True,
         "auxiliary.include_qhts_inactives": False,
-    },
-    "veith_max_response": {
-        "sources.veith": True,
-        "sources.qhts_representation": "max_response",
-    },
-    "veith_both": {"sources.veith": True, "sources.qhts_representation": "both"},
-    "veith_both_active_only": {
+    }
+    variants["veith_both_active_only"] = {
         "sources.veith": True,
         "sources.qhts_representation": "both",
         "auxiliary.include_qhts_inactives": False,
-    },
-}
+    }
+    return variants
+
+
+QHTS_VARIANTS = _qhts_variants()
 
 
 def _qhts_grid(pool: dict[str, dict], bases: tuple[str, ...]) -> list[str]:
-    """Every (base, qHTS variant) cell of ``pool``, as the declared names, cheapest base first."""
+    """Every (base, qHTS variant) cell of ``pool``, as the declared names, in the order of
+    ``bases`` and, within a base, of ``QHTS_VARIANTS`` (the max-response cells first)."""
     names: list[str] = []
     for base in bases:
         cells = {
@@ -777,17 +792,30 @@ def _qhts_grid(pool: dict[str, dict], bases: tuple[str, ...]) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+#: The recipe with the lowest macro ST-RAE so far (0.6415): the graph with Octant, Tox21 and
+#: Novartis. The qHTS grid starts from it, then goes through the other bases.
+(QHTS_BEST_BASE,) = _add_distinct(
+    REGRESSION,
+    {
+        "graph_src_octant_tox21_novartis": {
+            **REGRESSION["graph_octant_tox21"],
+            "sources.novartis": True,
+        }
+    },
+)
+
 QHTS_REGRESSION = tuple(
     _qhts_grid(
         REGRESSION,
         (
-            "neural",
-            "neural_octant_tox21",
-            "boosted",
-            "boosted_octant_tox21",
-            "graph",
+            QHTS_BEST_BASE,
             "graph_octant_tox21",
+            "graph",
             "graph_chemeleon",
+            "neural_octant_tox21",
+            "neural",
+            "boosted_octant_tox21",
+            "boosted",
         ),
     )
 )
@@ -1688,6 +1716,14 @@ def main() -> None:
     )
 
     logger.info(
+        "=== qHTS max-response x source set x model family: %d regression, %d TDI ===",
+        len(QHTS_REGRESSION),
+        len(QHTS_TDI),
+    )
+    run_phase("reg", {name: REGRESSION[name] for name in QHTS_REGRESSION}, SEEDS)
+    run_phase("tdi", {name: TDI[name] for name in QHTS_TDI}, SEEDS)
+
+    logger.info(
         "=== Greedy data-side search from %s: %d steps, adopt margin %.4f ===",
         DATA_BASE,
         len(GREEDY_STEPS),
@@ -1699,14 +1735,6 @@ def main() -> None:
         "=== Data side on %s: %d regression configs ===", DATA_BASE, len(DATA_SIDE_REGRESSION)
     )
     run_phase("reg", {name: REGRESSION[name] for name in DATA_SIDE_REGRESSION}, SEEDS)
-
-    logger.info(
-        "=== qHTS representation x model family: %d regression, %d TDI ===",
-        len(QHTS_REGRESSION),
-        len(QHTS_TDI),
-    )
-    run_phase("reg", {name: REGRESSION[name] for name in QHTS_REGRESSION}, SEEDS)
-    run_phase("tdi", {name: TDI[name] for name in QHTS_TDI}, SEEDS)
 
     logger.info(
         "=== Never measured first: %d regression, %d TDI, then %d slow regression ===",

@@ -28,6 +28,9 @@ from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 DATASET_ID = "novartis/novartis-cyp3a4-v1"
 DEFAULT_CACHE = Path("data/external/novartis/cyp3a4_v1.csv")
 SMILES_COLUMN = "MOL_smiles"

@@ -33,9 +33,12 @@ import numpy as np
 import pandas as pd
 
 from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
-from cypshift.data.pubchem import download_assay
+from cypshift.data.pubchem import download_assay, max_response_inhibition
 
 logger = logging.getLogger(__name__)
+
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50", "max_response")
 
 DEFAULT_CACHE = Path("data/external/veith")
 
@@ -69,31 +72,10 @@ def detection_limit_pic50(raw: pd.DataFrame) -> float | None:
 
 
 def _max_response(named: pd.DataFrame) -> pd.DataFrame:
-    """All screened compounds as a 0-1 inhibition magnitude at the maximal curve response.
-
-    ``Max_Response`` is a signed percent activity, negative for inhibition (AID 883: Active
-    median -82.4, Inactive median +0.6), so the value is ``-Max_Response / 100`` clipped to
-    [0, 1]; the activation side clips to 0. The inactives stay as real low-response
-    measurements. This is the signal the graph model's auxiliary response head is trained on,
-    a different quantity from potency, so it never shares the pIC50 scale.
-    """
+    """The 0-1 inhibition at the maximal curve response (:func:`max_response_inhibition`)."""
     if "Max_Response" not in named.columns:
         raise KeyError("cannot use max_response: deposit has no 'Max_Response' column")
-    screened = named[named["PUBCHEM_ACTIVITY_OUTCOME"].isin(["Active", "Inactive"])].copy()
-    screened["value"] = (-pd.to_numeric(screened["Max_Response"], errors="coerce") / 100.0).clip(
-        0, 1
-    )
-    screened = screened.dropna(subset=["value"])
-    grouped = (
-        screened.groupby("PUBCHEM_EXT_DATASOURCE_SMILES")["value"]
-        .median()
-        .reset_index()
-        .rename(columns={"PUBCHEM_EXT_DATASOURCE_SMILES": "SMILES"})
-    )
-    grouped["conf_low"] = grouped["value"]
-    grouped["conf_high"] = grouped["value"]
-    grouped["is_censored"] = False
-    return grouped
+    return max_response_inhibition(named, ["Max_Response"])
 
 
 def _clean(

@@ -28,13 +28,13 @@ from cypshift.data.screen_model import (
     fit_screen_model,
     stack_helper_models,
 )
+from cypshift.data.sources import supplying
 from cypshift.data.splits import similarity_matched_holdout, stratified_scaffold_folds
 from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
 from cypshift.experiment import (
     CONDITIONING_STRATEGIES,
-    QHTS_SOURCES,
     RESPONSE_FEATURE_KINDS,
     SCREEN_STRATEGIES,
     ExperimentConfig,
@@ -629,7 +629,7 @@ def response_feature_route(config: ExperimentConfig) -> bool:
     for the max-response; the graph consumes it through its own response head instead.
     """
     return (
-        (config.sources.veith or config.sources.tox21)
+        any(getattr(config.sources, name) for name in supplying("max_response"))
         and config.sources.qhts_representation in ("max_response", "both")
         and config.model.kind in RESPONSE_FEATURE_KINDS
     )
@@ -682,19 +682,21 @@ def auxiliary_frames(
         "tox21": "luminescent_ac50",
         "novartis": "reversible_pic50",
     }
-    # The qHTS sources (Veith, Tox21) can enter as a 0-1 max-response on its own assay instead
-    # of a pooled pIC50 (``max_response``); the graph reads it through its response head, the
-    # other kinds through a helper model. ``both`` keeps the pooled pIC50 assay *and*
+    # A source whose loader supplies a max-response can enter as a 0-1 response on its own assay
+    # instead of a pooled pIC50 (``max_response``); the graph reads it through its response head,
+    # the other kinds through a helper model. ``both`` keeps the pooled pIC50 assay *and*
     # additionally emits the response rows, so the one panel carries potency and response at once.
     response_mode = config.sources.qhts_representation == "max_response"
     both_mode = config.sources.qhts_representation == "both"
     # Source-stratified conditioning keeps same-chemistry sources (veith+tox21, chembl+sair)
     # as separate rows instead of pooling them, so the graph can condition on the source.
     source_heads = config.model.kind == "graph" and config.model.graph.source_heads
-    if response_mode:
-        for qhts_source in QHTS_SOURCES:
-            assay_by_source[qhts_source] = RESPONSE_ASSAY
     datasets = [name for name in all_loaders if getattr(config.sources, name)]
+    # The sources whose loader supplies a max-response; the others keep their pIC50 rows.
+    with_response = [name for name in datasets if name in supplying("max_response")]
+    if response_mode:
+        for name in with_response:
+            assay_by_source[name] = RESPONSE_ASSAY
 
     scored = tuple(name.split("_")[0] for name in ISOFORMS)
     empty = pd.DataFrame(columns=list(OBSERVATION_COLUMNS))
@@ -747,7 +749,9 @@ def auxiliary_frames(
             "tox21": {"include_inactives": config.auxiliary.tox21_include_inactives},
         }
         extra_kwargs = {
-            name: {"representation": "max_response"} if response_mode else kwargs
+            name: {"representation": "max_response"}
+            if response_mode and name in with_response
+            else kwargs
             for name, kwargs in potency_kwargs.items()
         }
         by_assay: dict[tuple[str, str], list[pd.DataFrame]] = {}
@@ -758,7 +762,7 @@ def auxiliary_frames(
             # once. Each spec loads under its own try, so a representation a given deposit cannot
             # supply (the old Veith CYP1A2 deposit has no Max_Response column) drops only that
             # quantity, not the enzyme's other rows.
-            if name in QHTS_SOURCES and both_mode:
+            if name in with_response and both_mode:
                 specs = [
                     (potency_kwargs[name], "luminescent_ac50"),
                     ({"representation": "max_response"}, RESPONSE_ASSAY),

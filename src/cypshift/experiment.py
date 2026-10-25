@@ -18,6 +18,7 @@ from cypshift.config import ISOFORMS
 from cypshift.data.assembly import ASSAYS, DATA_SPACES
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
+from cypshift.data.sources import LOADER_SOURCES, supplying
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 #: Isoforms eligible for a per-isoform adaptation block, plus the ``"none"`` default.
@@ -118,11 +119,6 @@ QHTS_REPRESENTATIONS = ("pic50", "max_response", "both")
 #: response rows, see :mod:`cypshift.data.screen_model`). The curve qualifies with its
 #: fingerprint backbone only: the graph backbone has no extra-feature input.
 RESPONSE_FEATURE_KINDS = ("boosted", "neural", "curve")
-
-#: The sources that are qHTS deposits, so ``sources.qhts_representation`` applies to them: each
-#: ships a fitted potency and a ``Max_Response`` per compound (Veith's CYP1A2 deposit has no
-#: ``Max_Response``; Tox21 ships it for every enzyme).
-QHTS_SOURCES = ("veith", "tox21")
 
 #: How auxiliary rows are matched against the challenge set for dedup: exact canonical SMILES,
 #: or the coarser InChIKey connectivity block.
@@ -250,13 +246,14 @@ class SourcesConfig:
     #: Veith qHTS panel potencies (PubChem). A luminescent ranking signal and the same
     #: campaign as ChEMBL's AC50 block, so off by default; downloads and caches on use.
     veith: bool = False
-    #: How the qHTS sources (:data:`QHTS_SOURCES`: Veith, Tox21) enter: as a pooled ``pic50``
-    #: (default), as a 0-1 ``max_response`` on its own assay, or ``both`` -- the potency rows
-    #: pooled onto the luminescent-AC50 assay *and* the max-response rows on the response head in
-    #: the same run, so the graph panel carries potency and response at once (the reference
-    #: recipe's coexisting qHTS tasks). A data-side choice; ``max_response``/``both`` need a model
-    #: that reads the response (the graph's response head, or a helper model for the feature
-    #: kinds) and one of the qHTS sources on.
+    #: The quantity read from every source whose loader supplies it
+    #: (:func:`cypshift.data.sources.supplying`): a pooled ``pic50`` (default), a 0-1
+    #: ``max_response`` on its own assay, or ``both`` -- the potency rows pooled onto the
+    #: luminescent-AC50 assay *and* the max-response rows on the response head in the same run, so
+    #: the graph panel carries potency and response at once (the reference recipe's coexisting
+    #: qHTS tasks). A source that does not supply the quantity keeps its pIC50 rows.
+    #: ``max_response``/``both`` need a model that reads the response (the graph's response head,
+    #: or a helper model for the feature kinds) and a source that supplies it.
     qhts_representation: str = "pic50"
     #: 2025 NCATS Tox21 P450-Glo re-screen potencies (PubChem). Biochemical, all four
     #: scored CYPs, a distinct library from Veith; off by default, downloads on use.
@@ -632,11 +629,13 @@ class ExperimentConfig:
             feature_route = self.model.kind in RESPONSE_FEATURE_KINDS and not (
                 self.model.kind == "curve" and self.model.curve.backbone == "graph"
             )
-            has_qhts = any(getattr(self.sources, name) for name in QHTS_SOURCES)
-            if not (has_qhts and (self.model.kind == "graph" or feature_route)):
+            suppliers = supplying("max_response")
+            has_supplier = any(getattr(self.sources, name) for name in suppliers)
+            if not (has_supplier and (self.model.kind == "graph" or feature_route)):
                 raise ValueError(
                     f"sources.qhts_representation={self.sources.qhts_representation!r} needs "
-                    f"one of the qHTS sources {QHTS_SOURCES} on and either model.kind='graph' "
+                    f"one of the sources that supply a max-response {suppliers} on and either "
+                    "model.kind='graph' "
                     "(response head) or one of "
                     f"{RESPONSE_FEATURE_KINDS} (helper-model features; a curve needs the "
                     "'mlp' backbone)"
@@ -871,11 +870,7 @@ class ExperimentConfig:
                 )
             if self.sources.tdi_assay_condition:
                 raise ValueError("model.kind='tfm' cannot use the preincubated assay_condition")
-            auxiliary_on = [
-                name
-                for name in ("chembl", "sair", "octant", "veith", "tox21", "novartis")
-                if getattr(self.sources, name)
-            ]
+            auxiliary_on = [name for name in LOADER_SOURCES if getattr(self.sources, name)]
             if auxiliary_on:
                 raise ValueError(
                     "model.kind='tfm' trains only on reference-assay rows; the auxiliary "

@@ -31,9 +31,12 @@ import numpy as np
 import pandas as pd
 
 from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
-from cypshift.data.pubchem import download_assay
+from cypshift.data.pubchem import download_assay, max_response_inhibition
 
 logger = logging.getLogger(__name__)
+
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50", "max_response")
 
 DEFAULT_CACHE = Path("data/external/tox21")
 
@@ -56,32 +59,12 @@ AID = {
 
 
 def _max_response(raw: pd.DataFrame) -> pd.DataFrame:
-    """Active and Inactive compounds as a 0-1 inhibition magnitude at the maximal curve response.
-
-    ``Max_Response-Replicate_*`` is a signed percent activity, negative for inhibition (CYP1A2,
-    AID 1671199: Active median -78.0, Inactive median -14.7). The value is the median over
-    replicates of ``-Max_Response / 100`` clipped to [0, 1], then the median over the compound's
-    records: the convention of :func:`cypshift.data.veith._max_response`. Inconclusive compounds
-    are dropped. Unlike the Veith CYP1A2 deposit, every enzyme here ships the column.
-    """
-    smiles_column = "PUBCHEM_EXT_DATASOURCE_SMILES"
+    """The 0-1 inhibition magnitude at the maximal curve response (:func:`max_response_inhibition`),
+    over the ``Max_Response-Replicate_*`` columns. Every enzyme's deposit ships them."""
     columns = [c for c in raw.columns if c.startswith("Max_Response-Replicate")]
     if not columns:
         raise KeyError("Tox21 deposit has no 'Max_Response-Replicate' columns")
-    screened = raw[
-        raw[smiles_column].notna() & raw["PUBCHEM_ACTIVITY_OUTCOME"].isin(["Active", "Inactive"])
-    ].copy()
-    response = screened[columns].apply(pd.to_numeric, errors="coerce").median(axis=1)
-    screened["value"] = (-response / 100.0).clip(0, 1)
-    grouped = (
-        screened.dropna(subset=["value"])
-        .groupby(smiles_column)["value"]
-        .median()
-        .reset_index()
-        .rename(columns={smiles_column: "SMILES"})
-    )
-    grouped["is_censored"] = False
-    return grouped
+    return max_response_inhibition(raw, columns)
 
 
 def _clean(

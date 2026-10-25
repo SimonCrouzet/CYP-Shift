@@ -39,6 +39,9 @@ from cypshift.data.sequences import ACCESSIONS
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 CHEMBL_API = "https://www.ebi.ac.uk/chembl/api/data"
 DEFAULT_CACHE = Path("data/external")
 
