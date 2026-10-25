@@ -49,14 +49,33 @@ def test_no_two_entries_resolve_to_the_same_settings_beyond_the_known_pairs():
     assert duplicates <= KNOWN_DUPLICATES, duplicates - KNOWN_DUPLICATES
 
 
-def test_the_priority_entries_exist_and_are_unique():
-    assert len(set(night_run.PRIORITY_REGRESSION)) == len(night_run.PRIORITY_REGRESSION)
-    assert set(night_run.PRIORITY_REGRESSION) <= set(night_run.REGRESSION)
-    assert set(night_run.PRIORITY_TDI) <= set(night_run.TDI)
-    assert len(set(night_run.PANEL_FOLLOW_UPS)) == len(night_run.PANEL_FOLLOW_UPS)
-    assert set(night_run.PANEL_FOLLOW_UPS) <= set(night_run.REGRESSION)
-    # the two regression tiers partition the review's priority questions: none dropped, none twice
-    assert not set(night_run.PRIORITY_REGRESSION) & set(night_run.PANEL_FOLLOW_UPS)
+def test_the_unmeasured_first_tiers_exist_and_are_unique_and_disjoint():
+    fast, slow = night_run.UNMEASURED_REGRESSION, night_run.UNMEASURED_REGRESSION_SLOW
+    assert len(set(fast)) == len(fast)
+    assert len(set(slow)) == len(slow)
+    assert len(set(night_run.UNMEASURED_TDI)) == len(night_run.UNMEASURED_TDI)
+    assert set(fast) <= set(night_run.REGRESSION)
+    assert set(slow) <= set(night_run.REGRESSION)
+    assert set(night_run.UNMEASURED_TDI) <= set(night_run.TDI)
+    assert not set(fast) & set(slow)
+
+
+def test_the_unmeasured_first_tiers_are_in_cost_order():
+    def kind(name):
+        return night_run.REGRESSION[name].get("model.kind", "boosted")
+
+    fast, slow = night_run.UNMEASURED_REGRESSION, night_run.UNMEASURED_REGRESSION_SLOW
+    kinds = [kind(n) for n in fast]
+    assert set(kinds) == {"tfm", "neural", "graph", "curve"}
+    assert max(i for i, k in enumerate(kinds) if k in ("tfm", "neural")) < min(
+        i for i, k in enumerate(kinds) if k == "graph"
+    )
+    assert not any(night_run.REGRESSION[n].get("sources.veith") for n in fast)
+    assert all(night_run.REGRESSION[n].get("sources.veith") for n in slow if kind(n) == "graph")
+    boosted = [i for i, n in enumerate(slow) if kind(n) == "boosted"]
+    assert boosted == list(range(len(slow) - len(boosted), len(slow)))  # boosted last
+    tdi_graph = [n for n in night_run.UNMEASURED_TDI if "graph" in n]
+    assert night_run.UNMEASURED_TDI[-len(tdi_graph) :] == tuple(tdi_graph)  # MLP curves first
 
 
 def _grid_cells() -> dict[tuple[str, str, str], dict]:
@@ -125,7 +144,7 @@ def test_the_learning_rate_sweep_brackets_the_default_for_each_base():
         assert rates == {1e-4, 3e-4}
 
 
-def test_main_runs_the_priority_entries_first_and_writes_the_regression_candidate_before_tdi(
+def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candidate_before_tdi(
     tmp_path, monkeypatch
 ):
     calls = []
@@ -150,9 +169,9 @@ def test_main_runs_the_priority_entries_first_and_writes_the_regression_candidat
     night_run.main()
 
     assert calls == [
-        ("reg", night_run.PRIORITY_REGRESSION),
-        ("tdi", night_run.PRIORITY_TDI),
-        ("reg", night_run.PANEL_FOLLOW_UPS),
+        ("reg", night_run.UNMEASURED_REGRESSION),
+        ("tdi", night_run.UNMEASURED_TDI),
+        ("reg", night_run.UNMEASURED_REGRESSION_SLOW),
         ("reg", tuple(night_run.REGRESSION)),
         ("write", "regression"),
         ("tdi", tuple(night_run.TDI)),

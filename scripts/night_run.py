@@ -819,68 +819,137 @@ TDI.update(
     )
 )
 
-#: Run first, ahead of the curated order. The first nine entries are the reference points (plain
-#: graph, pretrained graph, the best submitted recipe) and the panel grid cells that were
-#: measured on revision 744efbd; a resume under the same ``CYP_REV`` skips them. After them come
-#: the levers that no sweep has measured yet and that are cheap (2-60 min on an L4): the graph
-#: fine-tuning learning rate on the plain, pretrained and best-recipe graph, and the graph-backbone
-#: curve variants. The last three are the controls that decide whether the panel and the
-#: per-measurement heads do anything (screen off; readout width matched to the shared FFN; one
-#: head per target), because the grid alone left per-measurement heads worse by about 0.05 with a
-#: 29x larger readout. Order inside the tier is by cost.
-PRIORITY_REGRESSION = (
-    "graph",
-    "graph_chemeleon",
-    "graph_octant_tox21",
-    "graph_panel",
-    "graph_panel_measurement_heads",
-    "graph_panel_chemeleon",
-    "graph_panel_chemeleon_measurement_heads",
-    "graph_panel_log2fc",
-    "graph_panel_log2fc_measurement_heads",
+#: Configs with no completed row (``status == "ok"``) at any revision in the results table of
+#: 2026-10-25, in cost order: tabular foundation model and neural (minutes), then graph (20-35
+#: min on an L4), then graph with CheMeleon or a graph-backbone curve (about 50 min). They run
+#: before any config that already has a measurement, so a window that ends early has measured new
+#: options and not repeated old ones. Configs measured earlier on this revision are skipped by
+#: ``run_phase`` and are not listed.
+UNMEASURED_REGRESSION = (
+    "tfm_fs_fp",
+    "tfm_fs_dense",
+    "tfm_fs_fp_dense",
+    "tfm_fs_dense_ion",
+    "tfm_fs_dense_emb",
+    "tfm_fs_emb",
+    "tfm_fs_full",
+    "neural_hidden128",
+    "neural_hidden512",
+    "neural_dropout0p1",
+    "neural_dropout0p3",
+    "neural_learning_rate0p0003",
+    "neural_learning_rate0p003",
+    "neural_epochs100",
+    "graph_chembl_dist0",
+    "graph_chembl_dist3",
+    "graph_chembl_dist3_target_lo",
+    "graph_chembl_uniform",
+    "graph_octant_tox21_scored_lo",
+    "graph_screen_weight_lo",
+    "graph_screen_weight_hi",
+    "graph_screen_response",
+    "graph_octant_tox21_screen_response",
+    "graph_adapt_2d6",
+    "graph_octant_tox21_adapt_2d6",
+    "graph_point_loss_lo",
+    "graph_point_loss_hi",
+    "graph_ranking_loss_lo",
+    "graph_ranking_loss_hi",
+    "graph_octant_tox21_point_ranking",
+    "graph_octant_tox21_inactives",
+    "graph_octant_tox21_budget_half",
+    "graph_octant_tox21_budget_one",
+    "graph_screen_log2fc",
+    "graph_octant_tox21_screen_log2fc",
+    "graph_per_target_heads",
+    "graph_octant_tox21_per_target_heads",
+    "graph_measurement_heads",
+    "graph_octant_tox21_measurement_heads",
+    "graph_ffn1024",
+    "graph_inverse_variance",
+    "graph_octant_tox21_inverse_variance",
+    "graph_hidden200",
+    "graph_hidden600",
+    "graph_depth2",
+    "graph_depth5",
+    "graph_dropout0p0",
+    "graph_dropout0p2",
+    "graph_epochs60",
+    "graph_batch_size32",
     "graph_learning_rate0p0001",
     "graph_learning_rate0p0003",
     "graph_octant_tox21_learning_rate0p0001",
     "graph_octant_tox21_learning_rate0p0003",
     "curve_graph",
+    "curve_graph_chemeleon",
     "curve_graph_film",
     "curve_graph_learning_rate0p0003",
     "curve_graph_epochs100",
+    "curve_graph_chemeleon_frozen",
     "graph_chemeleon_learning_rate0p0001",
     "graph_chemeleon_learning_rate0p0003",
-    "curve_graph_chemeleon",
-    "curve_graph_chemeleon_frozen",
-    "graph_panel_no_screen",
-    "graph_panel_measurement_heads_ffn128",
-    "graph_panel_per_target_heads",
 )
-#: A representative TDI comparison, also run early: the fingerprint-MLP curve against the same
-#: curve head on a random and on a CheMeleon graph backbone.
-PRIORITY_TDI = ("curve_heads", "curve_graph_heads", "curve_graph_chemeleon_heads")
-#: Further levers stacked on the panel, 90-380 min each on an L4. Run after the priority TDI
-#: comparison and ahead of the older configs, but behind the controls above: the review asks for
-#: these only on a panel recipe that looks promising, and the grid so far has the panel level with
-#: the plain graph (0.668 against 0.675) and behind the Octant/Tox21 graph (0.655). The sweep is a
-#: static queue, so stop the run before this tier if the controls show the panel earns nothing.
-PANEL_FOLLOW_UPS = (
-    "graph_panel_mae",
-    "graph_panel_per_endpoint_budget0p25",
-    "graph_panel_per_endpoint_budget0p5",
-    "graph_panel_screen_weight0p1",
-    "graph_panel_screen_weight0p6",
-    "graph_panel_chemeleon_no_screen",
-    "graph_panel_chemeleon_mae",
-    "graph_panel_chemeleon_log2fc",
-    "graph_panel_chemeleon_log2fc_measurement_heads",
+#: The whole TDI track: no TDI config has a completed row at any revision. MLP-backbone curves
+#: first, then the graph-backbone curves.
+UNMEASURED_TDI = (
+    "curve_heads",
+    "curve_descriptor",
+    "curve_film",
+    "curve_heads_ionization",
+    "curve_heads_tdishift_15",
+    "curve_heads_tdishift_50",
+    "curve_heads_losstau_60",
+    "curve_heads_deep",
+    "curve_hidden128",
+    "curve_hidden512",
+    "curve_dropout0p1",
+    "curve_dropout0p3",
+    "curve_epochs100",
+    "curve_screen_noise0p05",
+    "curve_screen_noise0p2",
+    "curve_graph_heads",
+    "curve_graph_chemeleon_heads",
+    "curve_graph_descriptor",
+)
+#: Unmeasured configs that are slow: the Veith-panel graphs (90-380 min on an L4) and the boosted
+#: hyperparameter passes (CPU-bound, so the GPU idles during them).
+UNMEASURED_REGRESSION_SLOW = (
     "graph_panel_chemeleon_log2fc_measurement_heads_chembl",
     "graph_panel_chemeleon_log2fc_measurement_heads_chembl_budget_half",
+    "graph_panel_screen_weight0p1",
+    "graph_panel_screen_weight0p6",
+    "graph_veith_both",
+    "graph_all_aux_source_heads",
+    "graph_screen_and_qhts_response",
+    "graph_panel_per_target_heads",
+    "graph_panel_chemeleon_log2fc",
+    "graph_panel_chemeleon_log2fc_measurement_heads",
+    "graph_panel_no_screen",
+    "graph_panel_chemeleon_no_screen",
+    "graph_panel_measurement_heads_ffn128",
+    "graph_panel_mae",
+    "graph_panel_chemeleon_mae",
+    "graph_panel_per_endpoint_budget0p25",
+    "graph_panel_per_endpoint_budget0p5",
+    "boosted_num_leaves31",
+    "boosted_num_leaves127",
+    "boosted_learning_rate0p03",
+    "boosted_learning_rate0p1",
+    "boosted_n_estimators300",
+    "boosted_n_estimators1000",
+    "boosted_min_child_samples5",
+    "boosted_min_child_samples50",
+    "boosted_subsample0p6",
+    "boosted_subsample1p0",
+    "boosted_colsample_bytree0p4",
+    "boosted_colsample_bytree0p8",
 )
 for _name, _pool in (
-    *((n, REGRESSION) for n in (*PRIORITY_REGRESSION, *PANEL_FOLLOW_UPS)),
-    *((n, TDI) for n in PRIORITY_TDI),
+    *((n, REGRESSION) for n in (*UNMEASURED_REGRESSION, *UNMEASURED_REGRESSION_SLOW)),
+    *((n, TDI) for n in UNMEASURED_TDI),
 ):
     if _name not in _pool:  # fail at import, not hours into a run
-        raise KeyError(f"priority config {_name!r} is not declared")
+        raise KeyError(f"unmeasured-first config {_name!r} is not declared")
 
 
 #: One CV repeat (each seed is a full N_FOLDS cross-validation). The sweep is large and the
@@ -1182,19 +1251,19 @@ def main() -> None:
     )
 
     logger.info(
-        "=== Priority: %d regression + %d TDI configs, then %d panel follow-ups ===",
-        len(PRIORITY_REGRESSION),
-        len(PRIORITY_TDI),
-        len(PANEL_FOLLOW_UPS),
+        "=== Never measured first: %d regression, %d TDI, then %d slow regression ===",
+        len(UNMEASURED_REGRESSION),
+        len(UNMEASURED_TDI),
+        len(UNMEASURED_REGRESSION_SLOW),
     )
-    run_phase("reg", {name: REGRESSION[name] for name in PRIORITY_REGRESSION}, SEEDS)
-    run_phase("tdi", {name: TDI[name] for name in PRIORITY_TDI}, SEEDS)
-    run_phase("reg", {name: REGRESSION[name] for name in PANEL_FOLLOW_UPS}, SEEDS)
+    run_phase("reg", {name: REGRESSION[name] for name in UNMEASURED_REGRESSION}, SEEDS)
+    run_phase("tdi", {name: TDI[name] for name in UNMEASURED_TDI}, SEEDS)
+    run_phase("reg", {name: REGRESSION[name] for name in UNMEASURED_REGRESSION_SLOW}, SEEDS)
 
     logger.info(
         "=== Regression: %d configs, %d-fold CV x %d ===", len(REGRESSION), N_FOLDS, len(SEEDS)
     )
-    run_phase("reg", REGRESSION, SEEDS)  # the priority entries are already recorded and skipped
+    run_phase("reg", REGRESSION, SEEDS)  # the unmeasured entries are already recorded and skipped
     regression = ranked_means("reg")
     logger.info("\nRegression (mean macro ST-RAE, lower better):\n%s", regression.to_string())
 
