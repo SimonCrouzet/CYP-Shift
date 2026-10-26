@@ -1948,6 +1948,15 @@ def _stackable(current: dict, groups: dict[str, tuple[tuple[str, object], ...]])
     return not exclusive and _is_valid(_stack(current, groups))
 
 
+def _fit_cost_rank(overrides: dict) -> int:
+    """0 for a pretrained-encoder fit (the slowest), 1 for a wider or deeper encoder, else 2."""
+    if overrides.get("model.graph.pretraining") == "chemeleon":
+        return 0
+    if overrides.get("model.graph.hidden", 300) > 300 or overrides.get("model.graph.depth", 3) > 3:
+        return 1
+    return 2
+
+
 def _focus_model_round(
     current_name: str,
     current: dict,
@@ -1973,6 +1982,8 @@ def _focus_model_round(
         if _resolved_key(base_recipe) != _resolved_key(current):
             overrides = _apply(base_recipe, _CHEMELEON_CELL.sets)
             candidates[_recipe_name("chemeleon_other", overrides, declared)] = overrides
+    # Slowest first, so a pool smaller than the batch starts the long fits before the short ones.
+    candidates = dict(sorted(candidates.items(), key=lambda item: _fit_cost_rank(item[1])))
     run_phase("reg", {current_name: current, **candidates}, SEEDS)
     scores = ranked_means("reg")["mean"]
     base = _score_of(scores, current_name)

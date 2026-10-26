@@ -716,3 +716,10 @@ def test_the_pool_records_each_finished_row_once_and_a_raising_configuration_as_
     assert sorted(table["name"]) == ["bad", "ok1", "ok2"]
     assert table.set_index("name").loc["bad", "status"] == "failed"
     assert (table["status"] == "ok").sum() == 2
+
+
+def test_the_slowest_model_cells_are_submitted_first(monkeypatch, tmp_path):
+    ran = _focus_world(monkeypatch, tmp_path, lambda cfg: 0.64)
+    night_run.run_focus(margin=0.005)
+    ranks = [night_run._fit_cost_rank(cfg) for cfg in list(ran[2].values())[1:]]  # skip incumbent
+    assert ranks == sorted(ranks) and ranks[0] == 0
