@@ -160,7 +160,6 @@ class TestCapabilityContract:
             {"auxiliary.scored_weight": -1.0},
             {"sources.structure": True, "model.kind": "neural"},
             {"model.kind": "graph", "features.molecular_embedding": "mammal"},
-            {"model.kind": "graph", "training.preset": "coarse_to_fine"},
             {"model.kind": "curve", "model.objective": "absolute"},
             # The analysis-note avenues are graph-only, or mutually exclusive, so a run that
             # could not apply the setting is refused rather than credited with it.
@@ -302,27 +301,17 @@ class TestCapabilityContract:
             config.validate()  # no raise
 
     @pytest.mark.parametrize(
-        "stage",
-        [
-            Stage(freeze_trunk=True),
-            Stage(epochs=5),
-            Stage(lr=1e-4),
-            Stage(assays=("direct_inhibition_drc",)),
-            Stage(data_spaces=("challenge",)),
-        ],
+        "preset", ["direct_finetune", "direct_finetune_frozen", "pooled_continue"]
     )
-    def test_graph_rejects_a_non_default_single_training_stage(self, stage):
-        # The graph factory never applies per-stage settings, so a single non-default stage
-        # would silently do nothing; validation rejects it rather than crediting a run with a
-        # curriculum it never ran.
+    def test_graph_accepts_a_multi_stage_curriculum(self, preset):
         config = ExperimentConfig.load()
         config.override("model.kind", "graph")
-        config.training.stages = [stage]
-        with pytest.raises(ValueError, match="per-stage training settings"):
-            config.validate()
+        config.training.preset = preset
+        config.validate()
+        assert len(config.training.effective_stages()) == 2
 
     def test_graph_accepts_the_default_single_stage(self):
         config = ExperimentConfig.load()
         config.override("model.kind", "graph")
         config.training.stages = [Stage()]
-        config.validate()  # the trivial pooled stage is what the graph actually runs
+        config.validate()

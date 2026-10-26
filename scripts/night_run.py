@@ -79,7 +79,8 @@ NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
 JOBS = int(os.environ.get("CYP_JOBS", "1"))
 #: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
 #: :func:`run_focus`, ``submit`` refits the focus plan's final recipe on all training data
-#: (:func:`run_focus_submission`), ``wide`` cross-validates the wide members (:func:`run_wide`).
+#: (:func:`run_focus_submission`), ``wide`` and ``finetune`` cross-validate the wide members and
+#: the staged-training cells (:func:`run_wide`, :func:`run_finetune`).
 PLAN = os.environ.get("CYP_PLAN", "full")
 
 #: The established auxiliary set (octant + tox21), which beats the plain baseline on the
@@ -2142,22 +2143,42 @@ WIDE_CELLS = (
 )
 
 
-def run_wide() -> None:
-    """Cross-validate the wide members beside the focus plan's data recipe, then report the
-    equal-weight blend of the recipe with each member (``data/wide_blends.csv``)."""
+def _run_cells(cells: tuple[Cell, ...], blends: str) -> None:
+    """Cross-validate the cells on the focus plan's data recipe beside the recipe itself, then
+    report the equal-weight blend of the recipe with each cell (``data/<blends>``)."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
     base = _recipe_name("both_budget", recipe, declared)
     configs = {}
-    for cell in WIDE_CELLS:
+    for cell in cells:
         overrides = _apply(recipe, cell.sets)
         if not _is_valid(overrides):
-            raise ValueError(f"wide cell {cell.tag} is not a valid configuration")
+            raise ValueError(f"cell {cell.tag} is not a valid configuration")
         configs[_recipe_name(cell.tag, overrides, declared)] = overrides
     run_phase("reg", {base: recipe, **configs}, SEEDS)
     scores = ranked_means("reg")["mean"]
-    logger.info("wide plan:\n%s", scores.reindex([base, *configs]).to_string())
-    blend_report(base, [base, *configs], "wide_blends.csv")
+    logger.info("cells:\n%s", scores.reindex([base, *configs]).to_string())
+    blend_report(base, [base, *configs], blends)
+
+
+def run_wide() -> None:
+    """The wide members (``WIDE_CELLS``); blends in ``data/wide_blends.csv``."""
+    _run_cells(WIDE_CELLS, "wide_blends.csv")
+
+
+#: Staged graph training on the focus plan's data recipe: the pooled fit followed by a phase on the
+#: challenge dose-response alone, with the encoder trained or frozen, and the matched control of one
+#: more pooled epoch at the same peak rate (``CURRICULUM_PRESETS``).
+FINETUNE_CELLS = (
+    Cell("direct_finetune", (("training.preset", "direct_finetune"),)),
+    Cell("direct_finetune_frozen", (("training.preset", "direct_finetune_frozen"),)),
+    Cell("pooled_continue", (("training.preset", "pooled_continue"),)),
+)
+
+
+def run_finetune() -> None:
+    """The staged-training cells (``FINETUNE_CELLS``); blends in ``data/finetune_blends.csv``."""
+    _run_cells(FINETUNE_CELLS, "finetune_blends.csv")
 
 
 def main() -> None:
@@ -2176,6 +2197,11 @@ def main() -> None:
 
     if PLAN == "submit":
         run_focus_submission()
+        return
+    if PLAN == "finetune":
+        logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
+        run_finetune()
+        wandb_finish()
         return
     if PLAN == "wide":
         logger.info("=== Wide members on the focus data recipe (jobs: %d) ===", JOBS)

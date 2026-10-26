@@ -789,3 +789,15 @@ def test_the_wide_plan_runs_the_focus_recipe_and_four_valid_members(monkeypatch,
     assert len(narrow) == 1 and narrow[0]["training.inverse_variance_weighting"] is True
     ranks = [night_run._fit_cost_rank(cfg) for _, cfg in members]
     assert ranks == sorted(ranks)  # the slowest fits are submitted first
+
+
+def test_the_finetune_plan_runs_three_staged_cells_beside_the_focus_recipe(monkeypatch, tmp_path):
+    ran = _greedy_world(monkeypatch, tmp_path, lambda cfg: 0.64)
+    monkeypatch.setattr(night_run, "blend_report", lambda *args: None)
+    night_run.run_finetune()
+    (batch,) = ran
+    incumbent, *members = batch.items()
+    assert incumbent[0] == "focus_both_budget_1217e0"
+    presets = {cfg["training.preset"] for _, cfg in members}
+    assert presets == {"direct_finetune", "direct_finetune_frozen", "pooled_continue"}
+    assert all(night_run._is_valid(cfg) for _, cfg in members)

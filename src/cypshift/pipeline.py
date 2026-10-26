@@ -39,7 +39,7 @@ from cypshift.experiment import (
     SCREEN_STRATEGIES,
     ExperimentConfig,
 )
-from cypshift.models.base import PredictiveDistribution
+from cypshift.models.base import PredictiveDistribution, training_stages
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,13 @@ def build_model(
             ffn_hidden=config.model.graph.ffn_hidden,
             learning_rate=config.model.graph.learning_rate,
             warmup_epochs=config.model.graph.warmup_epochs,
+            stages=tuple(
+                training_stages(
+                    config.training,
+                    config.model.graph.epochs,
+                    config.model.graph.learning_rate,
+                )
+            ),
             response_assays=tuple(response_assays),
             tdi_shift_threshold=config.model.graph.tdi_shift_threshold,
             tdi_assay_floor=config.model.graph.tdi_assay_floor,

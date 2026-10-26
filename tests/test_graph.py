@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 import torch
 
+from cypshift.models.base import ResolvedStage
 from cypshift.models.graph import (
     CHEMELEON_URL,
     LOWER,
@@ -484,3 +485,80 @@ def test_measurement_table_trains_only_the_pairs_it_sees():
 
     assert response_moved("CYP2D6") > 1e-4 and response_moved("CYP1A2") == 0.0
     assert np.isfinite(net.predict(smiles[:3]).samples).all()
+
+
+def _staged_rows(n: int = 24) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    smiles = ["CCO", "CCN", "CCC", "CCCl", "c1ccccc1", "CC(=O)O"]
+    rows = []
+    for i in range(n):
+        space, assay = (
+            ("challenge", "direct_inhibition_drc")
+            if i % 3 == 0
+            else ("near_aux", "fluorogenic_pic50")
+        )
+        value = float(rng.uniform(4, 7))
+        rows.append(
+            {
+                "SMILES": smiles[i % len(smiles)],
+                "target": "CYP3A4",
+                "assay": assay,
+                "source": "challenge",
+                "data_space": space,
+                "value": value,
+                "conf_low": value - 0.3,
+                "conf_high": value + 0.3,
+                "is_censored": False,
+                "weight": 1.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _recorded_loaders(monkeypatch) -> list[int]:
+    """Row counts of the datasets the graph builds a loader for, in order."""
+    from cypshift.models import graph as graph_module
+
+    sizes: list[int] = []
+    original = graph_module.cpdata.build_dataloader
+
+    def record(dataset, **kwargs):
+        sizes.append(len(dataset))
+        return original(dataset, **kwargs)
+
+    monkeypatch.setattr(graph_module.cpdata, "build_dataloader", record)
+    return sizes
+
+
+def test_a_later_stage_trains_on_its_own_rows_only(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    pooled = ResolvedStage(("distant_aux", "near_aux", "challenge"), None, 1, 0.0, False)
+    direct = ResolvedStage(("challenge",), ("direct_inhibition_drc",), 1, 2e-4, False)
+    net = GraphNetwork(
+        hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8, stages=(pooled, direct)
+    )
+    net.fit(_staged_rows())
+    assert sizes == [24, 8]
+    assert np.isfinite(net.predict(["CCO", "CCN"]).mean).all()
+
+
+def test_without_stages_one_pooled_fit_runs_over_every_row(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8).fit(_staged_rows())
+    assert sizes == [24]
+
+
+def test_a_stage_sets_its_schedule_and_whether_the_encoder_trains():
+    net = GraphNetwork(hidden=16, depth=2, warmup_epochs=2)
+    model = net._build()
+    free = ResolvedStage(("challenge",), None, 5, 0.0, False)
+    net._configure_stage(model, free, position=0)
+    assert model.warmup_epochs == 2 and model.max_lr == 1e-3  # the model's own schedule
+    frozen = ResolvedStage(("challenge",), None, 5, 2e-4, True)
+    net._configure_stage(model, frozen, position=1)
+    assert model.warmup_epochs == 0
+    assert (model.init_lr, model.max_lr, model.final_lr) == pytest.approx((2e-5, 2e-4, 2e-5))
+    assert not any(p.requires_grad for p in model.message_passing.parameters())
+    assert all(p.requires_grad for p in model.predictor.parameters())
+    net._configure_stage(model, free, position=2)
+    assert all(p.requires_grad for p in model.message_passing.parameters())

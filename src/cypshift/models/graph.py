@@ -49,6 +49,7 @@ from torch import nn
 from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import (
     ASSAYS,
+    DATA_SPACES,
     SOURCES,
     encode_conditions,
     n_condition_columns,
@@ -56,7 +57,12 @@ from cypshift.data.assembly import (
 from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise
-from cypshift.models.base import PredictiveDistribution
+from cypshift.models.base import (
+    PredictiveDistribution,
+    ResolvedStage,
+    active_stages,
+    rows_for_stage,
+)
 from cypshift.models.shared import SCORED_ASSAY
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 from cypshift.structure.cofold import STRUCTURE_FEATURE_NAMES
@@ -510,6 +516,7 @@ class GraphNetwork:
         ffn_hidden: int = 0,
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
+        stages: tuple[ResolvedStage, ...] = (),
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -574,6 +581,8 @@ class GraphNetwork:
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
         self.warmup_epochs = warmup_epochs
+        #: Training curriculum, one entry per stage; empty trains one pooled stage of ``epochs``.
+        self.stages = tuple(stages)
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -883,6 +892,11 @@ class GraphNetwork:
             self._spread,
         )
         points = self._datapoints(usable, labelled=True)
+        stages = active_stages(
+            usable,
+            list(self.stages)
+            or [ResolvedStage(DATA_SPACES, None, self.epochs, self.learning_rate, False)],
+        )
 
         self._members = []
         for member in range(self.n_members):
@@ -891,32 +905,64 @@ class GraphNetwork:
                 # Each member sees a bootstrap resample, so members differ in the data
                 # they fit, not only in initialisation -- the diversity a reseed lacks.
                 rng = np.random.default_rng(self.seed + member)
-                member_points = [points[i] for i in rng.integers(0, len(points), size=len(points))]
+                member_rows = rng.integers(0, len(points), size=len(points))
             else:
-                member_points = points
-            dataset = cpdata.MoleculeDataset(member_points)
-            # Featurise every molecule graph once, before training, so an epoch only collates
-            # cached graphs instead of re-featurising each molecule (forked loader workers read the
-            # cache without copying it).
-            dataset.cache = True
-            loader = cpdata.build_dataloader(
-                dataset, batch_size=self.batch_size, num_workers=self.num_workers
-            )
+                member_rows = np.arange(len(points))
             model = self._build()
             if member == 0:
                 self._log_capacity(model)
-            trainer = pl.Trainer(
-                max_epochs=self.epochs,
-                accelerator="auto",
-                logger=False,
-                enable_checkpointing=False,
-                enable_progress_bar=False,
-                enable_model_summary=False,
-            )
-            trainer.fit(model, loader)
+            for position, stage in enumerate(stages):
+                rows = member_rows[rows_for_stage(usable, stage)[member_rows]]
+                if rows.size == 0:
+                    continue
+                self._configure_stage(model, stage, position)
+                dataset = cpdata.MoleculeDataset([points[i] for i in rows])
+                # Featurise every molecule graph once, before training, so an epoch only collates
+                # cached graphs instead of re-featurising each molecule (forked loader workers
+                # read the cache without copying it).
+                dataset.cache = True
+                loader = cpdata.build_dataloader(
+                    dataset, batch_size=self.batch_size, num_workers=self.num_workers
+                )
+                trainer = pl.Trainer(
+                    max_epochs=stage.epochs,
+                    accelerator="auto",
+                    logger=False,
+                    enable_checkpointing=False,
+                    enable_progress_bar=False,
+                    enable_model_summary=False,
+                )
+                if len(stages) > 1:
+                    logger.info(
+                        "stage %d/%d: %d rows, %d epochs, peak lr %s%s",
+                        position + 1,
+                        len(stages),
+                        rows.size,
+                        stage.epochs,
+                        stage.lr or "default",
+                        ", encoder frozen" if stage.freeze_trunk else "",
+                    )
+                trainer.fit(model, loader)
             self._members.append(model)
             logger.info("member %d trained", member)
         return self
+
+    def _configure_stage(self, model: cpmodels.MPNN, stage: ResolvedStage, position: int) -> None:
+        """Set the optimiser schedule and the encoder's trainability for one stage.
+
+        The first stage keeps the model's own warmup; later stages start at their peak rate. A
+        stage that sets a learning rate uses it as the peak, with the initial and final rates a
+        tenth of it, as the model's own schedule does; one that leaves it unset keeps the
+        schedule the model was built with. A pretrained encoder that is not fine-tuned stays
+        frozen in every stage.
+        """
+        model.warmup_epochs = self.warmup_epochs if position == 0 else 0
+        if stage.lr > 0:
+            model.init_lr, model.max_lr, model.final_lr = stage.lr / 10, stage.lr, stage.lr / 10
+        pretrained_frozen = self.pretraining == "chemeleon" and not self.pretraining_finetune
+        trainable = not (stage.freeze_trunk or pretrained_frozen)
+        for parameter in model.message_passing.parameters():
+            parameter.requires_grad = trainable
 
     def _samples_at_assay(self, smiles: list[str], assay: str) -> NDArray[np.float64]:
         """Per-member predicted pIC50 at one assay condition; (members, n, endpoints)."""

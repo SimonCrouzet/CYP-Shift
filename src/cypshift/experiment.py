@@ -525,6 +525,18 @@ CURRICULUM_PRESETS: dict[str, list[Stage]] = {
         Stage(data_spaces=("challenge",), assays=(_SCREEN,), lr=5e-4),
         Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=25, lr=2e-4, freeze_trunk=True),
     ],
+    # Pooled fit, then a short phase on the challenge dose-response alone at a lower peak lr; the
+    # frozen variant trains only the readout in that phase. ``pooled_continue`` is the matched
+    # control: the same lr for one more pooled epoch, a comparable number of optimiser updates.
+    "direct_finetune": [
+        Stage(),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=10, lr=2e-4),
+    ],
+    "direct_finetune_frozen": [
+        Stage(),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=10, lr=2e-4, freeze_trunk=True),
+    ],
+    "pooled_continue": [Stage(), Stage(epochs=1, lr=2e-4)],
     # Coarse to fine, then a short unfrozen polish at a very low lr (progressive unfreezing).
     "progressive": [
         Stage(data_spaces=("distant_aux", "near_aux")),
@@ -731,29 +743,6 @@ class ExperimentConfig:
                     "the graph model reads embeddings through model.graph.pretraining='mammal', "
                     "not features.molecular_embedding"
                 )
-            stages = self.training.effective_stages()
-            if len(stages) > 1:
-                raise ValueError("the graph model does not run a multi-stage training curriculum")
-            if stages:
-                # The graph factory never passes the stage to GraphNetwork, whose fit runs its
-                # own epochs over the whole assembled table. A stage that restricts the data
-                # (a data_space subset or an assay filter) or sets a per-stage strategy (epochs,
-                # lr, freeze_trunk) is therefore silently ignored, so reject it rather than
-                # credit a run with a curriculum it never applied. The trivial pooled stage --
-                # every data_space, every assay, the model's own schedule -- is what the graph
-                # actually runs, so it is accepted (compared as sets, since a loaded config
-                # carries data_spaces as a list).
-                stage = stages[0]
-                restricts_data = set(stage.data_spaces) != set(DATA_SPACES) or stage.assays
-                sets_strategy = (
-                    stage.epochs is not None or stage.lr is not None or stage.freeze_trunk
-                )
-                if restricts_data or sets_strategy:
-                    raise ValueError(
-                        "the graph model ignores per-stage training settings (data_spaces, "
-                        "assays, epochs, lr, freeze_trunk); configure training through the "
-                        "model.graph.* fields instead"
-                    )
             if self.model.graph.separate_trunks and self.model.graph.adapt_target != "none":
                 # Separate trunks already give each isoform its own encoder, so a per-isoform
                 # adapter on top is redundant and its gate (a target one-hot) is absent.
