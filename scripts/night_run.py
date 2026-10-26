@@ -78,7 +78,8 @@ NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
 #: comparison overlap. Does not affect results; ``1`` runs them one after another in this process.
 JOBS = int(os.environ.get("CYP_JOBS", "1"))
 #: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
-#: :func:`run_focus`.
+#: :func:`run_focus`, ``submit`` refits the focus plan's final recipe on all training data
+#: (:func:`run_focus_submission`).
 PLAN = os.environ.get("CYP_PLAN", "full")
 
 #: The established auxiliary set (octant + tox21), which beats the plain baseline on the
@@ -2082,6 +2083,21 @@ def run_focus(margin: float = ADOPT_MARGIN) -> dict:
     return recipe
 
 
+FOCUS_SUBMISSION = Path("submissions/focus_submission_regression.csv")
+
+
+def run_focus_submission() -> None:
+    """Refit the recipe in ``data/focus_best.json`` on all training data and write the blinded-test
+    submission. Run with ``CYP_MEMBERS=0`` so the ensemble has the graph model's own member count
+    (five), not the single member the screening runs use."""
+    recipe = json.loads((RESULTS.parent / "focus_best.json").read_text())
+    name = recipe.pop("name")
+    logger.info("refitting %s on all training data (members: %s)", name, NUM_MEMBERS or "default")
+    write_submission(
+        "regression", recipe, FOCUS_SUBMISSION, RESULTS.parent / "focus_submission_config.json"
+    )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -2096,6 +2112,9 @@ def main() -> None:
         members,
     )
 
+    if PLAN == "submit":
+        run_focus_submission()
+        return
     if PLAN == "focus":
         logger.info("=== Focus plan from %s (jobs: %d) ===", FOCUS_BASE, JOBS)
         run_focus()

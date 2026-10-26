@@ -55,6 +55,8 @@ RESULT_PATHS = (
     "data/focus_path.json",
     "data/focus_best.json",
     "data/focus_blends.csv",
+    "data/focus_submission_config.json",
+    "submissions/focus_submission_regression.csv",
     "configs/night_best.json",
     "configs/night_best_tdi.json",
     "submissions/night_submission_regression.csv",

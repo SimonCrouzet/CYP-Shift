@@ -723,3 +723,16 @@ def test_the_slowest_model_cells_are_submitted_first(monkeypatch, tmp_path):
     night_run.run_focus(margin=0.005)
     ranks = [night_run._fit_cost_rank(cfg) for cfg in list(ran[2].values())[1:]]  # skip incumbent
     assert ranks == sorted(ranks) and ranks[0] == 0
+
+
+def test_the_submit_plan_refits_the_focus_recipe_without_its_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    (tmp_path / "focus_best.json").write_text(
+        json.dumps({"name": "focus_x", "model.kind": "graph", "model.graph.epochs": 60})
+    )
+    written = []
+    monkeypatch.setattr(night_run, "write_submission", lambda *args: written.append(args))
+    night_run.run_focus_submission()
+    ((track, recipe, output, config_path),) = written
+    assert track == "regression" and recipe == {"model.kind": "graph", "model.graph.epochs": 60}
+    assert output == night_run.FOCUS_SUBMISSION and config_path.parent == tmp_path

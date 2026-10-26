@@ -480,9 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--plan",
-        choices=("full", "focus"),
+        choices=("full", "focus", "submit"),
         default="full",
-        help="remote CYP_PLAN: the whole queue, or the staged focus plan",
+        help="remote CYP_PLAN: the whole queue, the staged focus plan, or the final refit",
     )
     run.add_argument(
         "--threads",
