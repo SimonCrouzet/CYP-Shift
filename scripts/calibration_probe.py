@@ -24,6 +24,8 @@ on any submission by standardising each endpoint's predictions to the target mea
         --output targets.json
     python scripts/calibration_probe.py apply --submission submissions/new.csv \\
         --targets targets.json --output submissions/new_calibrated.csv
+
+A target may also carry ``min`` and ``max``, which clip the standardised predictions.
 """
 
 import argparse
@@ -204,7 +206,10 @@ def apply_targets(submission: Path, targets: dict, output: Path, only: list[str]
         if only and enzyme not in only:
             continue
         column = _column(enzyme)
-        frame[column] = standardise_to(frame[column].to_numpy(float), target["mean"], target["sd"])
+        values = standardise_to(frame[column].to_numpy(float), target["mean"], target["sd"])
+        # Optional bounds (the labelled range of the training set): a stretched tail must not
+        # leave the range the assay reports.
+        frame[column] = np.clip(values, target.get("min", -np.inf), target.get("max", np.inf))
         logger.info("%s -> mean %.3f sd %.3f", enzyme, target["mean"], target["sd"])
     output.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(output, index=False)

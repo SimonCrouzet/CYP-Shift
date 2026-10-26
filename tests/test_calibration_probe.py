@@ -110,3 +110,14 @@ def test_apply_standardises_each_endpoint_to_its_target(tmp_path):
             assert np.corrcoef(result[column], base[column])[0, 1] == pytest.approx(1.0)
         else:
             assert np.allclose(result[column], base[column])
+
+
+def test_apply_clips_to_the_target_bounds(tmp_path):
+    base, _ = _world()
+    path = tmp_path / "sub.csv"
+    base.to_csv(path, index=False)
+    targets = {"CYP2D6": {"mean": 3.0, "sd": 1.5, "min": 2.0, "max": 5.0}}
+    out = tmp_path / "out.csv"
+    probe.apply_targets(path, targets, out, only=None)
+    values = pd.read_csv(out)[probe._column("CYP2D6")]
+    assert values.min() == 2.0 and values.max() == 5.0
