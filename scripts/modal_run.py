@@ -127,6 +127,8 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
     plain = {
         "CYP_WORKERS": str(args.workers),
         "CYP_MEMBERS": str(args.members),
+        "CYP_JOBS": str(args.jobs),
+        "CYP_PLAN": args.plan,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
         "PYTHONUNBUFFERED": "1",
@@ -474,6 +476,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="remote CYP_MEMBERS (1 screens architectures fast; 0 uses each family's default)",
+    )
+    run.add_argument(
+        "--plan",
+        choices=("full", "focus"),
+        default="full",
+        help="remote CYP_PLAN: the whole queue, or the staged focus plan",
+    )
+    run.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="remote CYP_JOBS: configurations trained at the same time on the one GPU",
     )
     run.add_argument("--ref", default="HEAD", help="git ref to archive and run")
     run.add_argument(

@@ -52,6 +52,9 @@ logger = logging.getLogger("lightning_run")
 RESULT_PATHS = (
     "data/night_results.csv",
     "data/run_bundles",
+    "data/focus_path.json",
+    "data/focus_best.json",
+    "data/focus_blends.csv",
     "configs/night_best.json",
     "configs/night_best_tdi.json",
     "submissions/night_submission_regression.csv",

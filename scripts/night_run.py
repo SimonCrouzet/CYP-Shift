@@ -29,11 +29,13 @@ config is one full cross-validation; the GPU families make this long, hence a si
     /mnt/wsl/ext/envs/cypshift/bin/python scripts/night_run.py
 """
 
+import concurrent.futures
 import dataclasses
 import hashlib
 import itertools
 import json
 import logging
+import multiprocessing
 import os
 import subprocess
 import time
@@ -71,6 +73,13 @@ NUM_WORKERS = int(os.environ.get("CYP_WORKERS", "0"))
 #: GPU families would otherwise be too slow to cover in a window; ensemble the winners after.
 #: Unlike workers it does change results, so a screening run is for ranking, not final scores.
 NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
+#: Configs trained at the same time, from the environment. Each runs in its own process on the one
+#: GPU (a graph fit is bound by kernel-launch latency, not by the GPU), so the cells of one
+#: comparison overlap. Does not affect results; ``1`` runs them one after another in this process.
+JOBS = int(os.environ.get("CYP_JOBS", "1"))
+#: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
+#: :func:`run_focus`.
+PLAN = os.environ.get("CYP_PLAN", "full")
 
 #: The established auxiliary set (octant + tox21), which beats the plain baseline on the
 #: boosted model; used here to check whether it also helps the stronger families.
@@ -1409,8 +1418,20 @@ UNMEASURED_REGRESSION_SLOW = (
     "boosted_colsample_bytree0p4",
     "boosted_colsample_bytree0p8",
 )
+#: The six full-panel cells measured at ``744efbd-m1`` while the max-response carried the wrong sign
+#: (rows relabelled ``744efbd-m1-signbug``). The sign is fixed, so these rerun right after the qHTS
+#: grid; cheapest first.
+PANEL_RERUN_REGRESSION = (
+    "graph_panel",
+    "graph_panel_log2fc",
+    "graph_panel_measurement_heads",
+    "graph_panel_log2fc_measurement_heads",
+    "graph_panel_chemeleon",
+    "graph_panel_chemeleon_measurement_heads",
+)
 for _name, _pool in (
     *((n, REGRESSION) for n in (*UNMEASURED_REGRESSION, *UNMEASURED_REGRESSION_SLOW)),
+    *((n, REGRESSION) for n in PANEL_RERUN_REGRESSION),
     *((n, TDI) for n in UNMEASURED_TDI),
 ):
     if _name not in _pool:  # fail at import, not hours into a run
@@ -1564,7 +1585,8 @@ def record(row: dict) -> None:
     wandb_log_row(row)
 
 
-def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
+def compute_row(phase: str, name: str, overrides: dict, seed: int) -> dict:
+    """Cross-validate one configuration and return its result row (nothing is recorded here)."""
     config = ExperimentConfig.load()
     config.override("data.seed", seed)
     for key, value in overrides.items():
@@ -1606,31 +1628,82 @@ def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
             row[f"{isoform}_MCC"] = value
         if mccs:
             row["macro_MCC"] = round(sum(mccs.values()) / len(mccs), 4)
+    return row
+
+
+def record_row(row: dict) -> None:
+    """Record a finished row and log the one-line summary of it."""
     record(row)
     tail = f", macro MCC {row['macro_MCC']}" if row.get("macro_MCC") is not None else ""
     logger.info(
         ">>> %s/%s seed=%d: macro ST-RAE %.4f%s (%.1f min)",
-        phase,
-        name,
-        seed,
-        macro,
+        row["phase"],
+        row["name"],
+        row["seed"],
+        row["macro_ST_RAE"],
         tail,
         row["minutes"],
     )
 
 
+def evaluate(phase: str, name: str, overrides: dict, seed: int) -> None:
+    record_row(compute_row(phase, name, overrides, seed))
+
+
+def _compute_row_in_child(phase: str, name: str, overrides: dict, seed: int) -> dict:
+    """:func:`compute_row` in a spawned worker; its log lines carry the configuration name."""
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(level=logging.INFO)
+    for handler in root.handlers:
+        handler.setFormatter(logging.Formatter(f"%(asctime)s [{name}] %(message)s", "%H:%M:%S"))
+    return compute_row(phase, name, overrides, seed)
+
+
+def _run_parallel(phase: str, todo: list[tuple[str, dict, int]]) -> None:
+    """Run ``todo`` as concurrent worker processes, at most ``JOBS`` at a time.
+
+    Workers are spawned (CUDA does not survive a fork) and live for one configuration each, so a
+    fit's GPU and host memory is released when it ends. The parent records every row, so the results
+    file has a single writer. A configuration that raises is recorded as failed; if a worker dies
+    outright (killed for memory) the pool is broken and every configuration it had not finished is
+    recorded as failed.
+    """
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=min(JOBS, len(todo)), mp_context=context, max_tasks_per_child=1
+    ) as pool:
+        futures = {
+            pool.submit(_compute_row_in_child, phase, name, overrides, seed): (name, seed)
+            for name, overrides, seed in todo
+        }
+        for future in concurrent.futures.as_completed(futures):
+            name, seed = futures[future]
+            try:
+                record_row(future.result())
+            except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
+                logger.error("%s/%s seed=%d FAILED: %r", phase, name, seed, error)
+                record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
+
+
 def run_phase(phase: str, configs: dict[str, dict], seeds: list[int]) -> None:
     done = already_done()
+    todo = []
     for name, overrides in configs.items():
         for seed in seeds:
             if (phase, name, seed) in done:
                 logger.info("skip %s/%s seed=%d (already recorded)", phase, name, seed)
-                continue
-            try:
-                evaluate(phase, name, overrides, seed)
-            except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
-                logger.exception("%s/%s seed=%d FAILED: %s", phase, name, seed, error)
-                record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
+            else:
+                todo.append((name, overrides, seed))
+    if JOBS > 1 and len(todo) > 1:
+        _run_parallel(phase, todo)
+        return
+    for name, overrides, seed in todo:
+        try:
+            evaluate(phase, name, overrides, seed)
+        except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
+            logger.exception("%s/%s seed=%d FAILED: %s", phase, name, seed, error)
+            record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
 
 
 def _completed(phase: str | None = None) -> pd.DataFrame:
@@ -1701,6 +1774,303 @@ def _archive_stale_results() -> None:
         logger.info("archived results with a mismatched schema to %s", archived)
 
 
+@dataclasses.dataclass(frozen=True)
+class Cell:
+    """One configuration of the focus plan: ``sets`` are applied on top of the incumbent recipe.
+    ``group`` names the factor the cell varies; cells of one group are alternatives, and the groups
+    that win are stacked in the final round."""
+
+    tag: str
+    sets: tuple[tuple[str, object], ...]
+    group: str = ""
+
+
+#: The recipe the focus plan starts from: the graph with Octant, Tox21 and Novartis, which the
+#: greedy search adopted (macro ST-RAE 0.6415).
+FOCUS_BASE = QHTS_BEST_BASE
+#: Summed near-auxiliary weight per challenge label, for the normalised cells: the mean over the
+#: four scored enzymes of that ratio in ``FOCUS_BASE``'s training table (1.7, 14.3, 12.1, 8.0).
+FOCUS_BUDGET = 9.0
+_BOTH = (("sources.qhts_representation", "both"),)
+_BUDGET = (("auxiliary.per_endpoint_budget", FOCUS_BUDGET),)
+#: Independent heads per (target, measurement); the readout width is pinned to the shared
+#: readout's default so the comparison is not also one of width.
+_MEASUREMENT_HEADS = (
+    ("model.graph.per_measurement_heads", True),
+    ("model.graph.per_target_heads", False),
+    ("model.graph.ffn_hidden", 300),
+)
+_LOG2FC = (("multifidelity.screen_strategy", "log2fc_response"),)
+
+#: Round 1, data side: the qHTS representation (potency only, or potency and the Tox21
+#: max-response) crossed with the auxiliary weights (as they are, or normalised to
+#: ``FOCUS_BUDGET`` labels' worth per enzyme). The fourth cell, potency only with the weights as
+#: they are, is ``FOCUS_BASE``. The normalised potency-only cell is the control for the weight
+#: change.
+FOCUS_ROUND_1 = (
+    Cell("pic50_budget", _BUDGET),
+    Cell("both", _BOTH),
+    Cell("both_budget", _BOTH + _BUDGET),
+)
+#: Round 2, data side, on the round-1 winner: the screen as isotonic pseudo-potencies (the
+#: incumbent) or as the raw log2 fold-change on its own response head, crossed with the shared
+#: readout (the incumbent) or independent per-measurement heads.
+FOCUS_ROUND_2 = (
+    Cell("log2fc", _LOG2FC),
+    Cell("mheads", _MEASUREMENT_HEADS),
+    Cell("log2fc_mheads", _LOG2FC + _MEASUREMENT_HEADS),
+)
+#: Round 3, model side: each cell changes one factor of the round-2 winner.
+FOCUS_ROUND_3 = (
+    Cell(
+        "chemeleon_lr3e4",
+        (
+            ("model.graph.pretraining", "chemeleon"),
+            ("model.graph.learning_rate", 3e-4),
+            ("model.graph.epochs", 60),
+        ),
+        "encoder",
+    ),
+    Cell(
+        "capacity",
+        (
+            ("model.graph.hidden", 600),
+            ("model.graph.depth", 5),
+            ("model.graph.ffn_hidden", 1024),
+            ("model.graph.epochs", 60),
+        ),
+        "capacity",
+    ),
+    Cell("epochs60", (("model.graph.epochs", 60),), "epochs"),
+    Cell(
+        "per_target_heads",
+        (
+            ("model.graph.per_target_heads", True),
+            ("model.graph.per_measurement_heads", False),
+            ("model.graph.ffn_hidden", 300),
+        ),
+        "readout",
+    ),
+    Cell("per_measurement_heads", _MEASUREMENT_HEADS, "readout"),
+    Cell("point_loss0p1", (("model.point_loss_weight", 0.1),), "loss"),
+    Cell("absolute", (("model.objective", "absolute"),), "loss"),
+    Cell("adapter_cyp2d6", (("model.graph.adapt_target", "CYP2D6"),), "adapter"),
+)
+#: The order the winning groups are stacked in, so a field two groups set (epochs, readout width)
+#: ends on the value of the later one.
+FOCUS_STACK_ORDER = ("epochs", "readout", "loss", "adapter", "capacity", "encoder")
+#: Groups that cannot be stacked: the pretrained encoder fixes the message-passing width and depth.
+FOCUS_EXCLUSIVE = (("capacity", "encoder"),)
+_CHEMELEON_CELL = FOCUS_ROUND_3[0]
+
+
+def _apply(recipe: dict, sets: tuple[tuple[str, object], ...]) -> dict:
+    return {**recipe, **dict(sets)}
+
+
+def _is_valid(overrides: dict) -> bool:
+    """Whether the settings form a configuration ``ExperimentConfig.validate`` accepts."""
+    experiment_logger = logging.getLogger("cypshift.experiment")
+    previous = experiment_logger.level
+    experiment_logger.setLevel(logging.WARNING)
+    try:
+        config = ExperimentConfig()
+        for key, value in overrides.items():
+            config.override(key, value)
+        config.validate()
+    except ValueError:
+        return False
+    finally:
+        experiment_logger.setLevel(previous)
+    return True
+
+
+def _recipe_name(tag: str, overrides: dict, declared: dict[str, str]) -> str:
+    """The name a recipe is recorded under: the declared entry with the same resolved settings,
+    else ``focus_<tag>_<digest>`` (registered, so the same recipe keeps its name across reruns)."""
+    key = _resolved_key(overrides)
+    if key not in declared:
+        name = f"focus_{tag}_{hashlib.sha1(key.encode()).hexdigest()[:6]}"
+        REGRESSION[name] = overrides
+        declared[key] = name
+    return declared[key]
+
+
+def _score_of(scores: pd.Series, name: str) -> float:
+    value = scores.get(name, float("nan"))
+    return float("inf") if pd.isna(value) else float(value)
+
+
+def _focus_round(
+    tag: str,
+    cells: tuple[Cell, ...],
+    current_name: str,
+    current: dict,
+    declared: dict[str, str],
+    margin: float,
+) -> tuple[str, dict, dict[str, float]]:
+    """Run ``cells`` on the incumbent as one parallel batch and adopt the best one if it beats the
+    incumbent by more than ``margin``. Returns the recipe name, its settings and every score."""
+    candidates: dict[str, dict] = {}
+    for cell in cells:
+        overrides = _apply(current, cell.sets)
+        if not _is_valid(overrides):
+            logger.info("focus %s: %s skipped, invalid on the incumbent", tag, cell.tag)
+        elif _resolved_key(overrides) == _resolved_key(current):
+            logger.info("focus %s: %s is the incumbent", tag, cell.tag)
+        else:
+            candidates[_recipe_name(cell.tag, overrides, declared)] = overrides
+    run_phase("reg", {current_name: current, **candidates}, SEEDS)
+    scores = ranked_means("reg")["mean"]
+    base = _score_of(scores, current_name)
+    results = {name: _score_of(scores, name) for name in (current_name, *candidates)}
+    listing = ", ".join(f"{name}={score:.4f}" for name, score in results.items())
+    best = min(candidates, key=lambda name: results[name], default=None)
+    if best is not None and results[best] <= base - margin:
+        gain = (base, results[best])
+        logger.info("focus %s: ADOPT %s (%.4f -> %.4f); %s", tag, best, *gain, listing)
+        return best, candidates[best], results
+    logger.info("focus %s: keep %s (%.4f); %s", tag, current_name, base, listing)
+    return current_name, current, results
+
+
+def _stack(current: dict, groups: dict[str, tuple[tuple[str, object], ...]]) -> dict:
+    """``current`` with each group's settings applied in ``FOCUS_STACK_ORDER``."""
+    recipe = dict(current)
+    for group in FOCUS_STACK_ORDER:
+        if group in groups:
+            recipe = _apply(recipe, groups[group])
+    return recipe
+
+
+def _stackable(current: dict, groups: dict[str, tuple[tuple[str, object], ...]]) -> bool:
+    exclusive = any(a in groups and b in groups for a, b in FOCUS_EXCLUSIVE)
+    return not exclusive and _is_valid(_stack(current, groups))
+
+
+def _focus_model_round(
+    current_name: str,
+    current: dict,
+    encoder_bases: list[dict],
+    declared: dict,
+    margin: float,
+) -> tuple[str, dict, dict[str, float]]:
+    """Round 3: every ``FOCUS_ROUND_3`` cell on the incumbent in one parallel batch, then the groups
+    that won are stacked into one recipe, which is measured and kept if it beats the best single
+    group. The pretrained encoder is also tried, as separate candidates, on each of
+    ``encoder_bases`` that differs from the incumbent."""
+    group_of: dict[str, str] = {}
+    sets_of: dict[str, tuple[tuple[str, object], ...]] = {}
+    candidates: dict[str, dict] = {}
+    for cell in FOCUS_ROUND_3:
+        overrides = _apply(current, cell.sets)
+        if not _is_valid(overrides) or _resolved_key(overrides) == _resolved_key(current):
+            logger.info("focus model: %s skipped (invalid or already the incumbent)", cell.tag)
+            continue
+        name = _recipe_name(cell.tag, overrides, declared)
+        candidates[name], group_of[name], sets_of[name] = overrides, cell.group, cell.sets
+    for base_recipe in encoder_bases:
+        if _resolved_key(base_recipe) != _resolved_key(current):
+            overrides = _apply(base_recipe, _CHEMELEON_CELL.sets)
+            candidates[_recipe_name("chemeleon_other", overrides, declared)] = overrides
+    run_phase("reg", {current_name: current, **candidates}, SEEDS)
+    scores = ranked_means("reg")["mean"]
+    base = _score_of(scores, current_name)
+    results = {name: _score_of(scores, name) for name in (current_name, *candidates)}
+    logger.info(
+        "focus model: %s", ", ".join(f"{name}={score:.4f}" for name, score in results.items())
+    )
+
+    winners: dict[str, tuple[float, str]] = {}  # group -> (gain, cell name)
+    for name, group in group_of.items():
+        gain = base - results[name]
+        if gain > margin and gain > winners.get(group, (0.0, ""))[0]:
+            winners[group] = (gain, name)
+    chosen: dict[str, tuple[tuple[str, object], ...]] = {}
+    for group in sorted(winners, key=lambda g: -winners[g][0]):
+        trial = {**chosen, group: sets_of[winners[group][1]]}
+        if _stackable(current, trial):
+            chosen = trial
+        else:
+            logger.info("focus model: group %s does not stack with %s", group, sorted(chosen))
+    ranked = {name: results[name] for name in (current_name, *candidates)}
+    if len(chosen) > 1:
+        stacked = _stack(current, chosen)
+        name = _recipe_name("stack_" + "_".join(sorted(chosen)), stacked, declared)
+        run_phase("reg", {name: stacked}, SEEDS)
+        scores = ranked_means("reg")["mean"]
+        ranked[name] = _score_of(scores, name)
+        candidates[name] = stacked
+        logger.info("focus model: stack of %s -> %s = %.4f", sorted(chosen), name, ranked[name])
+    best = min((n for n in ranked if n != current_name), key=ranked.get, default=None)
+    if best is not None and ranked[best] <= base - margin:
+        logger.info("focus model: ADOPT %s (%.4f -> %.4f)", best, base, ranked[best])
+        return best, candidates[best], ranked
+    logger.info("focus model: keep %s (%.4f)", current_name, base)
+    return current_name, current, ranked
+
+
+def blend_report(final: str, names: list[str]) -> pd.DataFrame:
+    """Macro ST-RAE of the equal-weight blend of ``final`` with each other recipe of the plan, from
+    the out-of-fold predictions of their bundles; written to ``data/focus_blends.csv``."""
+    import blend
+
+    members = {
+        name: frame for name, frame in blend.load_members(REV, SEEDS[0]).items() if name in names
+    }
+    if final not in members:
+        return pd.DataFrame()
+    rows = [{"with": "(alone)", "macro_ST_RAE": blend.rank_single(members)[final]}]
+    for other in sorted(set(members) - {final}):
+        pair = {final: members[final], other: members[other]}
+        rows.append(
+            {"with": other, "macro_ST_RAE": blend.macro_st_rae_on(pair, "equal", None, None)}
+        )
+    table = pd.DataFrame(rows).sort_values("macro_ST_RAE").reset_index(drop=True)
+    logger.info("equal-weight blends with %s:\n%s", final, table.to_string())
+    table.to_csv(RESULTS.parent / "focus_blends.csv", index=False)
+    return table
+
+
+def run_focus(margin: float = ADOPT_MARGIN) -> dict:
+    """The staged plan: round 1 (qHTS representation x auxiliary weights), round 2 (screen
+    representation x readout) on its winner, round 3 (model side) on that, each round one parallel
+    batch whose winner becomes the incumbent. Writes ``data/focus_path.json`` and
+    ``data/focus_best.json`` and returns the final recipe's settings."""
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    name, recipe = FOCUS_BASE, dict(REGRESSION[FOCUS_BASE])
+    path = [{"round": "base", "name": name}]
+    scores: dict[str, float] = {}
+
+    name, recipe, results = _focus_round("1 data", FOCUS_ROUND_1, name, recipe, declared, margin)
+    scores.update(results)
+    path.append({"round": "1 data", "name": name, "scores": results})
+    # The best round-1 recipe of each kind -- potency only, and potency with the max-response --
+    # which the pretrained encoder is tried on in round 3 beside the round-2 winner.
+    by_kind: dict[str, dict[str, float]] = {"pic50": {}, "both": {}}
+    for cell_name, score in results.items():
+        kind = REGRESSION[cell_name].get("sources.qhts_representation", "pic50")
+        by_kind[kind][cell_name] = score
+    encoder_bases = [REGRESSION[min(cells, key=cells.get)] for cells in by_kind.values() if cells]
+
+    name, recipe, results = _focus_round("2 data", FOCUS_ROUND_2, name, recipe, declared, margin)
+    scores.update(results)
+    path.append({"round": "2 data", "name": name, "scores": results})
+
+    name, recipe, results = _focus_model_round(name, recipe, encoder_bases, declared, margin)
+    scores.update(results)
+    path.append({"round": "3 model", "name": name, "scores": results})
+
+    logger.info("focus plan ended on %s: %s", name, json.dumps(recipe, sort_keys=True))
+    out = RESULTS.parent
+    (out / "focus_path.json").write_text(
+        json.dumps({"path": path, "recipe": recipe, "margin": margin}, indent=2, default=list)
+    )
+    (out / "focus_best.json").write_text(json.dumps({"name": name, **recipe}, indent=2) + "\n")
+    blend_report(name, list(scores))
+    return recipe
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -1715,6 +2085,12 @@ def main() -> None:
         members,
     )
 
+    if PLAN == "focus":
+        logger.info("=== Focus plan from %s (jobs: %d) ===", FOCUS_BASE, JOBS)
+        run_focus()
+        wandb_finish()
+        return
+
     logger.info(
         "=== qHTS max-response x source set x model family: %d regression, %d TDI ===",
         len(QHTS_REGRESSION),
@@ -1722,6 +2098,12 @@ def main() -> None:
     )
     run_phase("reg", {name: REGRESSION[name] for name in QHTS_REGRESSION}, SEEDS)
     run_phase("tdi", {name: TDI[name] for name in QHTS_TDI}, SEEDS)
+
+    logger.info(
+        "=== Full-panel cells rerun after the max-response sign fix: %d regression ===",
+        len(PANEL_RERUN_REGRESSION),
+    )
+    run_phase("reg", {name: REGRESSION[name] for name in PANEL_RERUN_REGRESSION}, SEEDS)
 
     logger.info(
         "=== Greedy data-side search from %s: %d steps, adopt margin %.4f ===",

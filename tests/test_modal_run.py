@@ -482,3 +482,10 @@ def test_the_real_sdk_not_found_error_counts_as_a_missing_path() -> None:
     error = modal.exception.NotFoundError("No such file or directory")
     assert not isinstance(error, FileNotFoundError)
     assert mr._is_missing_path(error)
+
+
+def test_the_plan_and_the_concurrency_reach_the_sandbox_environment(local) -> None:
+    plain, _ = mr.sandbox_environment(parse("--plan", "focus", "--jobs", "6"), "abc1234")
+    assert plain["CYP_PLAN"] == "focus" and plain["CYP_JOBS"] == "6"
+    default, _ = mr.sandbox_environment(parse(), "abc1234")
+    assert default["CYP_PLAN"] == "full" and default["CYP_JOBS"] == "1"

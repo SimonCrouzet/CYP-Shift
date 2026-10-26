@@ -443,6 +443,7 @@ def test_main_runs_the_unmeasured_entries_first_and_writes_the_regression_candid
     assert calls == [
         ("reg", night_run.QHTS_REGRESSION),
         ("tdi", night_run.QHTS_TDI),
+        ("reg", night_run.PANEL_RERUN_REGRESSION),
         ("greedy", night_run.DATA_BASE),
         ("reg", night_run.DATA_SIDE_REGRESSION),
         ("reg", night_run.UNMEASURED_REGRESSION),
@@ -472,3 +473,246 @@ def test_the_qhts_cells_cover_every_source_that_supplies_a_max_response():
     for name in suppliers:
         assert f"{name}_max_response" in cells and f"{name}_both" in cells
     assert "_".join(suppliers) + "_max_response" in cells  # all of them together
+
+
+def test_the_sign_bugged_panel_cells_rerun_and_their_old_rows_are_never_carried_over():
+    assert len(set(night_run.PANEL_RERUN_REGRESSION)) == 6
+    assert all(not rev.endswith("-signbug") for rev in [night_run.REV, *night_run.CARRIED])
+
+
+# --- the focus plan ----------------------------------------------------------------------
+
+
+def _focus_world(monkeypatch, tmp_path, score):
+    """Run the focus plan against a fake measurement: ``score(overrides)`` is a recipe's macro
+    ST-RAE, or None for one that failed. Returns the batches that were run, in order."""
+    ran: list[dict] = []
+    monkeypatch.setattr(night_run, "REGRESSION", dict(night_run.REGRESSION))
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(
+        night_run, "run_phase", lambda phase, configs, seeds: ran.append(dict(configs))
+    )
+
+    def ranked(phase):
+        names = {name: cfg for batch in ran for name, cfg in batch.items()}
+        scores = {name: score(cfg) for name, cfg in names.items()}
+        return pd.DataFrame({"mean": {n: v for n, v in scores.items() if v is not None}})
+
+    monkeypatch.setattr(night_run, "ranked_means", ranked)
+    monkeypatch.setattr(night_run, "blend_report", lambda final, names: pd.DataFrame())
+    return ran
+
+
+def _base_score(cfg):
+    return 0.64
+
+
+def test_the_focus_cells_are_valid_configurations_on_every_recipe_they_can_meet():
+    base = night_run.REGRESSION[night_run.FOCUS_BASE]
+    round_2_winners = [base] + [
+        night_run._apply(base, cell.sets) for cell in night_run.FOCUS_ROUND_1
+    ]
+    for recipe in round_2_winners:
+        for cell in night_run.FOCUS_ROUND_2:
+            assert night_run._is_valid(night_run._apply(recipe, cell.sets)), cell.tag
+    recipes = [
+        night_run._apply(winner, cell.sets)
+        for winner in round_2_winners
+        for cell in (None, *night_run.FOCUS_ROUND_2)
+        if cell is not None
+    ] + round_2_winners
+    for recipe in recipes:
+        for cell in night_run.FOCUS_ROUND_3:
+            # a cell that does not fit the incumbent is skipped by the plan, never run invalid
+            overrides = night_run._apply(recipe, cell.sets)
+            assert isinstance(night_run._is_valid(overrides), bool)
+    for cell in night_run.FOCUS_ROUND_3:
+        assert night_run._is_valid(night_run._apply(base, cell.sets)), cell.tag
+
+
+def test_round_1_crosses_the_qhts_representation_with_the_weights_and_keeps_the_baseline():
+    base = night_run.REGRESSION[night_run.FOCUS_BASE]
+    assert base.get("sources.qhts_representation", "pic50") == "pic50"
+    assert base.get("auxiliary.per_endpoint_budget", 0.0) == 0.0
+    cells = {c.tag: dict(c.sets) for c in night_run.FOCUS_ROUND_1}
+    assert cells["pic50_budget"] == {"auxiliary.per_endpoint_budget": night_run.FOCUS_BUDGET}
+    assert cells["both"] == {"sources.qhts_representation": "both"}
+    assert cells["both_budget"] == {**cells["both"], **cells["pic50_budget"]}
+    assert base["sources.novartis"] is True  # Novartis is in every cell, not only the baseline
+
+
+def test_round_2_crosses_the_screen_representation_with_the_readout():
+    cells = {c.tag: dict(c.sets) for c in night_run.FOCUS_ROUND_2}
+    assert cells["log2fc"] == {"multifidelity.screen_strategy": "log2fc_response"}
+    assert cells["mheads"]["model.graph.per_measurement_heads"] is True
+    assert cells["log2fc_mheads"] == {**cells["log2fc"], **cells["mheads"]}
+    assert cells["mheads"]["model.graph.ffn_hidden"] == 300  # same readout width as the shared one
+
+
+def test_the_model_cells_cover_the_six_experiments_of_the_model_side_plan():
+    cells = {c.tag: dict(c.sets) for c in night_run.FOCUS_ROUND_3}
+    assert cells["epochs60"] == {"model.graph.epochs": 60}
+    assert cells["capacity"] == {
+        "model.graph.hidden": 600,
+        "model.graph.depth": 5,
+        "model.graph.ffn_hidden": 1024,
+        "model.graph.epochs": 60,
+    }
+    assert cells["per_target_heads"]["model.graph.per_target_heads"] is True
+    assert cells["per_measurement_heads"]["model.graph.per_measurement_heads"] is True
+    assert cells["chemeleon_lr3e4"] == {
+        "model.graph.pretraining": "chemeleon",
+        "model.graph.learning_rate": 3e-4,
+        "model.graph.epochs": 60,
+    }
+    assert cells["point_loss0p1"] == {"model.point_loss_weight": 0.1}
+    assert cells["absolute"] == {"model.objective": "absolute"}
+    assert cells["adapter_cyp2d6"] == {"model.graph.adapt_target": "CYP2D6"}
+
+
+def test_the_focus_plan_adopts_each_rounds_winner_and_runs_the_next_round_on_it(
+    monkeypatch, tmp_path
+):
+    def score(cfg):
+        both = cfg.get("sources.qhts_representation") == "both"
+        mheads = cfg.get("model.graph.per_measurement_heads", False)
+        return 0.64 - (0.02 if both else 0.0) + (0.05 if mheads else 0.0)
+
+    ran = _focus_world(monkeypatch, tmp_path, score)
+    final = night_run.run_focus(margin=0.005)
+    assert len(ran[0]) == 4 and night_run.FOCUS_BASE in ran[0]  # the baseline and three cells
+    assert all(c.get("sources.qhts_representation") == "both" for c in ran[1].values())
+    assert final["sources.qhts_representation"] == "both"
+    assert not final.get("model.graph.per_measurement_heads", False)
+    path = json.loads((tmp_path / "focus_path.json").read_text())
+    assert [entry["round"] for entry in path["path"]] == ["base", "1 data", "2 data", "3 model"]
+    assert json.loads((tmp_path / "focus_best.json").read_text())["name"]
+
+
+def test_the_focus_plan_keeps_the_baseline_when_nothing_beats_it_by_the_margin(
+    monkeypatch, tmp_path
+):
+    ran = _focus_world(monkeypatch, tmp_path, lambda cfg: 0.64 - 0.003)
+    final = night_run.run_focus(margin=0.005)
+    assert final == night_run.REGRESSION[night_run.FOCUS_BASE]
+    assert len(ran) == 3  # one batch per round, none adopted
+
+
+def test_the_model_round_stacks_the_winning_groups_and_measures_the_stack(monkeypatch, tmp_path):
+    def score(cfg):
+        return (
+            0.64
+            - (0.02 if cfg.get("model.graph.epochs") == 60 else 0.0)
+            - (0.02 if cfg.get("model.objective") == "absolute" else 0.0)
+            - (0.02 if cfg.get("model.graph.adapt_target") == "CYP2D6" else 0.0)
+        )
+
+    ran = _focus_world(monkeypatch, tmp_path, score)
+    final = night_run.run_focus(margin=0.005)
+    assert final["model.graph.epochs"] == 60
+    assert final["model.objective"] == "absolute"
+    assert final["model.graph.adapt_target"] == "CYP2D6"
+    assert len(ran) == 4  # three rounds and the stack
+    assert [dict(c.sets) for c in night_run.FOCUS_ROUND_3 if c.tag == "epochs60"]
+
+
+def test_groups_that_cannot_be_stacked_are_not(monkeypatch, tmp_path):
+    def score(cfg):
+        encoder = cfg.get("model.graph.pretraining") == "chemeleon"
+        capacity = cfg.get("model.graph.hidden") == 600
+        return 0.64 - (0.03 if encoder else 0.0) - (0.02 if capacity else 0.0)
+
+    _focus_world(monkeypatch, tmp_path, score)
+    final = night_run.run_focus(margin=0.005)
+    assert final["model.graph.pretraining"] == "chemeleon"
+    assert final.get("model.graph.hidden", 300) == 300  # capacity lost to the encoder
+
+
+def test_the_adapter_does_not_stack_with_an_independent_readout(monkeypatch, tmp_path):
+    def score(cfg):
+        heads = cfg.get("model.graph.per_target_heads", False)
+        adapter = cfg.get("model.graph.adapt_target") == "CYP2D6"
+        return 0.64 - (0.03 if heads else 0.0) - (0.02 if adapter else 0.0)
+
+    _focus_world(monkeypatch, tmp_path, score)
+    final = night_run.run_focus(margin=0.005)
+    assert final["model.graph.per_target_heads"] is True
+    assert final.get("model.graph.adapt_target", "none") == "none"
+    assert night_run._is_valid(final)
+
+
+def test_the_pretrained_encoder_is_also_tried_on_the_other_round_1_recipe(monkeypatch, tmp_path):
+    def score(cfg):
+        return 0.64 - (0.02 if cfg.get("sources.qhts_representation") == "both" else 0.0)
+
+    ran = _focus_world(monkeypatch, tmp_path, score)
+    night_run.run_focus(margin=0.005)
+    encoders = [
+        cfg
+        for batch in ran[2:]
+        for cfg in batch.values()
+        if cfg.get("model.graph.pretraining") == "chemeleon"
+    ]
+    kinds = {cfg.get("sources.qhts_representation", "pic50") for cfg in encoders}
+    assert kinds == {"both", "pic50"}
+
+
+def test_a_failed_cell_is_never_adopted(monkeypatch, tmp_path):
+    _focus_world(
+        monkeypatch,
+        tmp_path,
+        lambda cfg: None if cfg.get("sources.qhts_representation") == "both" else 0.64,
+    )
+    final = night_run.run_focus(margin=0.005)
+    assert final.get("sources.qhts_representation", "pic50") == "pic50"
+
+
+# --- running configurations concurrently ----------------------------------------------------
+
+
+def test_run_phase_runs_the_pending_configurations_concurrently_when_jobs_allow(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(night_run, "JOBS", 3)
+    monkeypatch.setattr(night_run, "already_done", lambda: {("reg", "a", 0)})
+    started = []
+    monkeypatch.setattr(night_run, "_run_parallel", lambda phase, todo: started.append(todo))
+    night_run.run_phase("reg", {"a": {}, "b": {"x": 1}, "c": {}}, [0])
+    assert started == [[("b", {"x": 1}, 0), ("c", {}, 0)]]  # a is recorded already
+
+
+def test_run_phase_stays_in_process_for_one_job_or_one_pending_configuration(monkeypatch, tmp_path):
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(night_run, "already_done", lambda: set())
+    monkeypatch.setattr(night_run, "_run_parallel", lambda *a: pytest.fail("no pool expected"))
+    evaluated = []
+    monkeypatch.setattr(night_run, "evaluate", lambda *args: evaluated.append(args[1]))
+    monkeypatch.setattr(night_run, "JOBS", 1)
+    night_run.run_phase("reg", {"a": {}, "b": {}}, [0])
+    monkeypatch.setattr(night_run, "JOBS", 4)
+    night_run.run_phase("reg", {"c": {}}, [0])
+    assert evaluated == ["a", "b", "c"]
+
+
+def _fake_worker(phase, name, overrides, seed):
+    if name == "bad":
+        raise RuntimeError("boom")
+    return {
+        "rev": "r", "phase": phase, "name": name, "seed": seed, "status": "ok",
+        "macro_ST_RAE": 0.5, "minutes": 0.0,
+    }  # fmt: skip
+
+
+def test_the_pool_records_each_finished_row_once_and_a_raising_configuration_as_failed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(night_run, "JOBS", 2)
+    monkeypatch.setattr(night_run, "_compute_row_in_child", _fake_worker)
+    rows = pd.read_csv  # noqa: F841 -- the table is read back below
+    night_run._run_parallel("reg", [("ok1", {}, 0), ("bad", {}, 0), ("ok2", {}, 0)])
+    table = pd.read_csv(tmp_path / "night_results.csv")
+    assert sorted(table["name"]) == ["bad", "ok1", "ok2"]
+    assert table.set_index("name").loc["bad", "status"] == "failed"
+    assert (table["status"] == "ok").sum() == 2
