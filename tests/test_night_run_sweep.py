@@ -863,19 +863,30 @@ def test_the_subset_plan_compares_each_selection_with_the_full_table_at_matched_
         assert night_run._is_valid(night_run._apply(base, cell.sets))
 
 
-def test_the_share_plan_keeps_octant_in_its_own_cell_and_every_cell_is_valid():
-    cells = {cell.tag: dict(cell.sets) for cell in night_run.SHARE_CELLS}
-    assert cells["random_50_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
-    assert "auxiliary.row_selection_assays" not in cells["random_50"]
+def test_each_share_cell_differs_from_its_reference_in_one_factor():
     base = night_run._apply(
         dict(night_run.REGRESSION[night_run.SUBSET_BASE]), night_run._BOTH + night_run._BUDGET
     )
+    sets = {cell.tag: dict(cell.sets) for cell in night_run.SHARE_CELLS}
+    sets["base"] = {}
     for cell in night_run.SHARE_CELLS:
         assert night_run._is_valid(night_run._apply(base, cell.sets))
-    keys = {
-        night_run._resolved_key(night_run._apply(base, cell.sets)) for cell in night_run.SHARE_CELLS
-    }
+        changed = set(sets[cell.tag]) ^ set(sets[cell.control])
+        changed |= {
+            k
+            for k in set(sets[cell.tag]) & set(sets[cell.control])
+            if sets[cell.tag][k] != sets[cell.control][k]
+        }
+        factor = {
+            "rows kept": {"auxiliary.row_selection", "auxiliary.row_share"},
+            "epochs": {"model.graph.epochs"},
+            "selection method": {"auxiliary.row_selection"},
+            "groups reduced": {"auxiliary.row_selection_assays"},
+        }[cell.group]
+        assert changed == factor, cell.tag
+    keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.SHARE_CELLS}
     assert len(keys) == len(night_run.SHARE_CELLS)
+    assert sets["random_50_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
 
 
 def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
