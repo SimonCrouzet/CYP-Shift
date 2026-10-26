@@ -79,12 +79,14 @@ NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
 #: comparison overlap. Does not affect results; ``1`` runs them one after another in this process.
 JOBS = int(os.environ.get("CYP_JOBS", "1"))
 #: Fold-error monitoring of graph cross-validation, from the environment like the settings above
-#: (not part of a recipe's name). ``CYP_MONITOR=1`` records each fold's error curve in the run
-#: bundle; ``CYP_EARLY_STOP`` stops a stage after that many epochs without a lower fold error;
-#: ``CYP_PRUNE_REFERENCE`` (a run bundle directory) abandons a configuration whose fold error at
-#: half its epochs is more than ``CYP_PRUNE_TOLERANCE`` (a fraction) above the reference's.
+#: (not part of a recipe's name). ``CYP_MONITOR=1`` evaluates each fold's held-out compounds after
+#: every epoch, records the error curves in the run bundle and stops a stage after
+#: ``CYP_EARLY_STOP`` (a share of its epochs, default 0.1; 0 never stops) epochs without a lower
+#: error. ``CYP_PRUNE_REFERENCE`` (a run bundle directory) abandons a configuration whose fold
+#: error at half its epochs is more than ``CYP_PRUNE_TOLERANCE`` (a fraction, default 0.3) above
+#: the reference's lowest error for that fold.
 MONITOR = os.environ.get("CYP_MONITOR") == "1"
-EARLY_STOP = int(os.environ.get("CYP_EARLY_STOP", "0"))
+EARLY_STOP = os.environ.get("CYP_EARLY_STOP")
 PRUNE_REFERENCE = os.environ.get("CYP_PRUNE_REFERENCE", "")
 PRUNE_TOLERANCE = os.environ.get("CYP_PRUNE_TOLERANCE")
 #: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
@@ -1625,10 +1627,11 @@ def compute_row(phase: str, name: str, overrides: dict, seed: int) -> dict:
     config.override("model.graph.num_workers", NUM_WORKERS)
     if NUM_MEMBERS:
         config.override("model.n_members", NUM_MEMBERS)
-    if MONITOR or EARLY_STOP or PRUNE_REFERENCE:
+    if MONITOR or PRUNE_REFERENCE:
         config.override("model.graph.monitor_fold", True)
-        config.override("model.graph.early_stopping_patience", EARLY_STOP)
         config.override("model.graph.prune_reference", PRUNE_REFERENCE)
+        if EARLY_STOP is not None:
+            config.override("model.graph.early_stopping_patience", float(EARLY_STOP))
         if PRUNE_TOLERANCE is not None:
             config.override("model.graph.prune_tolerance", float(PRUNE_TOLERANCE))
     config.validate()

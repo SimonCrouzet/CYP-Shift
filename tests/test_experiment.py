@@ -46,9 +46,9 @@ def test_an_unknown_option_is_rejected(field, value):
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"model.graph.early_stopping_patience": -1}, "non-negative"),
+        ({"model.graph.early_stopping_patience": -0.1}, "share of the epochs"),
+        ({"model.graph.early_stopping_patience": 3}, "share of the epochs"),
         ({"model.graph.prune_tolerance": -0.1}, "non-negative"),
-        ({"model.graph.early_stopping_patience": 3}, "monitor_fold"),
         ({"model.graph.prune_reference": "bundle"}, "monitor_fold"),
         ({"model.graph.monitor_fold": True, "model.kind": "boosted"}, "model.kind='graph'"),
         (
@@ -66,11 +66,20 @@ def test_impossible_fold_monitoring_settings_are_rejected(overrides, match):
         config.validate()
 
 
+def test_the_monitoring_defaults_are_a_tenth_of_the_epochs_and_a_30_percent_tolerance():
+    graph = ExperimentConfig().model.graph
+    assert (graph.monitor_fold, graph.early_stopping_patience, graph.prune_tolerance) == (
+        False,
+        0.1,
+        0.3,
+    )
+
+
 def test_fold_monitoring_with_early_stopping_and_pruning_is_accepted():
     config = ExperimentConfig.load()
     config.override("model.kind", "graph")
     config.override("model.graph.monitor_fold", True)
-    config.override("model.graph.early_stopping_patience", 3)
+    config.override("model.graph.early_stopping_patience", 0.2)
     config.override("model.graph.prune_reference", "data/run_bundles/x")
     config.validate()
 

@@ -439,14 +439,14 @@ class GraphConfig:
     #: Evaluate each cross-validation fold's held-out compounds after every epoch and record the
     #: error curves in the run bundle (``curves.json``). Cross-validation of a graph model only.
     monitor_fold: bool = False
-    #: Epochs without a lower fold error before a stage stops; 0 never stops early. Needs
-    #: ``monitor_fold``.
-    early_stopping_patience: int = 0
+    #: Share of a stage's epochs without a lower fold error before it stops (at least one epoch);
+    #: 0 never stops early. Used with ``monitor_fold``.
+    early_stopping_patience: float = 0.1
     #: A run bundle (or its curves file) to prune against: a fold whose error at half its epochs
-    #: is more than ``prune_tolerance`` (a fraction) above the reference's abandons the
-    #: configuration. Empty never prunes. Needs ``monitor_fold``.
+    #: is more than ``prune_tolerance`` (a fraction) above the reference's lowest error for that
+    #: fold abandons the configuration. Empty never prunes. Needs ``monitor_fold``.
     prune_reference: str = ""
-    prune_tolerance: float = 0.1
+    prune_tolerance: float = 0.3
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);
@@ -676,22 +676,22 @@ class ExperimentConfig:
                 "model.graph.warmup_epochs must be non-negative"
             )
         graph = self.model.graph
-        if graph.early_stopping_patience < 0 or graph.prune_tolerance < 0:
+        if not 0 <= graph.early_stopping_patience < 1 or graph.prune_tolerance < 0:
             raise ValueError(
-                "model.graph.early_stopping_patience and model.graph.prune_tolerance must be "
-                "non-negative"
+                "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
+                "and model.graph.prune_tolerance must be non-negative"
             )
-        if (graph.monitor_fold or graph.early_stopping_patience or graph.prune_reference) and (
+        if (graph.monitor_fold or graph.prune_reference) and (
             self.model.kind != "graph" or graph.separate_trunks
         ):
             raise ValueError(
                 "monitoring the cross-validation fold needs model.kind='graph' with one shared "
                 "trunk (model.graph.separate_trunks off)"
             )
-        if (graph.early_stopping_patience or graph.prune_reference) and not graph.monitor_fold:
+        if graph.prune_reference and not graph.monitor_fold:
             raise ValueError(
-                "model.graph.early_stopping_patience and model.graph.prune_reference read the "
-                "fold error curve: set model.graph.monitor_fold"
+                "model.graph.prune_reference reads the fold error curve: set "
+                "model.graph.monitor_fold"
             )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")

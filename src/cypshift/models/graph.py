@@ -64,7 +64,7 @@ from cypshift.models.base import (
     active_stages,
     rows_for_stage,
 )
-from cypshift.models.monitor import PrunedError, prune_epoch
+from cypshift.models.monitor import PrunedError, patience_epochs, prune_epoch
 from cypshift.models.shared import SCORED_ASSAY
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 from cypshift.structure.cofold import STRUCTURE_FEATURE_NAMES
@@ -596,7 +596,7 @@ class GraphNetwork:
         ffn_hidden: int = 0,
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
-        early_stopping_patience: int = 0,
+        early_stopping_patience: float = 0.1,
         stages: tuple[ResolvedStage, ...] = (),
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
@@ -662,9 +662,9 @@ class GraphNetwork:
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
         self.warmup_epochs = warmup_epochs
-        #: Epochs without a lower error on the monitor rows before a stage stops; 0 never stops
-        #: early. The monitor rows are the cross-validation fold's held-out compounds, given to
-        #: ``fit``.
+        #: Share of a stage's epochs without a lower error on the monitor rows before it stops; 0
+        #: never stops early. The monitor rows are the cross-validation fold's held-out compounds,
+        #: given to ``fit``.
         self.early_stopping_patience = early_stopping_patience
         #: Per member and stage, the monitor error after each epoch, from the last ``fit``.
         self.curves: list[dict] = []
@@ -1044,7 +1044,7 @@ class GraphNetwork:
                                 num_workers=self.num_workers,
                             ),
                             self._spread,
-                            self.early_stopping_patience,
+                            patience_epochs(self.early_stopping_patience, stage.epochs),
                             prune_epoch(stage.epochs) if position == 0 else None,
                             prune_above,
                         )

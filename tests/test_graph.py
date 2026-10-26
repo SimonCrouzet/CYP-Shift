@@ -575,7 +575,9 @@ def _monitored_rows(n: int = 40) -> pd.DataFrame:
 
 def test_a_monitor_is_evaluated_after_every_epoch_without_joining_the_training_rows(monkeypatch):
     sizes = _recorded_loaders(monkeypatch)
-    net = GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=3, batch_size=8)
+    net = GraphNetwork(
+        hidden=16, depth=2, ffn_hidden=16, epochs=3, batch_size=8, early_stopping_patience=0
+    )
     net.fit(_monitored_rows(40), monitor=_monitored_rows(12))
     assert sizes == [40, 12]
     (curve,) = net.curves
@@ -593,10 +595,12 @@ def test_without_a_monitor_nothing_is_evaluated_and_no_curve_is_kept(monkeypatch
 def test_a_limit_below_the_halfway_error_prunes_the_fit_and_one_above_it_does_not():
     rows, monitor = _monitored_rows(40), _monitored_rows(12)
     with pytest.raises(PrunedError, match="fold error"):
-        GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8).fit(
-            rows, monitor=monitor, prune_above=0.0
-        )
-    net = GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8)
+        GraphNetwork(
+            hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8, early_stopping_patience=0
+        ).fit(rows, monitor=monitor, prune_above=0.0)
+    net = GraphNetwork(
+        hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8, early_stopping_patience=0
+    )
     net.fit(rows, monitor=monitor, prune_above=1e6)
     assert len(net.curves[0]["error"]) == 4
 
