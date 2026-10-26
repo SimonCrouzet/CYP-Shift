@@ -3,6 +3,7 @@
 A group is one (target, assay, source, data space) block of the auxiliary table. Groups at or
 under the cap are untouched; larger ones keep ``max_rows`` rows chosen by one of:
 
+* ``random`` -- a uniform draw without replacement (the control for the others);
 * ``clusters`` -- k-means with ``k = max_rows`` on a 128-component SVD projection of the Morgan
   bit vectors; the row nearest each cluster centre is kept;
 * ``maxmin`` -- RDKit's MaxMin picker on Tanimoto distance;
@@ -18,7 +19,7 @@ from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 
-SELECTIONS = ("none", "clusters", "maxmin", "nearest")
+SELECTIONS = ("none", "random", "clusters", "maxmin", "nearest")
 GROUP_COLUMNS = ["target", "assay", "source", "data_space"]
 #: Dimension of the SVD projection of the bit vectors that k-means runs in.
 SVD_COMPONENTS = 128
@@ -42,6 +43,10 @@ def _clusters(fingerprints: Sequence, k: int, seed: int) -> NDArray[np.intp]:
     model = MiniBatchKMeans(n_clusters=k, n_init=1, random_state=seed).fit(reduced)
     distance = np.linalg.norm(reduced - model.cluster_centers_[model.labels_], axis=1)
     return pd.Series(distance).groupby(model.labels_).idxmin().to_numpy(np.intp)
+
+
+def _random(n: int, k: int, seed: int) -> NDArray[np.intp]:
+    return np.sort(np.random.default_rng(seed).choice(n, size=k, replace=False)).astype(np.intp)
 
 
 def _maxmin(fingerprints: Sequence, k: int, seed: int) -> NDArray[np.intp]:
@@ -70,6 +75,8 @@ def select_rows(
     """Positions of the ``k`` rows of ``smiles`` that ``method`` keeps (fewer if clusters merge)."""
     from cypshift.data.splits import morgan_fingerprints
 
+    if method == "random":
+        return _random(len(smiles), k, seed)
     fingerprints = morgan_fingerprints(list(smiles))
     if method == "clusters":
         return _clusters(fingerprints, k, seed)

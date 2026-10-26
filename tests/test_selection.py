@@ -27,14 +27,14 @@ def _table(n_each: int = 30) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@pytest.mark.parametrize("method", ["clusters", "maxmin", "nearest"])
+@pytest.mark.parametrize("method", ["random", "clusters", "maxmin", "nearest"])
 def test_a_method_keeps_the_requested_number_of_distinct_rows(method):
     kept = select_rows(SMILES, 12, method, reference_smiles=SMILES[:6], seed=0)
     assert len(kept) == len(set(kept.tolist())) == 12
     assert kept.min() >= 0 and kept.max() < len(SMILES)
 
 
-@pytest.mark.parametrize("method", ["clusters", "maxmin", "nearest"])
+@pytest.mark.parametrize("method", ["random", "clusters", "maxmin", "nearest"])
 def test_selection_is_repeatable(method):
     first = select_rows(SMILES, 12, method, reference_smiles=SMILES[:6], seed=3)
     second = select_rows(SMILES, 12, method, reference_smiles=SMILES[:6], seed=3)

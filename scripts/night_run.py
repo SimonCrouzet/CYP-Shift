@@ -2187,11 +2187,12 @@ WIDE_CELLS = (
 )
 
 
-def _run_cells(cells: tuple[Cell, ...], blends: str) -> None:
-    """Cross-validate the cells on the focus plan's data recipe beside the recipe itself, then
-    report the equal-weight blend of the recipe with each cell (``data/<blends>``)."""
+def _run_cells(cells: tuple[Cell, ...], blends: str, start: str = FOCUS_BASE) -> None:
+    """Cross-validate the cells on the focus plan's data recipe (``start`` with the max-response and
+    the normalised auxiliary weights) beside the recipe itself, then report the equal-weight blend
+    of the recipe with each cell (``data/<blends>``)."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
-    recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
+    recipe = _apply(dict(REGRESSION[start]), _BOTH + _BUDGET)
     base = _recipe_name("both_budget", recipe, declared)
     configs = {}
     for cell in cells:
@@ -2225,23 +2226,29 @@ def run_finetune() -> None:
     _run_cells(FINETUNE_CELLS, "finetune_blends.csv")
 
 
-#: Auxiliary row selection on the focus plan's data recipe: each selection at each cap on the rows
-#: of an enzyme, assay and source group (Novartis has 16,109 rows per enzyme; the Tox21 max-response
-#: about 6,300; Tox21 AC50 about 2,000 to 2,800). The matched control is the recipe itself.
-SUBSET_CAPS = (2000, 5000)
-SUBSET_CELLS = tuple(
-    Cell(
-        f"{selection}_{cap}",
-        (("auxiliary.row_selection", selection), ("auxiliary.max_rows_per_group", cap)),
-    )
-    for selection in ("clusters", "maxmin", "nearest")
-    for cap in SUBSET_CAPS
+#: Auxiliary row selection on the Octant and Tox21 recipe (no Novartis) with the max-response and
+#: the normalised auxiliary weights, which hold each endpoint's auxiliary weight total fixed
+#: whatever the row count. The cap is 2000 rows per enzyme, assay and source group: Tox21
+#: max-response has 6,000 to 6,800 per enzyme, AC50 1,500 to 2,800, Octant 1,017. Cells: random,
+#: MaxMin and clusters at the cap, and the full table at 18 epochs, which gives it as many optimizer
+#: updates as the 30-epoch fits on the reduced tables (34,800 of 58,400 rows).
+SUBSET_BASE = "graph_octant_tox21"
+SUBSET_CAP = 2000
+SUBSET_CELLS = (
+    Cell("full_18_epochs", (("model.graph.epochs", 18),)),
+    *(
+        Cell(
+            f"{selection}_{SUBSET_CAP}",
+            (("auxiliary.row_selection", selection), ("auxiliary.max_rows_per_group", SUBSET_CAP)),
+        )
+        for selection in ("random", "maxmin", "clusters")
+    ),
 )
 
 
 def run_subset() -> None:
     """The row-selection cells (``SUBSET_CELLS``); blends in ``data/subset_blends.csv``."""
-    _run_cells(SUBSET_CELLS, "subset_blends.csv")
+    _run_cells(SUBSET_CELLS, "subset_blends.csv", SUBSET_BASE)
 
 
 def main() -> None:

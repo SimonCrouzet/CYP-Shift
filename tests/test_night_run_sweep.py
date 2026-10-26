@@ -850,14 +850,12 @@ def test_a_recipe_keeps_its_name_while_auxiliary_row_selection_is_off():
     assert "row_selection" not in plain and "row_selection" in reduced
 
 
-def test_the_subset_plan_crosses_each_selection_with_each_cap():
+def test_the_subset_plan_compares_each_selection_with_the_full_table_at_matched_updates():
     tags = [cell.tag for cell in night_run.SUBSET_CELLS]
-    assert tags == [
-        f"{selection}_{cap}"
-        for selection in ("clusters", "maxmin", "nearest")
-        for cap in night_run.SUBSET_CAPS
-    ]
+    assert tags == ["full_18_epochs", "random_2000", "maxmin_2000", "clusters_2000"]
+    base = night_run._apply(
+        dict(night_run.REGRESSION[night_run.SUBSET_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    assert "sources.novartis" not in base
     for cell in night_run.SUBSET_CELLS:
-        assert night_run._is_valid(
-            night_run._apply(dict(night_run.REGRESSION[night_run.FOCUS_BASE]), cell.sets)
-        )
+        assert night_run._is_valid(night_run._apply(base, cell.sets))
