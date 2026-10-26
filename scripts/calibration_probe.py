@@ -26,6 +26,8 @@ on any submission by standardising each endpoint's predictions to the target mea
         --targets targets.json --output submissions/new_calibrated.csv
 
 A target may also carry ``min`` and ``max``, which clip the standardised predictions.
+``apply --spread`` multiplies every target's spread by a factor, to test a narrower or wider
+spread on the same predictions.
 """
 
 import argparse
@@ -200,17 +202,24 @@ def solve(
     return targets
 
 
-def apply_targets(submission: Path, targets: dict, output: Path, only: list[str] | None) -> None:
+def apply_targets(
+    submission: Path,
+    targets: dict,
+    output: Path,
+    only: list[str] | None,
+    spread: float = 1.0,
+) -> None:
     frame = pd.read_csv(submission)
     for enzyme, target in targets.items():
         if only and enzyme not in only:
             continue
         column = _column(enzyme)
-        values = standardise_to(frame[column].to_numpy(float), target["mean"], target["sd"])
+        sd = target["sd"] * spread
+        values = standardise_to(frame[column].to_numpy(float), target["mean"], sd)
         # Optional bounds (the labelled range of the training set): a stretched tail must not
         # leave the range the assay reports.
         frame[column] = np.clip(values, target.get("min", -np.inf), target.get("max", np.inf))
-        logger.info("%s -> mean %.3f sd %.3f", enzyme, target["mean"], target["sd"])
+        logger.info("%s -> mean %.3f sd %.3f", enzyme, target["mean"], sd)
     output.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(output, index=False)
 
@@ -232,6 +241,9 @@ def main() -> None:
     apply.add_argument("--targets", type=Path, required=True)
     apply.add_argument("--output", type=Path, required=True)
     apply.add_argument("--only", help="Comma-separated endpoints to change; default all.")
+    apply.add_argument(
+        "--spread", type=float, default=1.0, help="Factor applied to every target's spread."
+    )
     for command in (probe, solve_parser):
         command.add_argument("--shift", type=float, default=0.5)
         command.add_argument("--scale", type=float, default=1.5)
@@ -260,7 +272,8 @@ def main() -> None:
             )
     else:
         only = args.only.split(",") if args.only else None
-        apply_targets(args.submission, json.loads(args.targets.read_text()), args.output, only)
+        targets = json.loads(args.targets.read_text())
+        apply_targets(args.submission, targets, args.output, only, args.spread)
 
 
 if __name__ == "__main__":

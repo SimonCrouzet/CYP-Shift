@@ -121,3 +121,15 @@ def test_apply_clips_to_the_target_bounds(tmp_path):
     probe.apply_targets(path, targets, out, only=None)
     values = pd.read_csv(out)[probe._column("CYP2D6")]
     assert values.min() == 2.0 and values.max() == 5.0
+
+
+def test_apply_spread_factor_scales_the_target_spread_and_keeps_the_mean(tmp_path):
+    base, _ = _world()
+    path = tmp_path / "sub.csv"
+    base.to_csv(path, index=False)
+    targets = {"CYP2C9": {"mean": 4.9, "sd": 0.8}}
+    out = tmp_path / "out.csv"
+    probe.apply_targets(path, targets, out, only=None, spread=0.85)
+    values = pd.read_csv(out)[probe._column("CYP2C9")]
+    assert values.mean() == pytest.approx(4.9)
+    assert values.std(ddof=0) == pytest.approx(0.85 * 0.8)
