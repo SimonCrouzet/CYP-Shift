@@ -21,8 +21,10 @@ from cypshift.models.graph import (
     GraphNetwork,
     RankingSoftThresholdLoss,
     SoftThresholdLoss,
+    _BestWeights,
     _TargetAdaptedRegressionFFN,
     chemeleon_message_passing,
+    held_out_compounds,
 )
 
 CHEMELEON_CACHE = Path("data/external/chemeleon/chemeleon_mp.pt")
@@ -562,3 +564,100 @@ def test_a_stage_sets_its_schedule_and_whether_the_encoder_trains():
     assert all(p.requires_grad for p in model.predictor.parameters())
     net._configure_stage(model, free, position=2)
     assert all(p.requires_grad for p in model.message_passing.parameters())
+
+
+_SCAFFOLD_SMILES = [
+    "c1ccccc1C",
+    "c1ccccc1CC",
+    "c1ccccc1O",
+    "c1ccncc1C",
+    "c1ccncc1CC",
+    "C1CCNCC1C",
+    "C1CCNCC1CC",
+    "c1ccsc1C",
+    "c1ccsc1O",
+    "c1ccoc1C",
+]
+
+
+def _scored_rows(smiles: list[str]) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    rows = []
+    for index, smile in enumerate(smiles * 4):
+        value = float(rng.uniform(4, 7))
+        rows.append(
+            {
+                "SMILES": smile,
+                "target": "CYP3A4",
+                "assay": "direct_inhibition_drc",
+                "source": "challenge",
+                "data_space": "challenge" if index % 5 else "near_aux",
+                "value": value,
+                "conf_low": value - 0.3,
+                "conf_high": value + 0.3,
+                "is_censored": False,
+                "weight": 1.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_held_out_compounds_are_whole_scaffold_groups_of_the_scored_data():
+    from cypshift.data.splits import murcko_scaffold
+
+    rows = _scored_rows(_SCAFFOLD_SMILES)
+    held = held_out_compounds(rows, fraction=0.3, seed=0)
+    scaffolds = {smile: murcko_scaffold(smile) for smile in _SCAFFOLD_SMILES}
+    assert held and len(held) < len(_SCAFFOLD_SMILES)
+    assert {scaffolds[s] for s in held} == {
+        scaffolds[s] for s in _SCAFFOLD_SMILES if scaffolds[s] in {scaffolds[h] for h in held}
+    }
+    assert all(s in scaffolds and scaffolds[s] in {scaffolds[h] for h in held} for s in held)
+    assert held == held_out_compounds(rows, fraction=0.3, seed=0)
+
+
+def test_early_stopping_trains_without_the_held_out_compounds_and_monitors_them(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    rows = _scored_rows(_SCAFFOLD_SMILES)
+    net = GraphNetwork(
+        hidden=16,
+        depth=2,
+        ffn_hidden=16,
+        epochs=3,
+        batch_size=8,
+        early_stopping_patience=1,
+        validation_fraction=0.3,
+    )
+    net.fit(rows)
+    held = held_out_compounds(rows, 0.3, 0)
+    held_scored = int(rows["SMILES"].isin(held)[rows["data_space"] == "challenge"].sum())
+    assert sizes == [int((~rows["SMILES"].isin(held)).sum()), held_scored]
+    assert np.isfinite(net.predict(["c1ccccc1C", "c1ccncc1C"]).mean).all()
+
+
+def test_without_early_stopping_every_row_trains_and_nothing_is_monitored(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    rows = _scored_rows(_SCAFFOLD_SMILES)
+    GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8).fit(rows)
+    assert sizes == [len(rows)]
+
+
+class _Trainer:
+    def __init__(self) -> None:
+        self.callback_metrics: dict[str, float] = {}
+        self.sanity_checking = False
+        self.current_epoch = 0
+
+
+def test_best_weights_are_restored_from_the_lowest_held_out_loss_epoch():
+    module = torch.nn.Linear(1, 1)
+    trainer, keeper = _Trainer(), _BestWeights("test")
+    for epoch, loss in enumerate([0.5, 0.2, 0.4]):
+        trainer.current_epoch = epoch
+        trainer.callback_metrics["val_loss"] = loss
+        torch.nn.init.constant_(module.weight, float(epoch))
+        keeper.on_validation_end(trainer, module)
+    trainer.current_epoch = 3
+    keeper.on_train_end(trainer, module)
+    assert module.weight.item() == 1.0
+    assert keeper.epoch == 2 and keeper.best == 0.2

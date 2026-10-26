@@ -673,6 +673,10 @@ REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
 REGRESSION.update(_feature_sweep("boosted_fs", {}))
 
 
+#: Graph settings that only matter once early stopping is on.
+EARLY_STOPPING_FIELDS = ("early_stopping_patience", "validation_fraction")
+
+
 def _resolved_key(overrides: dict) -> str:
     """The fully resolved settings of one entry, for comparing entries under different names."""
     config = ExperimentConfig()
@@ -684,7 +688,14 @@ def _resolved_key(overrides: dict) -> str:
             config.override(key, value)
     finally:
         experiment_logger.setLevel(previous)
-    return repr(dataclasses.asdict(config))
+    resolved = dataclasses.asdict(config)
+    graph = resolved["model"]["graph"]
+    if graph["early_stopping_patience"] == 0:
+        # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
+        # the setting existed still match.
+        for field in EARLY_STOPPING_FIELDS:
+            del graph[field]
+    return repr(resolved)
 
 
 def _add_distinct(pool: dict[str, dict], new: dict[str, dict]) -> list[str]:

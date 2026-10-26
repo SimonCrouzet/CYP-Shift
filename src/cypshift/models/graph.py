@@ -33,6 +33,7 @@ prediction time.
 
 import logging
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +55,7 @@ from cypshift.data.assembly import (
     encode_conditions,
     n_condition_columns,
 )
+from cypshift.data.splits import murcko_scaffold
 from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise
@@ -481,6 +483,84 @@ class _MeasurementTableRegressionFFN(cpnn.RegressionFFN):
     train_step = forward
 
 
+class _EpochReport(pl.Callback):
+    """Log one line per training epoch: the losses, the time elapsed and the time left."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self._start = 0.0
+
+    def on_train_start(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
+        self._start = time.monotonic()
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
+        done, total = trainer.current_epoch + 1, trainer.max_epochs
+        elapsed = time.monotonic() - self._start
+        losses = "".join(
+            f"  {name} {float(value):.4f}"
+            for name, key in (("train", "train_loss_epoch"), ("val", "val_loss"))
+            if (value := trainer.callback_metrics.get(key)) is not None
+        )
+        logger.info(
+            "%s epoch %d/%d%s  %.1f min elapsed, %.1f min left",
+            self.label,
+            done,
+            total,
+            losses,
+            elapsed / 60,
+            elapsed / done * (total - done) / 60,
+        )
+
+
+class _BestWeights(pl.Callback):
+    """Keep the weights of the epoch with the lowest held-out loss and restore them when training
+    ends, whether it ran to ``max_epochs`` or was stopped early."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.best = math.inf
+        self.epoch = 0
+        self._state: dict[str, torch.Tensor] | None = None
+
+    def on_validation_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
+        loss = trainer.callback_metrics.get("val_loss")
+        if trainer.sanity_checking or loss is None or float(loss) >= self.best:
+            return
+        self.best, self.epoch = float(loss), trainer.current_epoch + 1
+        self._state = {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
+
+    def on_train_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
+        if self._state is None:
+            return
+        module.load_state_dict(self._state)
+        logger.info(
+            "%s kept epoch %d of the %d it trained (val_loss %.4f)",
+            self.label,
+            self.epoch,
+            trainer.current_epoch,
+            self.best,
+        )
+
+
+def held_out_compounds(observations: pd.DataFrame, fraction: float, seed: int) -> set[str]:
+    """SMILES of whole Murcko-scaffold groups of the scored (challenge) compounds, about
+    ``fraction`` of them: the compounds a member does not train on and monitors instead."""
+    scored = observations
+    if "data_space" in observations:
+        scored = observations[observations["data_space"] == "challenge"]
+    smiles = pd.Series(scored["SMILES"].unique())
+    groups = smiles.map(murcko_scaffold)
+    sizes = groups.value_counts()
+    held: list[str] = []
+    taken = 0
+    for group in np.random.default_rng(seed).permutation(sizes.index.to_numpy()):
+        if taken >= fraction * len(smiles):
+            break
+        held.append(group)
+        taken += int(sizes[group])
+    return set(smiles[groups.isin(held)])
+
+
 class GraphNetwork:
     """Chemprop D-MPNN conditioned on target and assay through its readout."""
 
@@ -516,6 +596,8 @@ class GraphNetwork:
         ffn_hidden: int = 0,
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
+        early_stopping_patience: int = 0,
+        validation_fraction: float = 0.1,
         stages: tuple[ResolvedStage, ...] = (),
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
@@ -581,6 +663,11 @@ class GraphNetwork:
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
         self.warmup_epochs = warmup_epochs
+        #: Epochs without a lower held-out loss before a stage stops (0 trains every epoch on all
+        #: rows) and the share of scored compounds, in whole scaffold groups, held out to measure
+        #: it.
+        self.early_stopping_patience = early_stopping_patience
+        self.validation_fraction = validation_fraction
         #: Training curriculum, one entry per stage; empty trains one pooled stage of ``epochs``.
         self.stages = tuple(stages)
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
@@ -898,9 +985,23 @@ class GraphNetwork:
             or [ResolvedStage(DATA_SPACES, None, self.epochs, self.learning_rate, False)],
         )
 
+        scored = (
+            usable["data_space"].eq("challenge").to_numpy()
+            if "data_space" in usable
+            else np.ones(len(usable), dtype=bool)
+        )
         self._members = []
         for member in range(self.n_members):
             pl.seed_everything(self.seed + member, workers=True)
+            # With early stopping, each member holds out its own scaffold groups of the scored
+            # compounds: every row of those compounds, in any data space, leaves its training set.
+            held_out = (
+                usable["SMILES"]
+                .isin(held_out_compounds(usable, self.validation_fraction, self.seed + member))
+                .to_numpy()
+                if self.early_stopping_patience > 0
+                else np.zeros(len(usable), dtype=bool)
+            )
             if self.ensemble == "bagging":
                 # Each member sees a bootstrap resample, so members differ in the data
                 # they fit, not only in initialisation -- the diversity a reseed lacks.
@@ -912,7 +1013,8 @@ class GraphNetwork:
             if member == 0:
                 self._log_capacity(model)
             for position, stage in enumerate(stages):
-                rows = member_rows[rows_for_stage(usable, stage)[member_rows]]
+                in_stage = rows_for_stage(usable, stage)
+                rows = member_rows[(in_stage & ~held_out)[member_rows]]
                 if rows.size == 0:
                     continue
                 self._configure_stage(model, stage, position)
@@ -924,13 +1026,34 @@ class GraphNetwork:
                 loader = cpdata.build_dataloader(
                     dataset, batch_size=self.batch_size, num_workers=self.num_workers
                 )
+                label = f"member {member + 1}/{self.n_members} stage {position + 1}/{len(stages)}"
+                callbacks: list[pl.Callback] = [_EpochReport(label)]
+                held_rows = np.flatnonzero(in_stage & held_out & scored)
+                held_loader = None
+                if self.early_stopping_patience > 0 and held_rows.size > 1:
+                    callbacks += [
+                        pl.callbacks.EarlyStopping(
+                            "val_loss", mode="min", patience=self.early_stopping_patience
+                        ),
+                        _BestWeights(label),
+                    ]
+                    held_dataset = cpdata.MoleculeDataset([points[i] for i in held_rows])
+                    held_dataset.cache = True
+                    held_loader = cpdata.build_dataloader(
+                        held_dataset,
+                        batch_size=self.batch_size,
+                        shuffle=False,
+                        num_workers=self.num_workers,
+                    )
                 trainer = pl.Trainer(
                     max_epochs=stage.epochs,
                     accelerator="auto",
                     logger=False,
+                    callbacks=callbacks,
                     enable_checkpointing=False,
                     enable_progress_bar=False,
                     enable_model_summary=False,
+                    num_sanity_val_steps=0,
                 )
                 if len(stages) > 1:
                     logger.info(
@@ -942,7 +1065,7 @@ class GraphNetwork:
                         stage.lr or "default",
                         ", encoder frozen" if stage.freeze_trunk else "",
                     )
-                trainer.fit(model, loader)
+                trainer.fit(model, loader, held_loader)
             self._members.append(model)
             logger.info("member %d trained", member)
         return self

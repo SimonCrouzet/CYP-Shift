@@ -436,6 +436,12 @@ class GraphConfig:
     learning_rate: float = 0.0
     #: Linear-warmup epochs of that schedule; the default is chemprop's own. Swept.
     warmup_epochs: int = 2
+    #: Epochs without a lower loss on held-out compounds before a training stage stops and keeps
+    #: its best epoch's weights; 0 trains every epoch on all rows. ``epochs`` is then the cap.
+    early_stopping_patience: int = 0
+    #: Share of the scored compounds, in whole scaffold groups, each member holds out to measure
+    #: that loss (only with ``early_stopping_patience`` > 0).
+    validation_fraction: float = 0.1
     #: is_TDI decision thresholds for predict_is_time_dependent, which compares the graph's
     #: direct and preincubated (tdi_drc) assay_conditions. Default to the organisers' rule
     #: (config.py);
@@ -663,6 +669,13 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.learning_rate (0 keeps chemprop's schedule) and "
                 "model.graph.warmup_epochs must be non-negative"
+            )
+        if self.model.graph.early_stopping_patience < 0 or not (
+            0 < self.model.graph.validation_fraction < 0.5
+        ):
+            raise ValueError(
+                "model.graph.early_stopping_patience must be non-negative and "
+                "model.graph.validation_fraction must lie strictly between 0 and 0.5"
             )
         if not 0 < self.data.holdout_fraction < 1:
             raise ValueError("data.holdout_fraction must lie strictly between 0 and 1")
