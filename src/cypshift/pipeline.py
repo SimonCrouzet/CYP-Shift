@@ -851,6 +851,16 @@ def auxiliary_frames(
     if not frames:
         return empty, empty
     out = pd.concat(frames, ignore_index=True)
+    if config.auxiliary.row_selection != "none":
+        from cypshift.data.selection import reduce_groups
+
+        out = reduce_groups(
+            out,
+            config.auxiliary.max_rows_per_group,
+            config.auxiliary.row_selection,
+            retained["SMILES"].tolist(),
+            config.data.seed,
+        )
     response = empty
     if response_feature_route(config):
         # Rows of the response assay train the helper model, not the main model, so they are

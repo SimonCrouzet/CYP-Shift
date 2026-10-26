@@ -35,6 +35,7 @@ def test_defaults_validate():
         ("model.kind", "oracle"),
         ("model.objective", "vibes"),
         ("model.graph.matmul_precision", "approximate"),
+        ("auxiliary.row_selection", "telepathy"),
     ],
 )
 def test_an_unknown_option_is_rejected(field, value):
@@ -357,3 +358,26 @@ class TestCapabilityContract:
         config.override("model.kind", "graph")
         config.training.stages = [Stage()]
         config.validate()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"auxiliary.row_selection": "clusters"},
+        {"auxiliary.max_rows_per_group": 2000},
+        {"auxiliary.row_selection": "maxmin", "auxiliary.max_rows_per_group": -1},
+    ],
+)
+def test_a_row_selection_and_its_cap_go_together(overrides):
+    config = ExperimentConfig.load()
+    for key, value in overrides.items():
+        config.override(key, value)
+    with pytest.raises(ValueError, match="go together"):
+        config.validate()
+
+
+def test_a_row_selection_with_a_cap_is_accepted():
+    config = ExperimentConfig.load()
+    config.override("auxiliary.row_selection", "nearest")
+    config.override("auxiliary.max_rows_per_group", 2000)
+    config.validate()

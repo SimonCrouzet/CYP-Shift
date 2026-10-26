@@ -707,6 +707,8 @@ def _resolved_key(overrides: dict) -> str:
     resolved = dataclasses.asdict(config)
     graph = resolved["model"]["graph"]
     del graph["matmul_precision"]  # a speed setting: the same recipe under either precision
+    if resolved["auxiliary"]["row_selection"] == "none":
+        del resolved["auxiliary"]["row_selection"], resolved["auxiliary"]["max_rows_per_group"]
     if not graph["monitor_fold"]:
         # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
         # the setting existed still match.
@@ -2223,6 +2225,25 @@ def run_finetune() -> None:
     _run_cells(FINETUNE_CELLS, "finetune_blends.csv")
 
 
+#: Auxiliary row selection on the focus plan's data recipe: each selection at each cap on the rows
+#: of an enzyme, assay and source group (Novartis has 16,109 rows per enzyme; the Tox21 max-response
+#: about 6,300; Tox21 AC50 about 2,000 to 2,800). The matched control is the recipe itself.
+SUBSET_CAPS = (2000, 5000)
+SUBSET_CELLS = tuple(
+    Cell(
+        f"{selection}_{cap}",
+        (("auxiliary.row_selection", selection), ("auxiliary.max_rows_per_group", cap)),
+    )
+    for selection in ("clusters", "maxmin", "nearest")
+    for cap in SUBSET_CAPS
+)
+
+
+def run_subset() -> None:
+    """The row-selection cells (``SUBSET_CELLS``); blends in ``data/subset_blends.csv``."""
+    _run_cells(SUBSET_CELLS, "subset_blends.csv")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -2243,6 +2264,11 @@ def main() -> None:
     if PLAN == "finetune":
         logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
         run_finetune()
+        wandb_finish()
+        return
+    if PLAN == "subset":
+        logger.info("=== Auxiliary row selection on the focus data recipe (jobs: %d) ===", JOBS)
+        run_subset()
         wandb_finish()
         return
     if PLAN == "wide":

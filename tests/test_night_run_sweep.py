@@ -110,6 +110,8 @@ DATA_SIDE_NOT_SWEPT = {
     "multifidelity.screen_model_hidden": "screen helper width; the graph cannot take that helper",
     "training.preset": "curriculum; the graph ignores stage settings",
     "training.stages": "curriculum; the graph ignores stage settings",
+    "auxiliary.row_selection": "varied by the subset plan's cells, registered when it runs",
+    "auxiliary.max_rows_per_group": "varied by the subset plan's cells, registered when it runs",
 }
 
 
@@ -834,3 +836,28 @@ def test_a_recipe_has_one_name_under_every_matmul_precision():
         for value in ("highest", "high", "medium")
     }
     assert len(keys) == 1
+
+
+def test_a_recipe_keeps_its_name_while_auxiliary_row_selection_is_off():
+    plain = night_run._resolved_key({"model.kind": "graph"})
+    reduced = night_run._resolved_key(
+        {
+            "model.kind": "graph",
+            "auxiliary.row_selection": "clusters",
+            "auxiliary.max_rows_per_group": 2000,
+        }
+    )
+    assert "row_selection" not in plain and "row_selection" in reduced
+
+
+def test_the_subset_plan_crosses_each_selection_with_each_cap():
+    tags = [cell.tag for cell in night_run.SUBSET_CELLS]
+    assert tags == [
+        f"{selection}_{cap}"
+        for selection in ("clusters", "maxmin", "nearest")
+        for cap in night_run.SUBSET_CAPS
+    ]
+    for cell in night_run.SUBSET_CELLS:
+        assert night_run._is_valid(
+            night_run._apply(dict(night_run.REGRESSION[night_run.FOCUS_BASE]), cell.sets)
+        )

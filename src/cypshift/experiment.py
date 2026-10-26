@@ -18,6 +18,7 @@ from cypshift.config import ISOFORMS
 from cypshift.data.assembly import ASSAYS, DATA_SPACES
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
+from cypshift.data.selection import SELECTIONS
 from cypshift.data.sources import LOADER_SOURCES, supplying
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
@@ -219,6 +220,11 @@ class AuxiliaryConfig:
     #: half its challenge weight. Applies to the scored enzymes' own outside rows (near_aux);
     #: relatives (distant_aux) keep the distance weighting. See pipeline.cap_per_endpoint_budget.
     per_endpoint_budget: float = 0.0
+    #: How a group of auxiliary rows (one enzyme, assay and source) larger than
+    #: ``max_rows_per_group`` is reduced to that many rows; see :mod:`cypshift.data.selection`.
+    #: ``none`` keeps every row and goes with ``max_rows_per_group = 0``. Swept.
+    row_selection: str = "none"
+    max_rows_per_group: int = 0
 
 
 @dataclass
@@ -650,6 +656,7 @@ class ExperimentConfig:
             (self.sources.qhts_representation, QHTS_REPRESENTATIONS, "sources.qhts_representation"),
             (self.data.dedup_mode, DEDUP_MODES, "data.dedup_mode"),
             (self.model.graph.adapt_target, ADAPT_TARGETS, "model.graph.adapt_target"),
+            (self.auxiliary.row_selection, SELECTIONS, "auxiliary.row_selection"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:
@@ -680,6 +687,14 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.learning_rate (0 keeps chemprop's schedule) and "
                 "model.graph.warmup_epochs must be non-negative"
+            )
+        aux = self.auxiliary
+        if aux.max_rows_per_group < 0 or (aux.row_selection == "none") != (
+            aux.max_rows_per_group == 0
+        ):
+            raise ValueError(
+                "auxiliary.row_selection and auxiliary.max_rows_per_group go together: a "
+                "selection needs a positive row cap, and a cap needs a selection"
             )
         graph = self.model.graph
         if graph.matmul_precision not in MATMUL_PRECISIONS:
