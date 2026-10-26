@@ -2262,10 +2262,9 @@ def run_subset() -> None:
 
 
 #: Row selection by share on the Octant and Tox21 recipe, every cell at the recipe's 30 epochs. Each
-#: cell differs from its reference (``control``; ``base`` is the full table) in the one factor named
-#: by ``group``: the share of every group's rows kept (random draw); the selection method at a half;
-#: the groups the half-cut applies to (the Tox21 groups only, or the Octant group only, instead of
-#: all).
+#: cell differs from the full table (``base``) in its row selection: the method and the share of
+#: every group's rows kept. ``_share_cell`` can also restrict the selection to some assays
+#: (``SHARE_TOX21``, ``SHARE_OCTANT``).
 SHARE_TOX21 = ("luminescent_ac50", "luminescent_max_response")
 SHARE_OCTANT = ("fluorogenic_pic50",)
 
@@ -2280,13 +2279,10 @@ def _share_cell(
 
 
 SHARE_CELLS = (
-    _share_cell("random_75", "rows kept", "base", "random", 0.75),
-    _share_cell("random_50", "rows kept", "base", "random", 0.5),
-    _share_cell("random_25", "rows kept", "base", "random", 0.25),
-    _share_cell("clusters_50", "selection method", "random_50", "clusters", 0.5),
-    _share_cell("maxmin_50", "selection method", "random_50", "maxmin", 0.5),
-    _share_cell("random_50_tox21", "groups reduced", "random_50", "random", 0.5, SHARE_TOX21),
-    _share_cell("random_50_octant", "groups reduced", "random_50", "random", 0.5, SHARE_OCTANT),
+    _share_cell("clusters_75", "row selection", "base", "clusters", 0.75),
+    _share_cell("maxmin_75", "row selection", "base", "maxmin", 0.75),
+    _share_cell("clusters_50", "row selection", "base", "clusters", 0.5),
+    _share_cell("maxmin_50", "row selection", "base", "maxmin", 0.5),
 )
 
 
