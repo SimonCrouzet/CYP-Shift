@@ -2478,6 +2478,35 @@ def report_night(names: dict[str, str]) -> None:
     table.to_csv(RESULTS.parent / "night_blend_path.csv", index=False)
 
 
+#: The night's other-family members as declared (their own data settings), and three one-setting
+#: data-side variants of the boosted member: the qHTS representation, the weight budget and the
+#: row policy of the graph base, each compared with the declared recipe.
+MEMBER_VARIANTS = (
+    Cell("boosted_both", _BOTH, "qHTS representation", "boosted_octant_tox21_deep"),
+    Cell("boosted_budget", _BUDGET, "weight budget", "boosted_octant_tox21_deep"),
+    Cell("boosted_random_75", RANDOM_75.sets, "row policy", "boosted_octant_tox21_deep"),
+)
+
+
+def run_members() -> None:
+    """``NIGHT_MEMBERS`` as declared and the ``MEMBER_VARIANTS`` of the boosted member; each variant
+    against the declared recipe in ``data/members_factors.csv``."""
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    names = {member: member for member in NIGHT_MEMBERS}
+    configs = {member: REGRESSION[member] for member in NIGHT_MEMBERS}
+    for cell in MEMBER_VARIANTS:
+        overrides = _apply(REGRESSION[cell.control], cell.sets)
+        if not _is_valid(overrides):
+            raise ValueError(f"variant {cell.tag} is not a valid configuration")
+        names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
+        configs[names[cell.tag]] = overrides
+    run_phase("reg", configs, SEEDS)
+    logger.info("members:\n%s", ranked_means("reg")["mean"].reindex(list(configs)).to_string())
+    _report_factors(MEMBER_VARIANTS, names).to_csv(
+        RESULTS.parent / "members_factors.csv", index=False
+    )
+
+
 def run_night() -> None:
     """The model-side cells (``NIGHT_CELLS``) and other-family members (``NIGHT_MEMBERS``) on the
     chosen row policy, the base repeated at ``NIGHT_SEEDS``; each cell against its reference in
@@ -2516,6 +2545,11 @@ def main() -> None:
     if PLAN == "finetune":
         logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
         run_finetune()
+        wandb_finish()
+        return
+    if PLAN == "members":
+        logger.info("=== Other-family members as declared, and boosted data variants ===")
+        run_members()
         wandb_finish()
         return
     if PLAN == "night":

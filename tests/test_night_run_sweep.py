@@ -989,3 +989,16 @@ def test_run_phase_adds_the_extra_seeds_of_the_named_recipe_to_one_queue(monkeyp
     monkeypatch.setattr(night_run, "JOBS", 1)
     night_run.run_phase("reg", {"a": {}, "b": {}}, [0], extra_seeds={"a": [1, 2]})
     assert calls == [("a", 1), ("a", 2), ("b", 0)]
+
+
+def test_each_member_variant_changes_one_data_setting_of_the_declared_boosted_recipe():
+    declared = night_run.REGRESSION["boosted_octant_tox21_deep"]
+    for cell in night_run.MEMBER_VARIANTS:
+        assert cell.control == "boosted_octant_tox21_deep"
+        assert night_run._is_valid(night_run._apply(declared, cell.sets)), cell.tag
+        changed = {k for k, v in cell.sets if declared.get(k) != v}
+        assert changed == {k for k, _ in cell.sets}, cell.tag
+    both, budget, policy = (dict(c.sets) for c in night_run.MEMBER_VARIANTS)
+    assert set(both) == {"sources.qhts_representation"}
+    assert set(budget) == {"auxiliary.per_endpoint_budget"}
+    assert set(policy) == {"auxiliary.row_selection", "auxiliary.row_share"}
