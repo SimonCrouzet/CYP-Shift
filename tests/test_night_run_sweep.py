@@ -164,7 +164,7 @@ def _greedy_world(monkeypatch, tmp_path, score):
     monkeypatch.setattr(night_run, "REGRESSION", dict(night_run.REGRESSION))  # drop new names
     monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
     monkeypatch.setattr(
-        night_run, "run_phase", lambda phase, configs, seeds: ran.append(dict(configs))
+        night_run, "run_phase", lambda phase, configs, seeds, extra=None: ran.append(dict(configs))
     )
 
     def ranked(phase):
@@ -494,7 +494,7 @@ def _focus_world(monkeypatch, tmp_path, score):
     monkeypatch.setattr(night_run, "REGRESSION", dict(night_run.REGRESSION))
     monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
     monkeypatch.setattr(
-        night_run, "run_phase", lambda phase, configs, seeds: ran.append(dict(configs))
+        night_run, "run_phase", lambda phase, configs, seeds, extra=None: ran.append(dict(configs))
     )
 
     def ranked(phase):
@@ -943,7 +943,10 @@ def test_a_member_takes_the_base_recipes_data_settings_unless_its_family_cannot(
     assert boosted["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET
     assert boosted["auxiliary.row_selection"] == "random"
     assert boosted["model.objective"] == "pinball"  # its own model settings are kept
-    assert night_run._member_recipe("tfm_fs_dense", base) == night_run.REGRESSION["tfm_fs_dense"]
+    tfm = night_run._member_recipe("tfm_fs_dense", base)
+    assert "sources.octant" not in tfm and "auxiliary.row_selection" not in tfm
+    assert tfm["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET  # the one it accepts
+    assert night_run._is_valid(tfm)
 
 
 def test_the_readout_depth_pooling_and_batch_norm_leave_recorded_names_unchanged_at_defaults():
@@ -975,3 +978,14 @@ def test_the_row_policy_is_the_best_cell_only_when_it_beats_the_full_table_by_th
     assert night_run.choose_row_policy() is None  # 0.0041 under the full table: within the margin
     _policy_scores(monkeypatch, {"clusters_50": 0.6500, "random_75": 0.6577})
     assert night_run.choose_row_policy().tag == "clusters_50"
+
+
+def test_run_phase_adds_the_extra_seeds_of_the_named_recipe_to_one_queue(monkeypatch):
+    calls = []
+    monkeypatch.setattr(night_run, "already_done", lambda: {("reg", "a", 0)})
+    monkeypatch.setattr(
+        night_run, "evaluate", lambda phase, name, o, seed: calls.append((name, seed))
+    )
+    monkeypatch.setattr(night_run, "JOBS", 1)
+    night_run.run_phase("reg", {"a": {}, "b": {}}, [0], extra_seeds={"a": [1, 2]})
+    assert calls == [("a", 1), ("a", 2), ("b", 0)]

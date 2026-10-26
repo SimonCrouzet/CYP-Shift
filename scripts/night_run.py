@@ -1739,11 +1739,18 @@ def _run_parallel(phase: str, todo: list[tuple[str, dict, int]]) -> None:
                 record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
 
 
-def run_phase(phase: str, configs: dict[str, dict], seeds: list[int]) -> None:
+def run_phase(
+    phase: str,
+    configs: dict[str, dict],
+    seeds: list[int],
+    extra_seeds: dict[str, list[int]] | None = None,
+) -> None:
+    """Run every config at ``seeds``, and the configs named in ``extra_seeds`` at those seeds too,
+    as one queue."""
     done = already_done()
     todo = []
     for name, overrides in configs.items():
-        for seed in seeds:
+        for seed in [*seeds, *(extra_seeds or {}).get(name, [])]:
             if (phase, name, seed) in done:
                 logger.info("skip %s/%s seed=%d (already recorded)", phase, name, seed)
             else:
@@ -2203,14 +2210,20 @@ DATA_SIDE_PREFIXES = ("sources.", "auxiliary.", "multifidelity.")
 
 
 def _member_recipe(member: str, recipe: dict) -> dict:
-    """The declared recipe ``member`` with the data settings of ``recipe``; as declared when a
-    model family cannot take them (the TabPFN backend fits challenge rows only)."""
+    """The declared recipe ``member`` with the data settings of ``recipe``. When a model family
+    rejects the whole set (the TabPFN backend fits challenge rows only), the settings it accepts
+    one by one are kept."""
     data = {k: v for k, v in recipe.items() if k.startswith(DATA_SIDE_PREFIXES)}
     overrides = {**REGRESSION[member], **data}
     if _is_valid(overrides):
         return overrides
-    logger.warning("%s cannot take the data recipe; it runs as declared", member)
-    return dict(REGRESSION[member])
+    overrides = dict(REGRESSION[member])
+    for key, value in data.items():
+        if _is_valid({**overrides, key: value}):
+            overrides[key] = value
+        else:
+            logger.info("%s does not take %s=%r", member, key, value)
+    return overrides
 
 
 def _run_cells(
@@ -2242,9 +2255,7 @@ def _run_cells(
             raise ValueError(f"cell {cell.tag} is not a valid configuration")
         names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
         configs[names[cell.tag]] = overrides
-    if extra_seeds:
-        run_phase("reg", {base: recipe}, list(extra_seeds))
-    run_phase("reg", {base: recipe, **configs}, SEEDS)
+    run_phase("reg", {base: recipe, **configs}, SEEDS, {base: list(extra_seeds)})
     scores = ranked_means("reg")["mean"]
     logger.info("cells:\n%s", scores.reindex([base, *configs]).to_string())
     blend_report(base, [base, *configs], blends)
