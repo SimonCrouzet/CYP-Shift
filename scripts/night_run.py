@@ -707,6 +707,9 @@ def _resolved_key(overrides: dict) -> str:
     resolved = dataclasses.asdict(config)
     graph = resolved["model"]["graph"]
     del graph["matmul_precision"]  # a speed setting: the same recipe under either precision
+    for field, default in (("ffn_layers", 1), ("batch_norm", False), ("aggregation", "mean")):
+        if graph[field] == default:
+            del graph[field]  # recorded names predate these settings
     auxiliary = resolved["auxiliary"]
     if auxiliary["row_selection"] == "none":
         for field in ("row_selection", "max_rows_per_group", "row_share", "row_selection_assays"):
@@ -2194,14 +2197,24 @@ WIDE_CELLS = (
 )
 
 
-def _run_cells(cells: tuple[Cell, ...], blends: str, start: str = FOCUS_BASE) -> dict[str, str]:
+def _run_cells(
+    cells: tuple[Cell, ...],
+    blends: str,
+    start: str = FOCUS_BASE,
+    base_sets: tuple[tuple[str, object], ...] = (),
+    base_tag: str = "both_budget",
+    members: tuple[str, ...] = (),
+    extra_seeds: tuple[int, ...] = (),
+) -> dict[str, str]:
     """Cross-validate the cells on the focus plan's data recipe (``start`` with the max-response and
-    the normalised auxiliary weights) beside the recipe itself, then report the equal-weight blend
-    of the recipe with each cell (``data/<blends>``)."""
+    the normalised auxiliary weights, then ``base_sets``) beside the recipe itself, then report the
+    equal-weight blend of the recipe with each cell (``data/<blends>``). ``members`` are declared
+    recipes of other model families run on their own settings, listed before the cells;
+    ``extra_seeds`` repeat the recipe itself at those seeds."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
-    recipe = _apply(dict(REGRESSION[start]), _BOTH + _BUDGET)
-    base = _recipe_name("both_budget", recipe, declared)
-    configs = {}
+    recipe = _apply(_apply(dict(REGRESSION[start]), _BOTH + _BUDGET), base_sets)
+    base = _recipe_name(base_tag, recipe, declared)
+    configs = {name: REGRESSION[name] for name in members}
     names = {"base": base}
     for cell in cells:
         overrides = _apply(recipe, cell.sets)
@@ -2209,6 +2222,8 @@ def _run_cells(cells: tuple[Cell, ...], blends: str, start: str = FOCUS_BASE) ->
             raise ValueError(f"cell {cell.tag} is not a valid configuration")
         names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
         configs[names[cell.tag]] = overrides
+    if extra_seeds:
+        run_phase("reg", {base: recipe}, list(extra_seeds))
     run_phase("reg", {base: recipe, **configs}, SEEDS)
     scores = ranked_means("reg")["mean"]
     logger.info("cells:\n%s", scores.reindex([base, *configs]).to_string())
@@ -2321,6 +2336,135 @@ def run_share() -> None:
     _report_factors(SHARE_CELLS, names).to_csv(RESULTS.parent / "share_factors.csv", index=False)
 
 
+#: The random 75% cell of the share plan, recorded before the plan dropped its random cells; it is a
+#: candidate for the night's row policy beside the share plan's cells.
+RANDOM_75 = _share_cell("random_75", "row selection", "base", "random", 0.75)
+
+
+def choose_row_policy() -> Cell | None:
+    """The recorded row-selection cell the night runs on: the lowest-scoring of ``RANDOM_75`` and
+    ``SHARE_CELLS`` if it beats the full table by more than the adopt margin, else ``None`` (the
+    full table)."""
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    recipe = _apply(dict(REGRESSION[SUBSET_BASE]), _BOTH + _BUDGET)
+    scores = ranked_means("reg")["mean"]
+    full = _score_of(scores, _recipe_name("both_budget", recipe, declared))
+    candidates = {cell.tag: cell for cell in (RANDOM_75, *SHARE_CELLS)}
+    table = {
+        tag: _score_of(scores, _recipe_name(tag, _apply(recipe, cell.sets), declared))
+        for tag, cell in candidates.items()
+    }
+    logger.info("full table %.4f; row-selection cells %s", full, table)
+    best = min(table, key=table.get)
+    if table[best] < full - ADOPT_MARGIN:
+        logger.info("row policy %s beats the full table by more than %.3f", best, ADOPT_MARGIN)
+        return candidates[best]
+    logger.info("no row-selection cell beats the full table by more than %.3f", ADOPT_MARGIN)
+    return None
+
+
+#: The model-side round on the Octant and Tox21 recipe, run on the row policy ``choose_row_policy``
+#: returns. Each cell changes one setting from the base, or from the cell named in ``control``.
+NIGHT_CELLS = (
+    Cell("pooled_continue", (("training.preset", "pooled_continue"),), "fine-tuning"),
+    Cell(
+        "direct_finetune",
+        (("training.preset", "direct_finetune"),),
+        "fine-tuning",
+        "pooled_continue",
+    ),
+    Cell(
+        "direct_finetune_frozen",
+        (("training.preset", "direct_finetune_frozen"),),
+        "fine-tuning",
+        "pooled_continue",
+    ),
+    Cell("adapter_cyp2d6", (("model.graph.adapt_target", "CYP2D6"),), "readout"),
+    Cell("absolute_loss", (("model.objective", "absolute"),), "objective"),
+    Cell("epochs_60", (("model.graph.epochs", 60),), "epochs"),
+    Cell("ffn_layers_2", (("model.graph.ffn_layers", 2),), "readout"),
+    Cell("batch_norm", (("model.graph.batch_norm", True),), "pooling"),
+    Cell("norm_pooling", (("model.graph.aggregation", "norm"),), "pooling"),
+)
+#: Other model families, run for the blend: boosted trees and the dense-feature TabPFN and neural
+#: models.
+NIGHT_MEMBERS = (
+    "boosted_octant_tox21_deep",
+    "boosted_pinball_t60",
+    "tfm_fs_dense",
+    "neural_fs_dense",
+)
+#: Seeds the base recipe is repeated at: the spread between runs, and the gain of averaging two.
+NIGHT_SEEDS = (1, 2)
+
+
+def report_night(names: dict[str, str]) -> None:
+    """The base recipe's score at each seed and its seeds' equal-weight blend
+    (``data/night_reseed.csv``), and the greedy equal-weight blend path over the night's recipes
+    (``data/night_blend_path.csv``), from their out-of-fold bundles."""
+    import blend
+
+    base = names["base"]
+    frames = {}
+    for seed in (SEEDS[0], *NIGHT_SEEDS):
+        try:
+            frames[seed] = blend.load_members(REV, seed)[base]
+        except (SystemExit, KeyError):
+            logger.warning("no out-of-fold bundle of %s at seed %d", base, seed)
+    rows = [
+        {"what": f"base, seed {seed}", "macro_ST_RAE": blend.rank_single({base: frame})[base]}
+        for seed, frame in frames.items()
+    ]
+    if len(frames) > 1:
+        rows.append(
+            {
+                "what": f"equal-weight blend of the base at seeds {sorted(frames)}",
+                "macro_ST_RAE": blend.macro_st_rae_on(
+                    {f"seed{seed}": frame for seed, frame in frames.items()}, "equal", None, None
+                ),
+            }
+        )
+    reseed = pd.DataFrame(rows)
+    logger.info("base across seeds:\n%s", reseed.to_string(index=False))
+    reseed.to_csv(RESULTS.parent / "night_reseed.csv", index=False)
+
+    wanted = set(names.values()) | set(NIGHT_MEMBERS)
+    members = {n: f for n, f in blend.load_members(REV, SEEDS[0]).items() if n in wanted}
+    single = {n: blend.rank_single({n: f})[n] for n, f in members.items()}
+    chosen = [min(single, key=single.get)]
+    path = [{"step": 1, "added": chosen[0], "macro_ST_RAE": single[chosen[0]]}]
+    while len(chosen) < len(members):
+        trial = {
+            n: blend.macro_st_rae_on({m: members[m] for m in [*chosen, n]}, "equal", None, None)
+            for n in members
+            if n not in chosen
+        }
+        pick = min(trial, key=trial.get)
+        chosen.append(pick)
+        path.append({"step": len(chosen), "added": pick, "macro_ST_RAE": trial[pick]})
+    table = pd.DataFrame(path)
+    logger.info("greedy equal-weight blend path:\n%s", table.to_string(index=False))
+    table.to_csv(RESULTS.parent / "night_blend_path.csv", index=False)
+
+
+def run_night() -> None:
+    """The model-side cells (``NIGHT_CELLS``) and other-family members (``NIGHT_MEMBERS``) on the
+    chosen row policy, the base repeated at ``NIGHT_SEEDS``; each cell against its reference in
+    ``data/night_factors.csv``."""
+    policy = choose_row_policy()
+    names = _run_cells(
+        NIGHT_CELLS,
+        "night_blends.csv",
+        SUBSET_BASE,
+        base_sets=policy.sets if policy else (),
+        base_tag=policy.tag if policy else "both_budget",
+        members=NIGHT_MEMBERS,
+        extra_seeds=NIGHT_SEEDS,
+    )
+    _report_factors(NIGHT_CELLS, names).to_csv(RESULTS.parent / "night_factors.csv", index=False)
+    report_night(names)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -2341,6 +2485,11 @@ def main() -> None:
     if PLAN == "finetune":
         logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
         run_finetune()
+        wandb_finish()
+        return
+    if PLAN == "night":
+        logger.info("=== Model-side round on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
+        run_night()
         wandb_finish()
         return
     if PLAN == "share":

@@ -594,6 +594,9 @@ class GraphNetwork:
         per_target_heads: bool = False,
         per_measurement_heads: bool = False,
         ffn_hidden: int = 0,
+        ffn_layers: int = 1,
+        batch_norm: bool = False,
+        aggregation: str = "mean",
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
         matmul_precision: str = "high",
@@ -659,6 +662,11 @@ class GraphNetwork:
             )
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
+        #: Hidden layers of the readout FFN, and the pooling of atom vectors into the molecule
+        #: vector (``mean`` or ``norm``) with optional batch normalisation of that vector.
+        self.ffn_layers = ffn_layers
+        self.batch_norm = batch_norm
+        self.aggregation = aggregation
         #: Peak rate of chemprop's warmup / decay schedule (0 keeps its 1e-4 / 1e-3 / 1e-4) and the
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
@@ -868,6 +876,8 @@ class GraphNetwork:
         input_dim = message_passing.output_dim + self._n_conditioning
         # Readout FFN width, set independently of the encoder width; 0 keeps chemprop's default.
         ffn_kwargs = {} if self.ffn_hidden <= 0 else {"hidden_dim": self.ffn_hidden}
+        if self.ffn_layers != 1:
+            ffn_kwargs["n_layers"] = self.ffn_layers
         if self.adapt_target != "none":
             # The target one-hot is the first block of the conditioning, which fingerprint()
             # places right after the encoder output, so its gate column sits at
@@ -933,7 +943,12 @@ class GraphNetwork:
                 max_lr=self.learning_rate,
                 final_lr=self.learning_rate / 10,
             )
-        return cpmodels.MPNN(message_passing, cpnn.MeanAggregation(), predictor, **schedule)
+        aggregation = (
+            cpnn.NormAggregation() if self.aggregation == "norm" else cpnn.MeanAggregation()
+        )
+        return cpmodels.MPNN(
+            message_passing, aggregation, predictor, batch_norm=self.batch_norm, **schedule
+        )
 
     @staticmethod
     def _log_capacity(model: cpmodels.MPNN) -> None:

@@ -24,6 +24,9 @@ from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 #: Isoforms eligible for a per-isoform adaptation block, plus the ``"none"`` default.
 ADAPT_TARGETS = ("none", *ISOFORMS)
+#: How atom vectors are pooled into a molecule vector: ``mean`` divides the sum by the atom
+#: count, ``norm`` by a fixed constant.
+AGGREGATIONS = ("mean", "norm")
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +442,12 @@ class GraphConfig:
     #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
     #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
     ffn_hidden: int = 0
+    #: Hidden layers of the readout FFN (chemprop's default is 1). Swept.
+    ffn_layers: int = 1
+    #: Batch normalisation of the pooled molecule vector. Swept.
+    batch_norm: bool = False
+    #: Pooling of atom vectors into the molecule vector, one of ``AGGREGATIONS``. Swept.
+    aggregation: str = "mean"
     #: Peak learning rate of chemprop's warmup-then-decay schedule. ``0`` keeps the library's
     #: defaults (initial / peak / final ``1e-4 / 1e-3 / 1e-4``); a positive value sets the peak
     #: and puts the initial and final rates at a tenth of it, keeping chemprop's 10:1 ratios.
@@ -660,11 +669,14 @@ class ExperimentConfig:
             (self.sources.qhts_representation, QHTS_REPRESENTATIONS, "sources.qhts_representation"),
             (self.data.dedup_mode, DEDUP_MODES, "data.dedup_mode"),
             (self.model.graph.adapt_target, ADAPT_TARGETS, "model.graph.adapt_target"),
+            (self.model.graph.aggregation, AGGREGATIONS, "model.graph.aggregation"),
             (self.auxiliary.row_selection, SELECTIONS, "auxiliary.row_selection"),
         ]
         for value, allowed, name in checks:
             if value not in allowed:
                 raise ValueError(f"{name}={value!r} is not one of {allowed}")
+        if self.model.graph.ffn_layers < 1:
+            raise ValueError("model.graph.ffn_layers must be at least 1")
         if self.sources.qhts_representation in ("max_response", "both"):
             feature_route = self.model.kind in RESPONSE_FEATURE_KINDS and not (
                 self.model.kind == "curve" and self.model.curve.backbone == "graph"

@@ -54,6 +54,25 @@ def test_ffn_hidden_sets_the_readout_width_independently_of_the_encoder():
     assert _ffn_hidden_width(GraphNetwork()._build()) == 300  # default, unset
 
 
+def test_readout_depth_pooling_and_batch_norm_are_set_from_the_arguments_and_default_to_chemprops():
+    """``ffn_layers`` sets the readout's hidden layers, ``aggregation`` the pooling of atom vectors
+    and ``batch_norm`` the normalisation of the pooled vector; the defaults are one hidden layer,
+    mean pooling and no normalisation."""
+
+    def linears(model) -> int:
+        return sum(m.__class__.__name__ == "Linear" for m in model.predictor.ffn.modules())
+
+    default = GraphNetwork()._build()
+    assert linears(default) == 2  # one hidden layer and the output layer
+    assert default.agg.__class__.__name__ == "MeanAggregation"
+    assert default.bn.__class__.__name__ == "Identity"
+    changed = GraphNetwork(ffn_layers=2, aggregation="norm", batch_norm=True)._build()
+    assert linears(changed) == 3
+    assert changed.agg.__class__.__name__ == "NormAggregation"
+    assert changed.bn.__class__.__name__ == "BatchNorm1d"
+    assert _ffn_hidden_width(changed) == 300
+
+
 def test_graph_learning_rate_sets_the_schedule_and_the_default_keeps_chemprops():
     """``model.graph.learning_rate`` is the peak of the warmup/decay schedule, with the initial and
     final rates a tenth of it; unset it leaves chemprop's own 1e-4 / 1e-3 / 1e-4 and 2 warmup

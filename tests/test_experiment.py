@@ -36,6 +36,7 @@ def test_defaults_validate():
         ("model.objective", "vibes"),
         ("model.graph.matmul_precision", "approximate"),
         ("auxiliary.row_selection", "telepathy"),
+        ("model.graph.aggregation", "median"),
     ],
 )
 def test_an_unknown_option_is_rejected(field, value):
@@ -413,4 +414,11 @@ def test_a_row_share_with_a_listed_assay_is_accepted_and_an_unknown_assay_is_not
     config.validate()
     config.override("auxiliary.row_selection_assays", ["telepathy"])
     with pytest.raises(ValueError, match="unknown"):
+        config.validate()
+
+
+def test_the_readout_must_have_at_least_one_hidden_layer():
+    config = ExperimentConfig()
+    config.override("model.graph.ffn_layers", 0)
+    with pytest.raises(ValueError, match="ffn_layers"):
         config.validate()

@@ -910,3 +910,58 @@ def test_the_factor_report_marks_only_changes_beyond_the_adopt_margin(monkeypatc
     table = night_run._report_factors(cells, names).set_index("cell")
     assert table["beyond_margin"].to_dict() == {"small": False, "large": True, "better": True}
     assert table.loc["better", "change"] < 0 < table.loc["large", "change"]
+
+
+def _night_base(sets=()):
+    return night_run._apply(
+        night_run._apply(
+            dict(night_run.REGRESSION[night_run.SUBSET_BASE]), night_run._BOTH + night_run._BUDGET
+        ),
+        sets,
+    )
+
+
+def test_the_night_cells_are_valid_and_each_differs_from_its_reference_in_its_own_setting():
+    base = _night_base()
+    sets = {cell.tag: dict(cell.sets) for cell in night_run.NIGHT_CELLS}
+    sets["base"] = {}
+    for cell in night_run.NIGHT_CELLS:
+        assert night_run._is_valid(night_run._apply(base, cell.sets)), cell.tag
+        assert (cell.control or "base") in sets
+        if cell.control == "pooled_continue":
+            assert set(sets[cell.tag]) == set(sets["pooled_continue"]) == {"training.preset"}
+    keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.NIGHT_CELLS}
+    assert len(keys) == len(night_run.NIGHT_CELLS)
+    for member in night_run.NIGHT_MEMBERS:
+        assert night_run._is_valid(night_run.REGRESSION[member]), member
+
+
+def test_the_readout_depth_pooling_and_batch_norm_leave_recorded_names_unchanged_at_defaults():
+    plain = night_run._resolved_key({"model.kind": "graph"})
+    assert all(f not in plain for f in ("ffn_layers", "batch_norm", "aggregation"))
+    deeper = night_run._resolved_key({"model.kind": "graph", "model.graph.ffn_layers": 2})
+    assert "ffn_layers" in deeper and deeper != plain
+
+
+def _policy_scores(monkeypatch, overrides: dict[str, float]):
+    """Make ``ranked_means`` return the full table's score and the named cells' scores."""
+    declared = {night_run._resolved_key(o): n for n, o in night_run.REGRESSION.items()}
+    recipe = _night_base()
+    scores = {night_run._recipe_name("both_budget", recipe, declared): 0.6631}
+    for cell in (night_run.RANDOM_75, *night_run.SHARE_CELLS):
+        name = night_run._recipe_name(cell.tag, night_run._apply(recipe, cell.sets), declared)
+        scores[name] = overrides.get(cell.tag, 0.70)
+    monkeypatch.setattr(
+        night_run, "ranked_means", lambda phase=None: pd.DataFrame({"mean": pd.Series(scores)})
+    )
+
+
+def test_the_row_policy_is_the_best_cell_only_when_it_beats_the_full_table_by_the_margin(
+    monkeypatch,
+):
+    _policy_scores(monkeypatch, {"random_75": 0.6577, "clusters_50": 0.6600})
+    assert night_run.choose_row_policy().tag == "random_75"
+    _policy_scores(monkeypatch, {"maxmin_75": 0.6590, "clusters_50": 0.6640})
+    assert night_run.choose_row_policy() is None  # 0.0041 under the full table: within the margin
+    _policy_scores(monkeypatch, {"clusters_50": 0.6500, "random_75": 0.6577})
+    assert night_run.choose_row_policy().tag == "clusters_50"
