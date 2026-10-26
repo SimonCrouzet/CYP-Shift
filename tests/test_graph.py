@@ -21,11 +21,11 @@ from cypshift.models.graph import (
     GraphNetwork,
     RankingSoftThresholdLoss,
     SoftThresholdLoss,
-    _BestWeights,
+    _FoldMonitor,
     _TargetAdaptedRegressionFFN,
     chemeleon_message_passing,
-    held_out_compounds,
 )
+from cypshift.models.monitor import PrunedError
 
 CHEMELEON_CACHE = Path("data/external/chemeleon/chemeleon_mp.pt")
 MAMMAL_CACHE = Path("data/external/embeddings/mammal.parquet")
@@ -566,98 +566,72 @@ def test_a_stage_sets_its_schedule_and_whether_the_encoder_trains():
     assert all(p.requires_grad for p in model.message_passing.parameters())
 
 
-_SCAFFOLD_SMILES = [
-    "c1ccccc1C",
-    "c1ccccc1CC",
-    "c1ccccc1O",
-    "c1ccncc1C",
-    "c1ccncc1CC",
-    "C1CCNCC1C",
-    "C1CCNCC1CC",
-    "c1ccsc1C",
-    "c1ccsc1O",
-    "c1ccoc1C",
-]
+def _monitored_rows(n: int = 40) -> pd.DataFrame:
+    rows = _staged_rows(n)
+    rows["data_space"] = "challenge"
+    rows["assay"] = "direct_inhibition_drc"
+    return rows
 
 
-def _scored_rows(smiles: list[str]) -> pd.DataFrame:
-    rng = np.random.default_rng(0)
-    rows = []
-    for index, smile in enumerate(smiles * 4):
-        value = float(rng.uniform(4, 7))
-        rows.append(
-            {
-                "SMILES": smile,
-                "target": "CYP3A4",
-                "assay": "direct_inhibition_drc",
-                "source": "challenge",
-                "data_space": "challenge" if index % 5 else "near_aux",
-                "value": value,
-                "conf_low": value - 0.3,
-                "conf_high": value + 0.3,
-                "is_censored": False,
-                "weight": 1.0,
-            }
+def test_a_monitor_is_evaluated_after_every_epoch_without_joining_the_training_rows(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    net = GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=3, batch_size=8)
+    net.fit(_monitored_rows(40), monitor=_monitored_rows(12))
+    assert sizes == [40, 12]
+    (curve,) = net.curves
+    assert (curve["member"], curve["stage"], curve["epochs"]) == (1, 1, 3)
+    assert len(curve["error"]) == 3 and np.isfinite(curve["error"]).all()
+
+
+def test_without_a_monitor_nothing_is_evaluated_and_no_curve_is_kept(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    net = GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8)
+    net.fit(_monitored_rows(40))
+    assert sizes == [40] and net.curves == []
+
+
+def test_a_limit_below_the_halfway_error_prunes_the_fit_and_one_above_it_does_not():
+    rows, monitor = _monitored_rows(40), _monitored_rows(12)
+    with pytest.raises(PrunedError, match="fold error"):
+        GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8).fit(
+            rows, monitor=monitor, prune_above=0.0
         )
-    return pd.DataFrame(rows)
-
-
-def test_held_out_compounds_are_whole_scaffold_groups_of_the_scored_data():
-    from cypshift.data.splits import murcko_scaffold
-
-    rows = _scored_rows(_SCAFFOLD_SMILES)
-    held = held_out_compounds(rows, fraction=0.3, seed=0)
-    scaffolds = {smile: murcko_scaffold(smile) for smile in _SCAFFOLD_SMILES}
-    assert held and len(held) < len(_SCAFFOLD_SMILES)
-    assert {scaffolds[s] for s in held} == {
-        scaffolds[s] for s in _SCAFFOLD_SMILES if scaffolds[s] in {scaffolds[h] for h in held}
-    }
-    assert all(s in scaffolds and scaffolds[s] in {scaffolds[h] for h in held} for s in held)
-    assert held == held_out_compounds(rows, fraction=0.3, seed=0)
-
-
-def test_early_stopping_trains_without_the_held_out_compounds_and_monitors_them(monkeypatch):
-    sizes = _recorded_loaders(monkeypatch)
-    rows = _scored_rows(_SCAFFOLD_SMILES)
-    net = GraphNetwork(
-        hidden=16,
-        depth=2,
-        ffn_hidden=16,
-        epochs=3,
-        batch_size=8,
-        early_stopping_patience=1,
-        validation_fraction=0.3,
-    )
-    net.fit(rows)
-    held = held_out_compounds(rows, 0.3, 0)
-    held_scored = int(rows["SMILES"].isin(held)[rows["data_space"] == "challenge"].sum())
-    assert sizes == [int((~rows["SMILES"].isin(held)).sum()), held_scored]
-    assert np.isfinite(net.predict(["c1ccccc1C", "c1ccncc1C"]).mean).all()
-
-
-def test_without_early_stopping_every_row_trains_and_nothing_is_monitored(monkeypatch):
-    sizes = _recorded_loaders(monkeypatch)
-    rows = _scored_rows(_SCAFFOLD_SMILES)
-    GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8).fit(rows)
-    assert sizes == [len(rows)]
+    net = GraphNetwork(hidden=16, depth=2, ffn_hidden=16, epochs=4, batch_size=8)
+    net.fit(rows, monitor=monitor, prune_above=1e6)
+    assert len(net.curves[0]["error"]) == 4
 
 
 class _Trainer:
-    def __init__(self) -> None:
-        self.callback_metrics: dict[str, float] = {}
-        self.sanity_checking = False
-        self.current_epoch = 0
+    should_stop = False
 
 
-def test_best_weights_are_restored_from_the_lowest_held_out_loss_epoch():
-    module = torch.nn.Linear(1, 1)
-    trainer, keeper = _Trainer(), _BestWeights("test")
-    for epoch, loss in enumerate([0.5, 0.2, 0.4]):
-        trainer.current_epoch = epoch
-        trainer.callback_metrics["val_loss"] = loss
-        torch.nn.init.constant_(module.weight, float(epoch))
-        keeper.on_validation_end(trainer, module)
-    trainer.current_epoch = 3
-    keeper.on_train_end(trainer, module)
-    assert module.weight.item() == 1.0
-    assert keeper.epoch == 2 and keeper.best == 0.2
+def _scripted_monitor(errors, **kwargs):
+    """A monitor whose per-epoch errors are given instead of measured."""
+    monitor = _FoldMonitor(None, 1.0, kwargs.get("patience", 0), kwargs.get("prune_at"), None)
+    monitor.prune_above = kwargs.get("prune_above")
+    scripted = iter(errors)
+    monitor._measure = lambda module: next(scripted)
+    return monitor
+
+
+def _run_epochs(monitor, count):
+    trainer = _Trainer()
+    for _ in range(count):
+        monitor.on_train_epoch_end(trainer, None)
+        if trainer.should_stop:
+            break
+    return trainer.should_stop, len(monitor.error)
+
+
+def test_a_stage_stops_after_patience_epochs_without_a_lower_error():
+    stopped, epochs = _run_epochs(_scripted_monitor([5, 4, 4.5, 4.2, 4.1, 3], patience=3), 6)
+    assert (stopped, epochs) == (True, 5)
+    assert _run_epochs(_scripted_monitor([5, 4, 3, 2], patience=3), 4) == (False, 4)
+    assert _run_epochs(_scripted_monitor([1, 2, 3, 4], patience=0), 4) == (False, 4)
+
+
+def test_the_error_at_the_pruning_epoch_decides_pruning_only_there():
+    monitor = _scripted_monitor([9, 1.4, 9], prune_at=2, prune_above=1.5)
+    assert _run_epochs(monitor, 3) == (False, 3) and not monitor.pruned
+    monitor = _scripted_monitor([1, 1.6, 9], prune_at=2, prune_above=1.5)
+    assert _run_epochs(monitor, 3) == (True, 2) and monitor.pruned

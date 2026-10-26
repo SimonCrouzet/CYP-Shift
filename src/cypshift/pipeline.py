@@ -40,6 +40,7 @@ from cypshift.experiment import (
     ExperimentConfig,
 )
 from cypshift.models.base import PredictiveDistribution, training_stages
+from cypshift.models.monitor import reference_error, write_curves
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,6 @@ def build_model(
             learning_rate=config.model.graph.learning_rate,
             warmup_epochs=config.model.graph.warmup_epochs,
             early_stopping_patience=config.model.graph.early_stopping_patience,
-            validation_fraction=config.model.graph.validation_fraction,
             stages=tuple(
                 training_stages(
                     config.training,
@@ -1024,6 +1024,7 @@ def run_cv(
 
     out_of_fold = []
     tdi_out_of_fold = []
+    curves: dict[int, list[dict]] = {}
     for fold in range(n_folds):
         held_out = folds == fold
         retained, evaluation = train.loc[~held_out], train.loc[held_out]
@@ -1043,7 +1044,19 @@ def run_cv(
         )
 
         model = build_model(config, screen_model, targets=targets)
-        model.fit(observations)
+        fit_options: dict = {}
+        graph = config.model.graph
+        if graph.monitor_fold:
+            # The fold's own labelled compounds, evaluated after every epoch; the pruning limit is
+            # the reference run's error for this fold at its half-way epoch, plus the tolerance.
+            fit_options["monitor"] = build_observations(evaluation)
+            if graph.prune_reference:
+                reference = reference_error(graph.prune_reference, fold)
+                if reference is not None:
+                    fit_options["prune_above"] = reference * (1 + graph.prune_tolerance)
+        model.fit(observations, **fit_options)
+        if graph.monitor_fold:
+            curves[fold] = model.curves
         prediction = model.predict(evaluation["SMILES"].tolist())
         fold_predictions = evaluation[["Molecule_Name"]].copy()
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
@@ -1076,6 +1089,8 @@ def run_cv(
             )
     if bundle_path is not None:
         save_run_bundle(bundle_path, config, train, submission, scores)
+        if curves:
+            write_curves(bundle_path, curves)
     return scores, submission, tdi_scores
 
 

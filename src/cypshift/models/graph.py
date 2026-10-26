@@ -55,7 +55,6 @@ from cypshift.data.assembly import (
     encode_conditions,
     n_condition_columns,
 )
-from cypshift.data.splits import murcko_scaffold
 from cypshift.features.embeddings import embedding_block, embedding_width
 from cypshift.features.ionization import block_for as ionization_block_for
 from cypshift.features.molecular import featurise
@@ -65,6 +64,7 @@ from cypshift.models.base import (
     active_stages,
     rows_for_stage,
 )
+from cypshift.models.monitor import PrunedError, prune_epoch
 from cypshift.models.shared import SCORED_ASSAY
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 from cypshift.structure.cofold import STRUCTURE_FEATURE_NAMES
@@ -483,11 +483,60 @@ class _MeasurementTableRegressionFFN(cpnn.RegressionFFN):
     train_step = forward
 
 
+class _FoldMonitor(pl.Callback):
+    """After every epoch, measure the mean absolute error of the predicted value on the monitor
+    rows (pIC50 units). Stops the stage after ``patience`` epochs without a new lowest error and,
+    at ``prune_at``, when the error is above ``prune_above``."""
+
+    def __init__(
+        self,
+        loader: object,
+        spread: float,
+        patience: int,
+        prune_at: int | None,
+        prune_above: float | None,
+    ) -> None:
+        self.loader = loader
+        self.spread = spread
+        self.patience = patience
+        self.prune_at = prune_at
+        self.prune_above = prune_above
+        self.error: list[float] = []
+        self.pruned = False
+
+    def _measure(self, module: pl.LightningModule) -> float:
+        module.eval()
+        total, count = 0.0, 0
+        with torch.no_grad():
+            for batch in self.loader:
+                batch = module.transfer_batch_to_device(batch, module.device, 0)
+                predicted = module(batch.bmg, batch.V_d, batch.X_d)[:, VALUE]
+                truth = batch.Y[:, VALUE]
+                seen = torch.isfinite(truth)
+                total += float((predicted[seen] - truth[seen]).abs().sum())
+                count += int(seen.sum())
+        return total / count * self.spread
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
+        self.error.append(self._measure(module))
+        epoch = len(self.error)
+        if self.patience and epoch - 1 - int(np.argmin(self.error)) >= self.patience:
+            trainer.should_stop = True
+        if (
+            epoch == self.prune_at
+            and self.prune_above is not None
+            and self.error[-1] > self.prune_above
+        ):
+            self.pruned = True
+            trainer.should_stop = True
+
+
 class _EpochReport(pl.Callback):
     """Log one line per training epoch: the losses, the time elapsed and the time left."""
 
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, monitor: _FoldMonitor | None = None) -> None:
         self.label = label
+        self.monitor = monitor
         self._start = 0.0
 
     def on_train_start(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
@@ -496,11 +545,11 @@ class _EpochReport(pl.Callback):
     def on_train_epoch_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
         done, total = trainer.current_epoch + 1, trainer.max_epochs
         elapsed = time.monotonic() - self._start
-        losses = "".join(
-            f"  {name} {float(value):.4f}"
-            for name, key in (("train", "train_loss_epoch"), ("val", "val_loss"))
-            if (value := trainer.callback_metrics.get(key)) is not None
-        )
+        losses = ""
+        if (loss := trainer.callback_metrics.get("train_loss_epoch")) is not None:
+            losses += f"  train {float(loss):.4f}"
+        if self.monitor is not None:
+            losses += f"  fold MAE {self.monitor.error[-1]:.4f}"
         logger.info(
             "%s epoch %d/%d%s  %.1f min elapsed, %.1f min left",
             self.label,
@@ -510,55 +559,6 @@ class _EpochReport(pl.Callback):
             elapsed / 60,
             elapsed / done * (total - done) / 60,
         )
-
-
-class _BestWeights(pl.Callback):
-    """Keep the weights of the epoch with the lowest held-out loss and restore them when training
-    ends, whether it ran to ``max_epochs`` or was stopped early."""
-
-    def __init__(self, label: str) -> None:
-        self.label = label
-        self.best = math.inf
-        self.epoch = 0
-        self._state: dict[str, torch.Tensor] | None = None
-
-    def on_validation_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
-        loss = trainer.callback_metrics.get("val_loss")
-        if trainer.sanity_checking or loss is None or float(loss) >= self.best:
-            return
-        self.best, self.epoch = float(loss), trainer.current_epoch + 1
-        self._state = {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
-
-    def on_train_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
-        if self._state is None:
-            return
-        module.load_state_dict(self._state)
-        logger.info(
-            "%s kept epoch %d of the %d it trained (val_loss %.4f)",
-            self.label,
-            self.epoch,
-            trainer.current_epoch,
-            self.best,
-        )
-
-
-def held_out_compounds(observations: pd.DataFrame, fraction: float, seed: int) -> set[str]:
-    """SMILES of whole Murcko-scaffold groups of the scored (challenge) compounds, about
-    ``fraction`` of them: the compounds a member does not train on and monitors instead."""
-    scored = observations
-    if "data_space" in observations:
-        scored = observations[observations["data_space"] == "challenge"]
-    smiles = pd.Series(scored["SMILES"].unique())
-    groups = smiles.map(murcko_scaffold)
-    sizes = groups.value_counts()
-    held: list[str] = []
-    taken = 0
-    for group in np.random.default_rng(seed).permutation(sizes.index.to_numpy()):
-        if taken >= fraction * len(smiles):
-            break
-        held.append(group)
-        taken += int(sizes[group])
-    return set(smiles[groups.isin(held)])
 
 
 class GraphNetwork:
@@ -597,7 +597,6 @@ class GraphNetwork:
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
         early_stopping_patience: int = 0,
-        validation_fraction: float = 0.1,
         stages: tuple[ResolvedStage, ...] = (),
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
@@ -663,11 +662,12 @@ class GraphNetwork:
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
         self.warmup_epochs = warmup_epochs
-        #: Epochs without a lower held-out loss before a stage stops (0 trains every epoch on all
-        #: rows) and the share of scored compounds, in whole scaffold groups, held out to measure
-        #: it.
+        #: Epochs without a lower error on the monitor rows before a stage stops; 0 never stops
+        #: early. The monitor rows are the cross-validation fold's held-out compounds, given to
+        #: ``fit``.
         self.early_stopping_patience = early_stopping_patience
-        self.validation_fraction = validation_fraction
+        #: Per member and stage, the monitor error after each epoch, from the last ``fit``.
+        self.curves: list[dict] = []
         #: Training curriculum, one entry per stage; empty trains one pooled stage of ``epochs``.
         self.stages = tuple(stages)
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
@@ -949,8 +949,19 @@ class GraphNetwork:
             model.message_passing.output_dim,
         )
 
-    def fit(self, observations: pd.DataFrame) -> "GraphNetwork":
-        """Train on the observation table."""
+    def fit(
+        self,
+        observations: pd.DataFrame,
+        monitor: pd.DataFrame | None = None,
+        prune_above: float | None = None,
+    ) -> "GraphNetwork":
+        """Train on the observation table.
+
+        With ``monitor`` rows (the cross-validation fold's held-out compounds), each stage
+        measures the error of the predicted value on them after every epoch, recorded in
+        ``curves``. A first stage whose error at its half-way epoch is above ``prune_above``
+        raises :class:`PrunedError`.
+        """
         usable = observations[np.isfinite(observations["value"])].reset_index(drop=True)
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
@@ -985,23 +996,14 @@ class GraphNetwork:
             or [ResolvedStage(DATA_SPACES, None, self.epochs, self.learning_rate, False)],
         )
 
-        scored = (
-            usable["data_space"].eq("challenge").to_numpy()
-            if "data_space" in usable
-            else np.ones(len(usable), dtype=bool)
-        )
+        watched = None
+        if monitor is not None:
+            watched = monitor[np.isfinite(monitor["value"])].reset_index(drop=True)
+            watched_points = self._datapoints(watched, labelled=True)
+        self.curves = []
         self._members = []
         for member in range(self.n_members):
             pl.seed_everything(self.seed + member, workers=True)
-            # With early stopping, each member holds out its own scaffold groups of the scored
-            # compounds: every row of those compounds, in any data space, leaves its training set.
-            held_out = (
-                usable["SMILES"]
-                .isin(held_out_compounds(usable, self.validation_fraction, self.seed + member))
-                .to_numpy()
-                if self.early_stopping_patience > 0
-                else np.zeros(len(usable), dtype=bool)
-            )
             if self.ensemble == "bagging":
                 # Each member sees a bootstrap resample, so members differ in the data
                 # they fit, not only in initialisation -- the diversity a reseed lacks.
@@ -1013,8 +1015,7 @@ class GraphNetwork:
             if member == 0:
                 self._log_capacity(model)
             for position, stage in enumerate(stages):
-                in_stage = rows_for_stage(usable, stage)
-                rows = member_rows[(in_stage & ~held_out)[member_rows]]
+                rows = member_rows[rows_for_stage(usable, stage)[member_rows]]
                 if rows.size == 0:
                     continue
                 self._configure_stage(model, stage, position)
@@ -1027,24 +1028,29 @@ class GraphNetwork:
                     dataset, batch_size=self.batch_size, num_workers=self.num_workers
                 )
                 label = f"member {member + 1}/{self.n_members} stage {position + 1}/{len(stages)}"
-                callbacks: list[pl.Callback] = [_EpochReport(label)]
-                held_rows = np.flatnonzero(in_stage & held_out & scored)
-                held_loader = None
-                if self.early_stopping_patience > 0 and held_rows.size > 1:
-                    callbacks += [
-                        pl.callbacks.EarlyStopping(
-                            "val_loss", mode="min", patience=self.early_stopping_patience
-                        ),
-                        _BestWeights(label),
-                    ]
-                    held_dataset = cpdata.MoleculeDataset([points[i] for i in held_rows])
-                    held_dataset.cache = True
-                    held_loader = cpdata.build_dataloader(
-                        held_dataset,
-                        batch_size=self.batch_size,
-                        shuffle=False,
-                        num_workers=self.num_workers,
-                    )
+                fold_monitor = None
+                if watched is not None:
+                    watched_rows = np.flatnonzero(rows_for_stage(watched, stage))
+                    if watched_rows.size:
+                        watched_dataset = cpdata.MoleculeDataset(
+                            [watched_points[i] for i in watched_rows]
+                        )
+                        watched_dataset.cache = True
+                        fold_monitor = _FoldMonitor(
+                            cpdata.build_dataloader(
+                                watched_dataset,
+                                batch_size=self.batch_size,
+                                shuffle=False,
+                                num_workers=self.num_workers,
+                            ),
+                            self._spread,
+                            self.early_stopping_patience,
+                            prune_epoch(stage.epochs) if position == 0 else None,
+                            prune_above,
+                        )
+                callbacks: list[pl.Callback] = [_EpochReport(label, fold_monitor)]
+                if fold_monitor is not None:
+                    callbacks.insert(0, fold_monitor)
                 trainer = pl.Trainer(
                     max_epochs=stage.epochs,
                     accelerator="auto",
@@ -1053,7 +1059,6 @@ class GraphNetwork:
                     enable_checkpointing=False,
                     enable_progress_bar=False,
                     enable_model_summary=False,
-                    num_sanity_val_steps=0,
                 )
                 if len(stages) > 1:
                     logger.info(
@@ -1065,7 +1070,21 @@ class GraphNetwork:
                         stage.lr or "default",
                         ", encoder frozen" if stage.freeze_trunk else "",
                     )
-                trainer.fit(model, loader, held_loader)
+                trainer.fit(model, loader)
+                if fold_monitor is not None:
+                    self.curves.append(
+                        {
+                            "member": member + 1,
+                            "stage": position + 1,
+                            "epochs": stage.epochs,
+                            "error": fold_monitor.error,
+                        }
+                    )
+                    if fold_monitor.pruned:
+                        raise PrunedError(
+                            f"{label}: fold error {fold_monitor.error[-1]:.4f} at epoch "
+                            f"{len(fold_monitor.error)} is above the limit {prune_above:.4f}"
+                        )
             self._members.append(model)
             logger.info("member %d trained", member)
         return self

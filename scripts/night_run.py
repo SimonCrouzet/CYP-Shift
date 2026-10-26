@@ -50,6 +50,7 @@ from cypshift.data.sources import supplying
 from cypshift.eval.scoring import MACRO_LABEL
 from cypshift.experiment import ExperimentConfig
 from cypshift.local_env import load_local_env
+from cypshift.models.monitor import PrunedError
 from cypshift.pipeline import run_cv
 
 logger = logging.getLogger("night")
@@ -77,6 +78,15 @@ NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
 #: GPU (a graph fit is bound by kernel-launch latency, not by the GPU), so the cells of one
 #: comparison overlap. Does not affect results; ``1`` runs them one after another in this process.
 JOBS = int(os.environ.get("CYP_JOBS", "1"))
+#: Fold-error monitoring of graph cross-validation, from the environment like the settings above
+#: (not part of a recipe's name). ``CYP_MONITOR=1`` records each fold's error curve in the run
+#: bundle; ``CYP_EARLY_STOP`` stops a stage after that many epochs without a lower fold error;
+#: ``CYP_PRUNE_REFERENCE`` (a run bundle directory) abandons a configuration whose fold error at
+#: half its epochs is more than ``CYP_PRUNE_TOLERANCE`` (a fraction) above the reference's.
+MONITOR = os.environ.get("CYP_MONITOR") == "1"
+EARLY_STOP = int(os.environ.get("CYP_EARLY_STOP", "0"))
+PRUNE_REFERENCE = os.environ.get("CYP_PRUNE_REFERENCE", "")
+PRUNE_TOLERANCE = os.environ.get("CYP_PRUNE_TOLERANCE")
 #: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
 #: :func:`run_focus`, ``submit`` refits the focus plan's final recipe on all training data
 #: (:func:`run_focus_submission`), ``wide`` and ``finetune`` cross-validate the wide members and
@@ -673,8 +683,12 @@ REGRESSION.update(_feature_sweep("tfm_fs", {"model.kind": "tfm"}))
 REGRESSION.update(_feature_sweep("boosted_fs", {}))
 
 
-#: Graph settings that only matter once early stopping is on.
-EARLY_STOPPING_FIELDS = ("early_stopping_patience", "validation_fraction")
+#: Graph settings that only matter once fold monitoring is on.
+MONITOR_FIELDS = (
+    "early_stopping_patience",
+    "prune_reference",
+    "prune_tolerance",
+)
 
 
 def _resolved_key(overrides: dict) -> str:
@@ -690,10 +704,10 @@ def _resolved_key(overrides: dict) -> str:
         experiment_logger.setLevel(previous)
     resolved = dataclasses.asdict(config)
     graph = resolved["model"]["graph"]
-    if graph["early_stopping_patience"] == 0:
+    if not graph["monitor_fold"]:
         # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
         # the setting existed still match.
-        for field in EARLY_STOPPING_FIELDS:
+        for field in ("monitor_fold", *MONITOR_FIELDS):
             del graph[field]
     return repr(resolved)
 
@@ -1509,13 +1523,14 @@ CARRIED: tuple[str, ...] = () if NUM_MEMBERS else CARRY_REVS
 
 
 def already_done() -> set[tuple[str, str, int]]:
-    """Completed (phase, name, seed) at this revision or a carried-over one; failures retried."""
+    """Completed or pruned (phase, name, seed) at this revision or a carried-over one; failures
+    retried."""
     if not RESULTS.exists():
         return set()
     table = pd.read_csv(RESULTS)
     if "rev" not in table.columns or "status" not in table.columns:
         return set()  # pre-schema results from an earlier code era: re-run under this one
-    ok = table[table["rev"].isin({REV, *CARRIED}) & (table["status"] == "ok")]
+    ok = table[table["rev"].isin({REV, *CARRIED}) & table["status"].isin(["ok", "pruned"])]
     return {(r.phase, r.name, int(r.seed)) for r in ok.itertuples()}
 
 
@@ -1610,6 +1625,12 @@ def compute_row(phase: str, name: str, overrides: dict, seed: int) -> dict:
     config.override("model.graph.num_workers", NUM_WORKERS)
     if NUM_MEMBERS:
         config.override("model.n_members", NUM_MEMBERS)
+    if MONITOR or EARLY_STOP or PRUNE_REFERENCE:
+        config.override("model.graph.monitor_fold", True)
+        config.override("model.graph.early_stopping_patience", EARLY_STOP)
+        config.override("model.graph.prune_reference", PRUNE_REFERENCE)
+        if PRUNE_TOLERANCE is not None:
+            config.override("model.graph.prune_tolerance", float(PRUNE_TOLERANCE))
     config.validate()
     started = time.time()
     bundle = BUNDLE_DIR / REV / f"{phase}_{name}_seed{seed}".replace(":", "_")
@@ -1694,6 +1715,9 @@ def _run_parallel(phase: str, todo: list[tuple[str, dict, int]]) -> None:
             name, seed = futures[future]
             try:
                 record_row(future.result())
+            except PrunedError as pruned:
+                logger.info("%s/%s seed=%d PRUNED: %s", phase, name, seed, pruned)
+                record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "pruned"})
             except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
                 logger.error("%s/%s seed=%d FAILED: %r", phase, name, seed, error)
                 record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})
@@ -1714,6 +1738,9 @@ def run_phase(phase: str, configs: dict[str, dict], seeds: list[int]) -> None:
     for name, overrides, seed in todo:
         try:
             evaluate(phase, name, overrides, seed)
+        except PrunedError as pruned:
+            logger.info("%s/%s seed=%d PRUNED: %s", phase, name, seed, pruned)
+            record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "pruned"})
         except Exception as error:  # noqa: BLE001 -- one failure must not sink the night
             logger.exception("%s/%s seed=%d FAILED: %s", phase, name, seed, error)
             record({"rev": REV, "phase": phase, "name": name, "seed": seed, "status": "failed"})

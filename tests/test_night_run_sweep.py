@@ -801,3 +801,28 @@ def test_the_finetune_plan_runs_three_staged_cells_beside_the_focus_recipe(monke
     presets = {cfg["training.preset"] for _, cfg in members}
     assert presets == {"direct_finetune", "direct_finetune_frozen", "pooled_continue"}
     assert all(night_run._is_valid(cfg) for _, cfg in members)
+
+
+def _pruning_worker(phase, name, overrides, seed):
+    from cypshift.models.monitor import PrunedError
+
+    if name == "slow":
+        raise PrunedError("fold error above the limit")
+    return _fake_worker(phase, name, overrides, seed)
+
+
+def test_the_pool_records_a_pruned_cell_as_pruned_and_a_rerun_skips_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(night_run, "RESULTS", tmp_path / "night_results.csv")
+    monkeypatch.setattr(night_run, "JOBS", 2)
+    monkeypatch.setattr(night_run, "_compute_row_in_child", _pruning_worker)
+    night_run._run_parallel("reg", [("ok1", {}, 0), ("slow", {}, 0)])
+    table = pd.read_csv(tmp_path / "night_results.csv").set_index("name")
+    assert table.loc["slow", "status"] == "pruned" and table.loc["ok1", "status"] == "ok"
+    assert ("reg", "slow", 0) in night_run.already_done()
+    assert "slow" not in night_run._completed("reg")["name"].tolist()
+
+
+def test_a_recipe_keeps_its_name_while_fold_monitoring_is_off():
+    plain = night_run._resolved_key({"model.kind": "graph"})
+    monitored = night_run._resolved_key({"model.kind": "graph", "model.graph.monitor_fold": True})
+    assert "early_stopping_patience" not in plain and "early_stopping_patience" in monitored
