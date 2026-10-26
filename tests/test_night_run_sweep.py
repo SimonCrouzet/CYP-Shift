@@ -768,3 +768,24 @@ def test_a_response_cell_is_not_adopted_on_its_control_alone_when_it_is_not_the_
     ran = _focus_world(monkeypatch, tmp_path, score)
     night_run.run_focus(margin=0.005)
     assert all(c.get("sources.qhts_representation", "pic50") == "pic50" for c in ran[1].values())
+
+
+def test_the_wide_plan_runs_the_focus_recipe_and_four_valid_members(monkeypatch, tmp_path):
+    ran = _greedy_world(monkeypatch, tmp_path, lambda cfg: 0.64)
+    monkeypatch.setattr(night_run, "blend_report", lambda *args: None)
+    night_run.run_wide()
+    (batch,) = ran
+    incumbent, *members = batch.items()
+    assert incumbent[0] == "focus_both_budget_1217e0"
+    assert incumbent[1]["sources.qhts_representation"] == "both"
+    assert incumbent[1]["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET
+    assert len(members) == len(night_run.WIDE_CELLS) == 4
+    assert all(night_run._is_valid(cfg) for _, cfg in members)
+    wide = [cfg for _, cfg in members if cfg.get("model.graph.hidden") == 2048]
+    assert len(wide) == 3 and all(cfg["model.graph.ffn_hidden"] == 1024 for cfg in wide)
+    absolute = [cfg for _, cfg in members if cfg.get("model.objective") == "absolute"]
+    assert len(absolute) == 1 and absolute[0]["training.inverse_variance_weighting"] is True
+    narrow = [cfg for _, cfg in members if "model.graph.hidden" not in cfg]
+    assert len(narrow) == 1 and narrow[0]["training.inverse_variance_weighting"] is True
+    ranks = [night_run._fit_cost_rank(cfg) for _, cfg in members]
+    assert ranks == sorted(ranks)  # the slowest fits are submitted first

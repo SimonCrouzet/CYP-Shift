@@ -79,7 +79,7 @@ NUM_MEMBERS = int(os.environ.get("CYP_MEMBERS", "0"))
 JOBS = int(os.environ.get("CYP_JOBS", "1"))
 #: The queue ``main`` runs: ``full`` is every phase below, ``focus`` is the staged plan of
 #: :func:`run_focus`, ``submit`` refits the focus plan's final recipe on all training data
-#: (:func:`run_focus_submission`).
+#: (:func:`run_focus_submission`), ``wide`` cross-validates the wide members (:func:`run_wide`).
 PLAN = os.environ.get("CYP_PLAN", "full")
 
 #: The established auxiliary set (octant + tox21), which beats the plain baseline on the
@@ -2044,9 +2044,9 @@ def _focus_model_round(
     return current_name, current, ranked
 
 
-def blend_report(final: str, names: list[str]) -> pd.DataFrame:
+def blend_report(final: str, names: list[str], output: str = "focus_blends.csv") -> pd.DataFrame:
     """Macro ST-RAE of the equal-weight blend of ``final`` with each other recipe of the plan, from
-    the out-of-fold predictions of their bundles; written to ``data/focus_blends.csv``."""
+    the out-of-fold predictions of their bundles; written to ``data/<output>``."""
     import blend
 
     members = {
@@ -2062,7 +2062,7 @@ def blend_report(final: str, names: list[str]) -> pd.DataFrame:
         )
     table = pd.DataFrame(rows).sort_values("macro_ST_RAE").reset_index(drop=True)
     logger.info("equal-weight blends with %s:\n%s", final, table.to_string())
-    table.to_csv(RESULTS.parent / "focus_blends.csv", index=False)
+    table.to_csv(RESULTS.parent / output, index=False)
     return table
 
 
@@ -2120,6 +2120,46 @@ def run_focus_submission() -> None:
     )
 
 
+#: Encoder and readout width of the wide members: message-passing width 2048, depth 4, readout
+#: width 1024, dropout 0.2.
+_WIDE = (
+    ("model.graph.hidden", 2048),
+    ("model.graph.depth", 4),
+    ("model.graph.ffn_hidden", 1024),
+    ("model.graph.dropout", 0.2),
+)
+_INVERSE_VARIANCE = (("training.inverse_variance_weighting", True),)
+#: The wide plan's members, applied to the focus plan's data recipe (``FOCUS_BASE`` with the
+#: max-response and the normalised auxiliary weights): interval loss with uniform weights, absolute
+#: loss with inverse-variance weights, interval loss with inverse-variance weights, and the
+#: narrow encoder with inverse-variance weights (the control for the weighting alone). Slowest
+#: first.
+WIDE_CELLS = (
+    Cell("wide_interval", _WIDE),
+    Cell("wide_absolute_invvar", _WIDE + (("model.objective", "absolute"),) + _INVERSE_VARIANCE),
+    Cell("wide_interval_invvar", _WIDE + _INVERSE_VARIANCE),
+    Cell("invvar", _INVERSE_VARIANCE),
+)
+
+
+def run_wide() -> None:
+    """Cross-validate the wide members beside the focus plan's data recipe, then report the
+    equal-weight blend of the recipe with each member (``data/wide_blends.csv``)."""
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
+    base = _recipe_name("both_budget", recipe, declared)
+    configs = {}
+    for cell in WIDE_CELLS:
+        overrides = _apply(recipe, cell.sets)
+        if not _is_valid(overrides):
+            raise ValueError(f"wide cell {cell.tag} is not a valid configuration")
+        configs[_recipe_name(cell.tag, overrides, declared)] = overrides
+    run_phase("reg", {base: recipe, **configs}, SEEDS)
+    scores = ranked_means("reg")["mean"]
+    logger.info("wide plan:\n%s", scores.reindex([base, *configs]).to_string())
+    blend_report(base, [base, *configs], "wide_blends.csv")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -2136,6 +2176,11 @@ def main() -> None:
 
     if PLAN == "submit":
         run_focus_submission()
+        return
+    if PLAN == "wide":
+        logger.info("=== Wide members on the focus data recipe (jobs: %d) ===", JOBS)
+        run_wide()
+        wandb_finish()
         return
     if PLAN == "focus":
         logger.info("=== Focus plan from %s (jobs: %d) ===", FOCUS_BASE, JOBS)
