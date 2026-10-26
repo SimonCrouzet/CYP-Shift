@@ -2291,7 +2291,7 @@ SHARE_CELLS = (
 
 
 def _report_factors(cells: tuple[Cell, ...], names: dict[str, str]) -> pd.DataFrame:
-    """Each cell's score beside its reference's."""
+    """Each cell's score beside its reference's, and whether the change exceeds the adopt margin."""
     scores = ranked_means("reg")["mean"]
     rows = []
     for cell in cells:
@@ -2305,11 +2305,14 @@ def _report_factors(cells: tuple[Cell, ...], names: dict[str, str]) -> pd.DataFr
                 "score": score,
                 "reference_score": other,
                 "change": score - other,
+                "beyond_margin": abs(score - other) > ADOPT_MARGIN,
             }
         )
     table = pd.DataFrame(rows)
     logger.info(
-        "factors (change is score minus the reference's; lower is better):\n%s",
+        "factors (change is score minus the reference's, lower is better; beyond_margin is whether "
+        "the change exceeds the adopt margin %.3f):\n%s",
+        ADOPT_MARGIN,
         table.round(4).to_string(index=False),
     )
     return table

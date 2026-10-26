@@ -899,3 +899,19 @@ def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
     )
     assert "max_rows_per_group" in capped
     assert "row_share" not in capped and "row_selection_assays" not in capped
+
+
+def test_the_factor_report_marks_only_changes_beyond_the_adopt_margin(monkeypatch):
+    scores = pd.Series({"ref": 0.6652, "small": 0.6671, "large": 0.6752, "better": 0.6552})
+    monkeypatch.setattr(
+        night_run, "ranked_means", lambda phase=None: pd.DataFrame({"mean": scores})
+    )
+    cells = (
+        night_run.Cell("small", (), "factor", "base"),
+        night_run.Cell("large", (), "factor", "base"),
+        night_run.Cell("better", (), "factor", "base"),
+    )
+    names = {"base": "ref", "small": "small", "large": "large", "better": "better"}
+    table = night_run._report_factors(cells, names).set_index("cell")
+    assert table["beyond_margin"].to_dict() == {"small": False, "large": True, "better": True}
+    assert table.loc["better", "change"] < 0 < table.loc["large", "change"]
