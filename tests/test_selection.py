@@ -70,3 +70,13 @@ def test_only_groups_over_the_cap_are_reduced():
 def test_a_cap_above_every_group_changes_nothing():
     table = _table(30)
     assert reduce_groups(table, 100, "clusters", seed=0).equals(table)
+
+
+def test_a_share_keeps_that_share_of_every_group_and_the_assay_list_limits_it():
+    table = _table(30)
+    table = pd.concat([table, table.iloc[:20].assign(assay="fluorogenic_pic50")], ignore_index=True)
+    halved = reduce_groups(table, 0, "random", seed=0, share=0.5)
+    assert sorted(halved.groupby(GROUP_COLUMNS).size().tolist()) == [10, 15, 15]
+    only = reduce_groups(table, 0, "random", seed=0, share=0.5, assays=["fluorogenic_pic50"])
+    sizes = only.groupby("assay").size()
+    assert sizes["fluorogenic_pic50"] == 10 and sizes["reversible_pic50"] == 60

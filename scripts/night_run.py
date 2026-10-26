@@ -707,8 +707,15 @@ def _resolved_key(overrides: dict) -> str:
     resolved = dataclasses.asdict(config)
     graph = resolved["model"]["graph"]
     del graph["matmul_precision"]  # a speed setting: the same recipe under either precision
-    if resolved["auxiliary"]["row_selection"] == "none":
-        del resolved["auxiliary"]["row_selection"], resolved["auxiliary"]["max_rows_per_group"]
+    auxiliary = resolved["auxiliary"]
+    if auxiliary["row_selection"] == "none":
+        for field in ("row_selection", "max_rows_per_group", "row_share", "row_selection_assays"):
+            del auxiliary[field]
+    else:
+        if auxiliary["row_share"] == 0.0:
+            del auxiliary["row_share"]
+        if not auxiliary["row_selection_assays"]:
+            del auxiliary["row_selection_assays"]
     if not graph["monitor_fold"]:
         # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
         # the setting existed still match.
@@ -2251,6 +2258,38 @@ def run_subset() -> None:
     _run_cells(SUBSET_CELLS, "subset_blends.csv", SUBSET_BASE)
 
 
+#: Row selection by share on the same recipe: every group is cut to the same share of its rows, so
+#: the mix of potency, max-response and Octant rows is the recipe's. Random, clusters and MaxMin
+#: at a half; random at a quarter; random at a half on the Tox21 groups only and on the Octant
+#: group only; and the full table at 19 epochs, which gives it as many optimizer updates as the
+#: 30-epoch fits on the halved table (36,400 of 58,400 rows).
+SHARE_TOX21 = ("luminescent_ac50", "luminescent_max_response")
+SHARE_OCTANT = ("fluorogenic_pic50",)
+
+
+def _share_cell(tag: str, selection: str, share: float, assays: tuple[str, ...] = ()) -> Cell:
+    sets = (("auxiliary.row_selection", selection), ("auxiliary.row_share", share))
+    if assays:
+        sets += (("auxiliary.row_selection_assays", list(assays)),)
+    return Cell(tag, sets)
+
+
+SHARE_CELLS = (
+    Cell("full_19_epochs", (("model.graph.epochs", 19),)),
+    _share_cell("random_50", "random", 0.5),
+    _share_cell("clusters_50", "clusters", 0.5),
+    _share_cell("maxmin_50", "maxmin", 0.5),
+    _share_cell("random_50_tox21", "random", 0.5, SHARE_TOX21),
+    _share_cell("random_50_octant", "random", 0.5, SHARE_OCTANT),
+    _share_cell("random_25", "random", 0.25),
+)
+
+
+def run_share() -> None:
+    """The row-share cells (``SHARE_CELLS``); blends in ``data/share_blends.csv``."""
+    _run_cells(SHARE_CELLS, "share_blends.csv", SUBSET_BASE)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
@@ -2271,6 +2310,11 @@ def main() -> None:
     if PLAN == "finetune":
         logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
         run_finetune()
+        wandb_finish()
+        return
+    if PLAN == "share":
+        logger.info("=== Auxiliary row shares on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
+        run_share()
         wandb_finish()
         return
     if PLAN == "subset":

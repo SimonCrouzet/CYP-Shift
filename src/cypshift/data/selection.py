@@ -1,7 +1,8 @@
 """Reduce a large auxiliary group to a fixed number of its rows.
 
-A group is one (target, assay, source, data space) block of the auxiliary table. Groups at or
-under the cap are untouched; larger ones keep ``max_rows`` rows chosen by one of:
+A group is one (target, assay, source, data space) block of the auxiliary table. A group above
+the row cap, or every group when a share is set, keeps a reduced number of its rows, chosen by one
+of:
 
 * ``random`` -- a uniform draw without replacement (the control for the others);
 * ``clusters`` -- k-means with ``k = max_rows`` on a 128-component SVD projection of the Morgan
@@ -11,6 +12,7 @@ under the cap are untouched; larger ones keep ``max_rows`` rows chosen by one of
 """
 
 import logging
+import math
 from collections.abc import Sequence
 
 import numpy as np
@@ -95,14 +97,19 @@ def reduce_groups(
     method: str,
     reference_smiles: Sequence[str] = (),
     seed: int = 0,
+    share: float = 0.0,
+    assays: Sequence[str] = (),
 ) -> pd.DataFrame:
-    """``table`` with every group of more than ``max_rows`` rows reduced to ``max_rows``."""
+    """``table`` with each group reduced to ``max_rows`` rows, or to ``ceil(share * rows)`` when
+    ``share`` is set, if that is fewer than it has. Only groups of the listed ``assays`` (every
+    group when empty) are reduced."""
     kept = []
     for key, group in table.groupby(GROUP_COLUMNS, sort=False):
-        if len(group) <= max_rows:
+        target = max_rows if max_rows > 0 else math.ceil(share * len(group))
+        if target >= len(group) or (assays and group["assay"].iloc[0] not in assays):
             kept.append(group.index.to_numpy())
             continue
-        chosen = select_rows(group["SMILES"].tolist(), max_rows, method, reference_smiles, seed)
+        chosen = select_rows(group["SMILES"].tolist(), target, method, reference_smiles, seed)
         kept.append(group.index.to_numpy()[chosen])
         logger.info(
             "%s: kept %d of %d rows (%s)", "/".join(map(str, key)), len(chosen), len(group), method

@@ -381,3 +381,36 @@ def test_a_row_selection_with_a_cap_is_accepted():
     config.override("auxiliary.row_selection", "nearest")
     config.override("auxiliary.max_rows_per_group", 2000)
     config.validate()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"auxiliary.row_selection": "random", "auxiliary.row_share": 1.5},
+        {
+            "auxiliary.row_selection": "random",
+            "auxiliary.row_share": 0.5,
+            "auxiliary.max_rows_per_group": 100,
+        },
+        {"auxiliary.row_share": 0.5},
+    ],
+)
+def test_a_row_selection_takes_exactly_one_size(overrides):
+    config = ExperimentConfig.load()
+    for key, value in overrides.items():
+        config.override(key, value)
+    with pytest.raises(ValueError, match="go together"):
+        config.validate()
+
+
+def test_a_row_share_with_a_listed_assay_is_accepted_and_an_unknown_assay_is_not():
+    config = ExperimentConfig.load()
+    config.override("auxiliary.row_selection", "random")
+    config.override("auxiliary.row_share", 0.5)
+    config.override(
+        "auxiliary.row_selection_assays", ["fluorogenic_pic50", "luminescent_max_response"]
+    )
+    config.validate()
+    config.override("auxiliary.row_selection_assays", ["telepathy"])
+    with pytest.raises(ValueError, match="unknown"):
+        config.validate()

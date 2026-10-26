@@ -112,6 +112,8 @@ DATA_SIDE_NOT_SWEPT = {
     "training.stages": "curriculum; the graph ignores stage settings",
     "auxiliary.row_selection": "varied by the subset plan's cells, registered when it runs",
     "auxiliary.max_rows_per_group": "varied by the subset plan's cells, registered when it runs",
+    "auxiliary.row_share": "varied by the share plan's cells, registered when it runs",
+    "auxiliary.row_selection_assays": "varied by the share plan's cells, registered when it runs",
 }
 
 
@@ -859,3 +861,30 @@ def test_the_subset_plan_compares_each_selection_with_the_full_table_at_matched_
     assert "sources.novartis" not in base
     for cell in night_run.SUBSET_CELLS:
         assert night_run._is_valid(night_run._apply(base, cell.sets))
+
+
+def test_the_share_plan_keeps_octant_in_its_own_cell_and_every_cell_is_valid():
+    cells = {cell.tag: dict(cell.sets) for cell in night_run.SHARE_CELLS}
+    assert cells["random_50_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
+    assert "auxiliary.row_selection_assays" not in cells["random_50"]
+    base = night_run._apply(
+        dict(night_run.REGRESSION[night_run.SUBSET_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    for cell in night_run.SHARE_CELLS:
+        assert night_run._is_valid(night_run._apply(base, cell.sets))
+    keys = {
+        night_run._resolved_key(night_run._apply(base, cell.sets)) for cell in night_run.SHARE_CELLS
+    }
+    assert len(keys) == len(night_run.SHARE_CELLS)
+
+
+def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
+    capped = night_run._resolved_key(
+        {
+            "model.kind": "graph",
+            "auxiliary.row_selection": "random",
+            "auxiliary.max_rows_per_group": 2000,
+        }
+    )
+    assert "max_rows_per_group" in capped
+    assert "row_share" not in capped and "row_selection_assays" not in capped

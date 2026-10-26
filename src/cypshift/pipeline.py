@@ -860,6 +860,8 @@ def auxiliary_frames(
             config.auxiliary.row_selection,
             retained["SMILES"].tolist(),
             config.data.seed,
+            config.auxiliary.row_share,
+            config.auxiliary.row_selection_assays,
         )
     response = empty
     if response_feature_route(config):

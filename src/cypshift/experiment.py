@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from cypshift.config import ISOFORMS
-from cypshift.data.assembly import ASSAYS, DATA_SPACES
+from cypshift.data.assembly import ASSAYS, DATA_SPACES, RESPONSE_ASSAY
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 from cypshift.data.selection import SELECTIONS
@@ -220,11 +220,15 @@ class AuxiliaryConfig:
     #: half its challenge weight. Applies to the scored enzymes' own outside rows (near_aux);
     #: relatives (distant_aux) keep the distance weighting. See pipeline.cap_per_endpoint_budget.
     per_endpoint_budget: float = 0.0
-    #: How a group of auxiliary rows (one enzyme, assay and source) larger than
-    #: ``max_rows_per_group`` is reduced to that many rows; see :mod:`cypshift.data.selection`.
-    #: ``none`` keeps every row and goes with ``max_rows_per_group = 0``. Swept.
+    #: How a group of auxiliary rows (one enzyme, assay and source) is reduced; see
+    #: :mod:`cypshift.data.selection`. ``none`` keeps every row. Otherwise exactly one of
+    #: ``max_rows_per_group`` (groups above it are cut to it) and ``row_share`` (every group is
+    #: cut to that share of its rows, which keeps the mix between groups) sets the size. Swept.
     row_selection: str = "none"
     max_rows_per_group: int = 0
+    row_share: float = 0.0
+    #: The assays the selection applies to; empty means every auxiliary group.
+    row_selection_assays: tuple[str, ...] = ()
 
 
 @dataclass
@@ -689,13 +693,20 @@ class ExperimentConfig:
                 "model.graph.warmup_epochs must be non-negative"
             )
         aux = self.auxiliary
-        if aux.max_rows_per_group < 0 or (aux.row_selection == "none") != (
-            aux.max_rows_per_group == 0
+        sizes = (aux.max_rows_per_group > 0) + (aux.row_share > 0)
+        if (
+            aux.max_rows_per_group < 0
+            or not 0 <= aux.row_share <= 1
+            or sizes != (aux.row_selection != "none")
         ):
             raise ValueError(
-                "auxiliary.row_selection and auxiliary.max_rows_per_group go together: a "
-                "selection needs a positive row cap, and a cap needs a selection"
+                "auxiliary.row_selection and exactly one of auxiliary.max_rows_per_group and "
+                "auxiliary.row_share go together: a selection needs one size (a row cap, or a "
+                "share between 0 and 1), and a size needs a selection"
             )
+        unknown = set(aux.row_selection_assays) - {*ASSAYS, RESPONSE_ASSAY}
+        if unknown:
+            raise ValueError(f"auxiliary.row_selection_assays has unknown {sorted(unknown)}")
         graph = self.model.graph
         if graph.matmul_precision not in MATMUL_PRECISIONS:
             raise ValueError(
