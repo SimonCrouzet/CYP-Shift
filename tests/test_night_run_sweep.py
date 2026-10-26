@@ -879,13 +879,13 @@ def test_each_share_cell_differs_from_its_reference_in_one_factor():
         }
         factor = {
             "rows kept": {"auxiliary.row_selection", "auxiliary.row_share"},
-            "epochs": {"model.graph.epochs"},
             "selection method": {"auxiliary.row_selection"},
             "groups reduced": {"auxiliary.row_selection_assays"},
         }[cell.group]
         assert changed == factor, cell.tag
     keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.SHARE_CELLS}
     assert len(keys) == len(night_run.SHARE_CELLS)
+    assert all("model.graph.epochs" not in dict(c.sets) for c in night_run.SHARE_CELLS)
     assert sets["random_50_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
 
 

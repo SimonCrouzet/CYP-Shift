@@ -2261,12 +2261,11 @@ def run_subset() -> None:
     _run_cells(SUBSET_CELLS, "subset_blends.csv", SUBSET_BASE)
 
 
-#: Row selection by share on the Octant and Tox21 recipe. Every cell differs from its reference
-#: (``control``; ``base`` is the full table at 30 epochs) in the one factor named by ``group``:
-#: the share of every group's rows kept (random draw); the epochs on the full table; the selection
-#: method at a half; the groups the half-cut applies to (the Tox21 groups only, or the Octant group
-#: only, instead of all). The epoch cells match the optimizer updates of the half and quarter
-#: cells (36,400 and 25,300 of 58,400 rows at 30 epochs gives 19 and 13 epochs).
+#: Row selection by share on the Octant and Tox21 recipe, every cell at the recipe's 30 epochs. Each
+#: cell differs from its reference (``control``; ``base`` is the full table) in the one factor named
+#: by ``group``: the share of every group's rows kept (random draw); the selection method at a half;
+#: the groups the half-cut applies to (the Tox21 groups only, or the Octant group only, instead of
+#: all).
 SHARE_TOX21 = ("luminescent_ac50", "luminescent_max_response")
 SHARE_OCTANT = ("fluorogenic_pic50",)
 
@@ -2284,22 +2283,15 @@ SHARE_CELLS = (
     _share_cell("random_75", "rows kept", "base", "random", 0.75),
     _share_cell("random_50", "rows kept", "base", "random", 0.5),
     _share_cell("random_25", "rows kept", "base", "random", 0.25),
-    Cell("full_19_epochs", (("model.graph.epochs", 19),), "epochs", "base"),
-    Cell("full_13_epochs", (("model.graph.epochs", 13),), "epochs", "base"),
     _share_cell("clusters_50", "selection method", "random_50", "clusters", 0.5),
     _share_cell("maxmin_50", "selection method", "random_50", "maxmin", 0.5),
     _share_cell("random_50_tox21", "groups reduced", "random_50", "random", 0.5, SHARE_TOX21),
     _share_cell("random_50_octant", "groups reduced", "random_50", "random", 0.5, SHARE_OCTANT),
 )
-#: Row-selection cells beside the full-table cell with as many optimizer updates.
-SHARE_MATCHED = (("random_50", "full_19_epochs"), ("random_25", "full_13_epochs"))
 
 
-def _report_factors(
-    cells: tuple[Cell, ...], names: dict[str, str], matched: tuple[tuple[str, str], ...]
-) -> pd.DataFrame:
-    """Each cell's score beside its reference's, and the matched-update pairs
-    (``data/<name>_factors.csv`` is written by the caller)."""
+def _report_factors(cells: tuple[Cell, ...], names: dict[str, str]) -> pd.DataFrame:
+    """Each cell's score beside its reference's."""
     scores = ranked_means("reg")["mean"]
     rows = []
     for cell in cells:
@@ -2309,18 +2301,6 @@ def _report_factors(
             {
                 "cell": cell.tag,
                 "factor": cell.group,
-                "reference": reference,
-                "score": score,
-                "reference_score": other,
-                "change": score - other,
-            }
-        )
-    for tag, reference in matched:
-        score, other = _score_of(scores, names[tag]), _score_of(scores, names[reference])
-        rows.append(
-            {
-                "cell": tag,
-                "factor": "same updates",
                 "reference": reference,
                 "score": score,
                 "reference_score": other,
@@ -2339,9 +2319,7 @@ def run_share() -> None:
     """The row-share cells (``SHARE_CELLS``); blends in ``data/share_blends.csv``, each cell
     against its reference in ``data/share_factors.csv``."""
     names = _run_cells(SHARE_CELLS, "share_blends.csv", SUBSET_BASE)
-    _report_factors(SHARE_CELLS, names, SHARE_MATCHED).to_csv(
-        RESULTS.parent / "share_factors.csv", index=False
-    )
+    _report_factors(SHARE_CELLS, names).to_csv(RESULTS.parent / "share_factors.csv", index=False)
 
 
 def main() -> None:
