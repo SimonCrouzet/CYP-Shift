@@ -596,6 +596,7 @@ class GraphNetwork:
         ffn_hidden: int = 0,
         learning_rate: float = 0.0,
         warmup_epochs: int = 2,
+        matmul_precision: str = "high",
         early_stopping_patience: float = 0.1,
         stages: tuple[ResolvedStage, ...] = (),
         response_assays: tuple[str, ...] = (),
@@ -662,6 +663,9 @@ class GraphNetwork:
         #: warmup length; the initial and final rates follow a set peak at a tenth of it.
         self.learning_rate = learning_rate
         self.warmup_epochs = warmup_epochs
+        #: Argument of ``torch.set_float32_matmul_precision``, applied before training and
+        #: prediction.
+        self.matmul_precision = matmul_precision
         #: Share of a stage's epochs without a lower error on the monitor rows before it stops; 0
         #: never stops early. The monitor rows are the cross-validation fold's held-out compounds,
         #: given to ``fit``.
@@ -962,6 +966,7 @@ class GraphNetwork:
         ``curves``. A first stage whose error at its half-way epoch is above ``prune_above``
         raises :class:`PrunedError`.
         """
+        torch.set_float32_matmul_precision(self.matmul_precision)
         usable = observations[np.isfinite(observations["value"])].reset_index(drop=True)
         if usable.empty:
             raise ValueError("no finite measurements to fit on")
@@ -1110,6 +1115,7 @@ class GraphNetwork:
         """Per-member predicted pIC50 at one assay condition; (members, n, endpoints)."""
         if not self._members:
             raise RuntimeError("model is not fitted")
+        torch.set_float32_matmul_precision(self.matmul_precision)
         n = len(smiles)
         samples = np.empty((self.n_members, n, len(self.endpoints)))
         for column, endpoint in enumerate(self.endpoints):

@@ -706,6 +706,7 @@ def _resolved_key(overrides: dict) -> str:
         experiment_logger.setLevel(previous)
     resolved = dataclasses.asdict(config)
     graph = resolved["model"]["graph"]
+    del graph["matmul_precision"]  # a speed setting: the same recipe under either precision
     if not graph["monitor_fold"]:
         # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
         # the setting existed still match.

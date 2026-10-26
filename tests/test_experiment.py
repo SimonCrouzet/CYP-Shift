@@ -34,6 +34,7 @@ def test_defaults_validate():
         ("multifidelity.screen_strategy", "wishing"),
         ("model.kind", "oracle"),
         ("model.objective", "vibes"),
+        ("model.graph.matmul_precision", "approximate"),
     ],
 )
 def test_an_unknown_option_is_rejected(field, value):

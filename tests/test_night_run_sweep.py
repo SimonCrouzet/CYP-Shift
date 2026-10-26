@@ -826,3 +826,11 @@ def test_a_recipe_keeps_its_name_while_fold_monitoring_is_off():
     plain = night_run._resolved_key({"model.kind": "graph"})
     monitored = night_run._resolved_key({"model.kind": "graph", "model.graph.monitor_fold": True})
     assert "early_stopping_patience" not in plain and "early_stopping_patience" in monitored
+
+
+def test_a_recipe_has_one_name_under_every_matmul_precision():
+    keys = {
+        night_run._resolved_key({"model.kind": "graph", "model.graph.matmul_precision": value})
+        for value in ("highest", "high", "medium")
+    }
+    assert len(keys) == 1

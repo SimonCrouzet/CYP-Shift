@@ -152,6 +152,7 @@ def build_model(
             ffn_hidden=config.model.graph.ffn_hidden,
             learning_rate=config.model.graph.learning_rate,
             warmup_epochs=config.model.graph.warmup_epochs,
+            matmul_precision=config.model.graph.matmul_precision,
             early_stopping_patience=config.model.graph.early_stopping_patience,
             stages=tuple(
                 training_stages(

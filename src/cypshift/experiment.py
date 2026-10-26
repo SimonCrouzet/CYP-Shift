@@ -104,6 +104,7 @@ OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
 #: ``bagging`` also trains each member on a seeded bootstrap resample, so members see the
 #: data differently -- the diversity a reseed ensemble lacks.
 ENSEMBLE_STRATEGIES = ("reseed", "bagging")
+MATMUL_PRECISIONS = ("highest", "high", "medium")
 
 #: Pretrained D-MPNN encoder to initialise the graph model from. ``none`` trains from
 #: scratch; ``chemeleon`` loads the chemprop-native CheMeleon foundation encoder;
@@ -436,6 +437,11 @@ class GraphConfig:
     learning_rate: float = 0.0
     #: Linear-warmup epochs of that schedule; the default is chemprop's own. Swept.
     warmup_epochs: int = 2
+    #: ``torch.set_float32_matmul_precision`` while the graph trains and predicts: ``highest`` is
+    #: plain float32; ``high`` and ``medium`` let the GPU's tensor cores run the matrix products
+    #: in TensorFloat-32 and bfloat16 passes, which is faster for wide layers and changes the
+    #: results slightly. A speed setting, not part of a recipe's identity.
+    matmul_precision: str = "high"
     #: Evaluate each cross-validation fold's held-out compounds after every epoch and record the
     #: error curves in the run bundle (``curves.json``). Cross-validation of a graph model only.
     monitor_fold: bool = False
@@ -676,6 +682,11 @@ class ExperimentConfig:
                 "model.graph.warmup_epochs must be non-negative"
             )
         graph = self.model.graph
+        if graph.matmul_precision not in MATMUL_PRECISIONS:
+            raise ValueError(
+                f"model.graph.matmul_precision={graph.matmul_precision!r} is not one of "
+                f"{MATMUL_PRECISIONS}"
+            )
         if not 0 <= graph.early_stopping_patience < 1 or graph.prune_tolerance < 0:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "

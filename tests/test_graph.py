@@ -639,3 +639,15 @@ def test_the_error_at_the_pruning_epoch_decides_pruning_only_there():
     assert _run_epochs(monitor, 3) == (False, 3) and not monitor.pruned
     monitor = _scripted_monitor([1, 1.6, 9], prune_at=2, prune_above=1.5)
     assert _run_epochs(monitor, 3) == (True, 2) and monitor.pruned
+
+
+def test_the_matmul_precision_is_set_before_training_and_before_prediction(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch, "set_float32_matmul_precision", calls.append)
+    net = GraphNetwork(
+        hidden=16, depth=2, ffn_hidden=16, epochs=1, batch_size=8, matmul_precision="medium"
+    )
+    net.fit(_monitored_rows(40))
+    net.predict(["CCO", "CCN"])
+    assert calls == ["medium", "medium"]
+    assert GraphNetwork().matmul_precision == "high"
