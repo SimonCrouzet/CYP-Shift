@@ -489,3 +489,10 @@ def test_the_plan_and_the_concurrency_reach_the_sandbox_environment(local) -> No
     assert plain["CYP_PLAN"] == "focus" and plain["CYP_JOBS"] == "6"
     default, _ = mr.sandbox_environment(parse(), "abc1234")
     assert default["CYP_PLAN"] == "full" and default["CYP_JOBS"] == "1"
+
+
+def test_each_training_process_gets_a_bounded_cpu_thread_pool(local) -> None:
+    plain, _ = mr.sandbox_environment(parse("--threads", "2"), "abc1234")
+    assert plain["OMP_NUM_THREADS"] == "2"
+    default, _ = mr.sandbox_environment(parse(), "abc1234")
+    assert default["OMP_NUM_THREADS"] == "4"

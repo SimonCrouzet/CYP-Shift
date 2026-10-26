@@ -128,6 +128,7 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "CYP_WORKERS": str(args.workers),
         "CYP_MEMBERS": str(args.members),
         "CYP_JOBS": str(args.jobs),
+        "OMP_NUM_THREADS": str(args.threads),
         "CYP_PLAN": args.plan,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
@@ -482,6 +483,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("full", "focus"),
         default="full",
         help="remote CYP_PLAN: the whole queue, or the staged focus plan",
+    )
+    run.add_argument(
+        "--threads",
+        type=int,
+        default=4,
+        help="OMP_NUM_THREADS per training process (the default pool is one thread per core)",
     )
     run.add_argument(
         "--jobs",

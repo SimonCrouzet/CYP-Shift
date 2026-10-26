@@ -633,13 +633,21 @@ class GraphNetwork:
         self._xd_scale: np.ndarray | None = None
 
     def _continuous_blocks(self, smiles: list[str]) -> np.ndarray:
-        """The appended continuous x_d blocks (embedding, computed descriptors), or empty."""
+        """The appended continuous x_d blocks (embedding, computed descriptors), or empty.
+
+        Both blocks are functions of the structure alone, so each distinct SMILES is featurised once
+        and its row is repeated for every observation of that compound.
+        """
+        if self._embedding is None and self._descriptor is None:
+            return np.empty((len(smiles), 0), dtype=np.float32)
+        codes, distinct = pd.factorize(pd.Series(smiles, dtype=object))
+        distinct = distinct.tolist()
         blocks = []
         if self._embedding is not None:
-            blocks.append(self._embedding(smiles))
+            blocks.append(self._embedding(distinct))
         if self._descriptor is not None:
-            blocks.append(self._descriptor(smiles))
-        return np.hstack(blocks) if blocks else np.empty((len(smiles), 0), dtype=np.float32)
+            blocks.append(self._descriptor(distinct))
+        return np.hstack(blocks)[codes]
 
     def _datapoints(self, frame: pd.DataFrame, labelled: bool) -> list[cpdata.MoleculeDatapoint]:
         conditioning = encode_conditions(
@@ -657,24 +665,38 @@ class GraphNetwork:
             # the network, unlike a tree, cannot take NaN. Appended raw (not standardised).
             structure = np.nan_to_num(structure_block(frame, Path(self.structure_cache)), nan=0.0)
             conditioning = np.hstack([conditioning, structure]).astype(np.float32)
+        smiles = frame["SMILES"].tolist()
+        # Each distinct SMILES is parsed once; the datapoints of one compound share the molecule.
+        molecules = {
+            smi: cpdata.MoleculeDatapoint.from_smi(smi).mol for smi in dict.fromkeys(smiles)
+        }
+        if labelled:
+            assays = frame["assay"].tolist()
+            values = frame["value"].to_numpy(float)
+            lowers = frame["conf_low"].to_numpy(float)
+            uppers = frame["conf_high"].to_numpy(float)
+            censored_rows = (
+                frame["is_censored"].to_numpy(bool)
+                if "is_censored" in frame.columns
+                else np.zeros(len(frame), dtype=bool)
+            )
+            weights = frame["weight"].to_numpy(float)
         points = []
-        for row, (_, record) in enumerate(frame.iterrows()):
+        for row, smi in enumerate(smiles):
             if labelled:
                 y = np.full(self._n_label, np.nan)
-                if self.auxiliary_response and record["assay"] in self.response_assays:
+                if self.auxiliary_response and assays[row] in self.response_assays:
                     # A response row: fill only its own response column, leave the pIC50 tasks and
                     # the other response columns NaN, each on its own standardisation.
-                    task = self.response_assays.index(record["assay"])
+                    task = self.response_assays.index(assays[row])
                     y[RESPONSE + task] = (
-                        float(record["value"]) - self._resp_centre[task]
+                        values[row] - self._resp_centre[task]
                     ) / self._resp_spread[task]
                 else:
-                    value = float(record["value"])
-                    lower = float(record["conf_low"]) if np.isfinite(record["conf_low"]) else value
-                    upper = (
-                        float(record["conf_high"]) if np.isfinite(record["conf_high"]) else value
-                    )
-                    censored = bool(record.get("is_censored", False))
+                    value = values[row]
+                    lower = lowers[row] if np.isfinite(lowers[row]) else value
+                    upper = uppers[row] if np.isfinite(uppers[row]) else value
+                    censored = bool(censored_rows[row])
                     if censored:
                         lower = -1e4
                     y[VALUE : UPPER + 1] = (
@@ -686,13 +708,17 @@ class GraphNetwork:
                         # to the clip. The soft-threshold loss keeps it (its dead-zone reads the
                         # one-sided bound from the carriers).
                         y[VALUE] = np.nan
-                weight = float(record["weight"])
+                weight = float(weights[row])
             else:
                 y = np.zeros(self._n_label)
                 weight = 1.0
             points.append(
-                cpdata.MoleculeDatapoint.from_smi(
-                    record["SMILES"], y=y, x_d=conditioning[row].astype(float), weight=weight
+                cpdata.MoleculeDatapoint(
+                    molecules[smi],
+                    y=y,
+                    x_d=conditioning[row].astype(float),
+                    weight=weight,
+                    name=smi,
                 )
             )
         return points
@@ -869,6 +895,10 @@ class GraphNetwork:
             else:
                 member_points = points
             dataset = cpdata.MoleculeDataset(member_points)
+            # Featurise every molecule graph once, before training, so an epoch only collates
+            # cached graphs instead of re-featurising each molecule (forked loader workers read the
+            # cache without copying it).
+            dataset.cache = True
             loader = cpdata.build_dataloader(
                 dataset, batch_size=self.batch_size, num_workers=self.num_workers
             )
