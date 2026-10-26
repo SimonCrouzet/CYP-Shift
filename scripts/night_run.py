@@ -2197,6 +2197,22 @@ WIDE_CELLS = (
 )
 
 
+#: Settings that choose the training data, which a recipe of another model family takes from the
+#: graph recipe it is blended with.
+DATA_SIDE_PREFIXES = ("sources.", "auxiliary.", "multifidelity.")
+
+
+def _member_recipe(member: str, recipe: dict) -> dict:
+    """The declared recipe ``member`` with the data settings of ``recipe``; as declared when a
+    model family cannot take them (the TabPFN backend fits challenge rows only)."""
+    data = {k: v for k, v in recipe.items() if k.startswith(DATA_SIDE_PREFIXES)}
+    overrides = {**REGRESSION[member], **data}
+    if _is_valid(overrides):
+        return overrides
+    logger.warning("%s cannot take the data recipe; it runs as declared", member)
+    return dict(REGRESSION[member])
+
+
 def _run_cells(
     cells: tuple[Cell, ...],
     blends: str,
@@ -2209,13 +2225,17 @@ def _run_cells(
     """Cross-validate the cells on the focus plan's data recipe (``start`` with the max-response and
     the normalised auxiliary weights, then ``base_sets``) beside the recipe itself, then report the
     equal-weight blend of the recipe with each cell (``data/<blends>``). ``members`` are declared
-    recipes of other model families run on their own settings, listed before the cells;
-    ``extra_seeds`` repeat the recipe itself at those seeds."""
+    recipes of other model families, given the recipe's data settings and listed before the
+    cells; ``extra_seeds`` repeat the recipe itself at those seeds."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(_apply(dict(REGRESSION[start]), _BOTH + _BUDGET), base_sets)
     base = _recipe_name(base_tag, recipe, declared)
-    configs = {name: REGRESSION[name] for name in members}
+    configs = {}
     names = {"base": base}
+    for member in members:
+        overrides = _member_recipe(member, recipe)
+        names[member] = _recipe_name(member, overrides, declared)
+        configs[names[member]] = overrides
     for cell in cells:
         overrides = _apply(recipe, cell.sets)
         if not _is_valid(overrides):
@@ -2386,8 +2406,8 @@ NIGHT_CELLS = (
     Cell("batch_norm", (("model.graph.batch_norm", True),), "pooling"),
     Cell("norm_pooling", (("model.graph.aggregation", "norm"),), "pooling"),
 )
-#: Other model families, run for the blend: boosted trees and the dense-feature TabPFN and neural
-#: models.
+#: Other model families, run for the blend on the base's data settings where the family takes them:
+#: boosted trees, and the dense-feature TabPFN and neural models.
 NIGHT_MEMBERS = (
     "boosted_octant_tox21_deep",
     "boosted_pinball_t60",
@@ -2428,7 +2448,7 @@ def report_night(names: dict[str, str]) -> None:
     logger.info("base across seeds:\n%s", reseed.to_string(index=False))
     reseed.to_csv(RESULTS.parent / "night_reseed.csv", index=False)
 
-    wanted = set(names.values()) | set(NIGHT_MEMBERS)
+    wanted = set(names.values())
     members = {n: f for n, f in blend.load_members(REV, SEEDS[0]).items() if n in wanted}
     single = {n: blend.rank_single({n: f})[n] for n, f in members.items()}
     chosen = [min(single, key=single.get)]

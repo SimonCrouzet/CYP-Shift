@@ -933,7 +933,17 @@ def test_the_night_cells_are_valid_and_each_differs_from_its_reference_in_its_ow
     keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.NIGHT_CELLS}
     assert len(keys) == len(night_run.NIGHT_CELLS)
     for member in night_run.NIGHT_MEMBERS:
-        assert night_run._is_valid(night_run.REGRESSION[member]), member
+        assert night_run._is_valid(night_run._member_recipe(member, base)), member
+
+
+def test_a_member_takes_the_base_recipes_data_settings_unless_its_family_cannot():
+    base = _night_base(night_run.RANDOM_75.sets)
+    boosted = night_run._member_recipe("boosted_pinball_t60", base)
+    assert boosted["sources.octant"] and boosted["sources.tox21"]
+    assert boosted["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET
+    assert boosted["auxiliary.row_selection"] == "random"
+    assert boosted["model.objective"] == "pinball"  # its own model settings are kept
+    assert night_run._member_recipe("tfm_fs_dense", base) == night_run.REGRESSION["tfm_fs_dense"]
 
 
 def test_the_readout_depth_pooling_and_batch_norm_leave_recorded_names_unchanged_at_defaults():
