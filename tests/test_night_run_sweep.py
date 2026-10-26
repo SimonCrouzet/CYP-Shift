@@ -736,3 +736,35 @@ def test_the_submit_plan_refits_the_focus_recipe_without_its_name(monkeypatch, t
     ((track, recipe, output, config_path),) = written
     assert track == "regression" and recipe == {"model.kind": "graph", "model.graph.epochs": 60}
     assert output == night_run.FOCUS_SUBMISSION and config_path.parent == tmp_path
+
+
+def test_a_response_cell_that_beats_its_matched_control_is_adopted_below_the_margin(
+    monkeypatch, tmp_path
+):
+    def score(cfg):
+        both = cfg.get("sources.qhts_representation") == "both"
+        budget = cfg.get("auxiliary.per_endpoint_budget", 0.0) > 0
+        return {(False, False): 0.6415, (False, True): 0.6492, (True, False): 0.6415}.get(
+            (both, budget), 0.6369
+        )
+
+    ran = _focus_world(monkeypatch, tmp_path, score)
+    night_run.run_focus(margin=0.005)
+    round_2 = list(ran[1].values())
+    assert all(c["sources.qhts_representation"] == "both" for c in round_2)
+    assert all(c["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET for c in round_2)
+
+
+def test_a_response_cell_is_not_adopted_on_its_control_alone_when_it_is_not_the_lowest(
+    monkeypatch, tmp_path
+):
+    def score(cfg):
+        both = cfg.get("sources.qhts_representation") == "both"
+        budget = cfg.get("auxiliary.per_endpoint_budget", 0.0) > 0
+        if budget and not both:
+            return 0.70
+        return 0.6415 if not budget else 0.65  # the control gap is large, but the baseline is lower
+
+    ran = _focus_world(monkeypatch, tmp_path, score)
+    night_run.run_focus(margin=0.005)
+    assert all(c.get("sources.qhts_representation", "pic50") == "pic50" for c in ran[1].values())

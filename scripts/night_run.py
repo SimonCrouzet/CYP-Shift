@@ -1779,11 +1779,15 @@ def _archive_stale_results() -> None:
 class Cell:
     """One configuration of the focus plan: ``sets`` are applied on top of the incumbent recipe.
     ``group`` names the factor the cell varies; cells of one group are alternatives, and the groups
-    that win are stacked in the final round."""
+    that win are stacked in the final round. ``control`` is the tag of the cell that differs from
+    this one only in the factor under test (``"base"`` for the incumbent): a cell that is the lowest
+    of the round and beats its control by more than the margin is adopted even when its gain over
+    the incumbent is smaller, because the incumbent differs from it in more than that factor."""
 
     tag: str
     sets: tuple[tuple[str, object], ...]
     group: str = ""
+    control: str = ""
 
 
 #: The recipe the focus plan starts from: the graph with Octant, Tox21 and Novartis, which the
@@ -1810,8 +1814,8 @@ _LOG2FC = (("multifidelity.screen_strategy", "log2fc_response"),)
 #: change.
 FOCUS_ROUND_1 = (
     Cell("pic50_budget", _BUDGET),
-    Cell("both", _BOTH),
-    Cell("both_budget", _BOTH + _BUDGET),
+    Cell("both", _BOTH, control="base"),
+    Cell("both_budget", _BOTH + _BUDGET, control="pic50_budget"),
 )
 #: Round 2, data side, on the round-1 winner: the screen as isotonic pseudo-potencies (the
 #: incumbent) or as the raw log2 fold-change on its own response head, crossed with the shared
@@ -1913,6 +1917,7 @@ def _focus_round(
     """Run ``cells`` on the incumbent as one parallel batch and adopt the best one if it beats the
     incumbent by more than ``margin``. Returns the recipe name, its settings and every score."""
     candidates: dict[str, dict] = {}
+    name_of: dict[str, str] = {"base": current_name}
     for cell in cells:
         overrides = _apply(current, cell.sets)
         if not _is_valid(overrides):
@@ -1920,7 +1925,13 @@ def _focus_round(
         elif _resolved_key(overrides) == _resolved_key(current):
             logger.info("focus %s: %s is the incumbent", tag, cell.tag)
         else:
-            candidates[_recipe_name(cell.tag, overrides, declared)] = overrides
+            name_of[cell.tag] = _recipe_name(cell.tag, overrides, declared)
+            candidates[name_of[cell.tag]] = overrides
+    control_of = {
+        name_of[cell.tag]: name_of[cell.control]
+        for cell in cells
+        if cell.tag in name_of and cell.control in name_of
+    }
     run_phase("reg", {current_name: current, **candidates}, SEEDS)
     scores = ranked_means("reg")["mean"]
     base = _score_of(scores, current_name)
@@ -1928,9 +1939,20 @@ def _focus_round(
     listing = ", ".join(f"{name}={score:.4f}" for name, score in results.items())
     best = min(candidates, key=lambda name: results[name], default=None)
     if best is not None and results[best] <= base - margin:
-        gain = (base, results[best])
-        logger.info("focus %s: ADOPT %s (%.4f -> %.4f); %s", tag, best, *gain, listing)
+        logger.info(
+            "focus %s: ADOPT %s (%.4f -> %.4f); %s", tag, best, base, results[best], listing
+        )
         return best, candidates[best], results
+    control = control_of.get(best, "")
+    if best is not None and control in results and results[best] < base:
+        gain = results[control] - results[best]
+        if gain > margin:
+            logger.info(
+                "focus %s: ADOPT %s (%.4f; %.4f below its control %s, %.4f below %s); %s",
+                *(tag, best, results[best], gain, control),
+                *(base - results[best], current_name, listing),
+            )
+            return best, candidates[best], results
     logger.info("focus %s: keep %s (%.4f); %s", tag, current_name, base, listing)
     return current_name, current, results
 
