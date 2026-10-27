@@ -2550,6 +2550,16 @@ FINETUNE_30_CELLS = (
         ),
         "heads",
     ),
+    # The same, with a shorter and gentler per-isoform fine-tune.
+    Cell(
+        "graph_b_reg_per_target_10_lr1e5",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            ("model.graph.finetune_per_target_epochs", 10),
+            ("model.graph.finetune_per_target_lr", 1e-5),
+        ),
+        "heads",
+    ),
 )
 #: Boosted trees on the base recipe's data (Octant, Tox21, Novartis, qHTS ``both``, the weight
 #: budget): the deep soft-threshold member and the pinball member of the earlier blends.
