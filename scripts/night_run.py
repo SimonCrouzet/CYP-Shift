@@ -2477,6 +2477,12 @@ CHEMELEON_CELLS = (
         "chemeleon_lr3e4",
     ),
 )
+#: A frozen molecule embedding appended to the graph's readout input beside the descriptor blocks it
+#: already reads, from the CheMeleon encoder or from MAMMAL.
+EMBEDDING_CELLS = (
+    Cell("chemeleon_features", (("features.molecular_embedding", "chemeleon"),), "features"),
+    Cell("mammal_features", (("features.molecular_embedding", "mammal"),), "features"),
+)
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
 CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
@@ -2487,9 +2493,9 @@ CURVE_CELLS = {
 
 
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
-#: large GPU), those of them at 30 epochs, the other graph fits, all graph fits, everything else,
-#: or all.
-QUEUES = ("all", "graph", "chemeleon", "chemeleon30", "plain", "other")
+#: large GPU), those of them at 30 epochs, the fits with an appended embedding, the other graph
+#: fits, all graph fits, everything else, or all.
+QUEUES = ("all", "graph", "chemeleon", "chemeleon30", "embedding", "plain", "other")
 
 
 def shard_of(group: dict, shard: str) -> dict:
@@ -2509,7 +2515,7 @@ def run_questions() -> None:
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
     base = _recipe_name("both_budget", recipe, declared)
-    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS)
+    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS, *EMBEDDING_CELLS)
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:
         overrides = _apply(recipe, cell.sets)
@@ -2532,15 +2538,21 @@ def run_questions() -> None:
         encoder = {
             n: o for n, o in graph.items() if o.get("model.graph.pretraining") == "chemeleon"
         }
+        features = {
+            n: o
+            for n, o in graph.items()
+            if o.get("features.molecular_embedding", "none") != "none"
+        }
         graph = {
             "graph": graph,
             "chemeleon": encoder,
             "chemeleon30": {
                 n: o for n, o in encoder.items() if o.get("model.graph.epochs", 30) <= 30
             },
-            "plain": {n: o for n, o in graph.items() if n not in encoder},
+            "embedding": features,
+            "plain": {n: o for n, o in graph.items() if n not in encoder and n not in features},
         }.get(queue, graph)
-    if queue in ("graph", "chemeleon", "chemeleon30", "plain"):
+    if queue in ("graph", "chemeleon", "chemeleon30", "embedding", "plain"):
         other, tfm = {}, {}
     elif queue == "other":
         graph = {}

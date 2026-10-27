@@ -501,7 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--queue",
-        choices=("all", "graph", "chemeleon", "chemeleon30", "plain", "other"),
+        choices=("all", "graph", "chemeleon", "chemeleon30", "embedding", "plain", "other"),
         default="all",
         help="remote CYP_QUEUE: part of the questions plan's queue (see night_run.QUEUES)",
     )

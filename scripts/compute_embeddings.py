@@ -184,17 +184,18 @@ def main() -> None:
     args = parser.parse_args()
 
     smiles = gather_smiles(args.data_dir, args.extra)
-    existing = None
     if args.source == "chemeleon":
         smiles = sorted({*smiles, *gather_aux_smiles(args.data_dir, args.aux)})
-        cached = CACHE_DIR / f"{args.source}.parquet"
-        if args.update and cached.exists():
-            existing = pd.read_parquet(cached)
-            known = set(existing["SMILES"])
-            smiles = [s for s in smiles if s not in known]
-            logger.info("%d compounds missing from the cache", len(smiles))
-            if not smiles:
-                return
+    existing = None
+    cached = CACHE_DIR / f"{args.source}.parquet"
+    if args.update and cached.exists():
+        existing = pd.read_parquet(cached)
+        known = set(existing["SMILES"])
+        smiles = [s for s in smiles if s not in known]
+        logger.info("%d compounds missing from the cache", len(smiles))
+        if not smiles:
+            return
+    if args.source == "chemeleon":
         vectors = chemeleon_vectors(smiles, args.device)
         model, prompt = "CheMeleon message passing (frozen), mean aggregation", None
     else:
