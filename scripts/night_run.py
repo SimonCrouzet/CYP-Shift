@@ -2483,6 +2483,32 @@ EMBEDDING_CELLS = (
     Cell("chemeleon_features", (("features.molecular_embedding", "chemeleon"),), "features"),
     Cell("mammal_features", (("features.molecular_embedding", "mammal"),), "features"),
 )
+#: Larger graphs on the same data, three steps up in capacity: encoder width and depth, readout
+#: width and layers, and the conditioning embedding grow in every step; dropout rises from the
+#: second step and the peak learning rate falls in the last. ``None`` keeps the recipe's value.
+#: Loss, pooling, epochs and every data setting stay those of the recipe.
+_CAPACITY_STEPS = {
+    "graph_a": (500, 4, 500, 2, 16, None, None),
+    "graph_b": (700, 5, 700, 2, 32, 0.15, None),
+    "graph_c": (1000, 6, 1000, 3, 64, 0.20, 8e-4),
+}
+_CAPACITY_KEYS = (
+    "model.graph.hidden",
+    "model.graph.depth",
+    "model.graph.ffn_hidden",
+    "model.graph.ffn_layers",
+    "conditioning.embedding_dim",
+    "model.graph.dropout",
+    "model.graph.learning_rate",
+)
+CAPACITY_CELLS = tuple(
+    Cell(
+        tag,
+        tuple((key, value) for key, value in zip(_CAPACITY_KEYS, values, strict=True) if value),
+        "capacity",
+    )
+    for tag, values in _CAPACITY_STEPS.items()
+)
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
 CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
@@ -2495,7 +2521,7 @@ CURVE_CELLS = {
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
 #: large GPU), those of them at 30 epochs, the fits with an appended embedding, the other graph
 #: fits, all graph fits, everything else, or all.
-QUEUES = ("all", "graph", "chemeleon", "chemeleon30", "embedding", "plain", "other")
+QUEUES = ("all", "graph", "chemeleon", "chemeleon30", "embedding", "capacity", "plain", "other")
 
 
 def shard_of(group: dict, shard: str) -> dict:
@@ -2515,7 +2541,7 @@ def run_questions() -> None:
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
     base = _recipe_name("both_budget", recipe, declared)
-    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS, *EMBEDDING_CELLS)
+    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS, *EMBEDDING_CELLS, *CAPACITY_CELLS)
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:
         overrides = _apply(recipe, cell.sets)
@@ -2543,16 +2569,24 @@ def run_questions() -> None:
             for n, o in graph.items()
             if o.get("features.molecular_embedding", "none") != "none"
         }
+        capacity = {
+            n: o for n, o in graph.items() if "model.graph.hidden" in o or "model.graph.depth" in o
+        }
         graph = {
             "graph": graph,
+            "capacity": capacity,
             "chemeleon": encoder,
             "chemeleon30": {
                 n: o for n, o in encoder.items() if o.get("model.graph.epochs", 30) <= 30
             },
             "embedding": features,
-            "plain": {n: o for n, o in graph.items() if n not in encoder and n not in features},
+            "plain": {
+                n: o
+                for n, o in graph.items()
+                if n not in encoder and n not in features and n not in capacity
+            },
         }.get(queue, graph)
-    if queue in ("graph", "chemeleon", "chemeleon30", "embedding", "plain"):
+    if queue in ("graph", "chemeleon", "chemeleon30", "embedding", "capacity", "plain"):
         other, tfm = {}, {}
     elif queue == "other":
         graph = {}
