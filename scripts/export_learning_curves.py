@@ -91,10 +91,15 @@ def fold_errors(bundle: Path, name: str) -> pd.DataFrame:
 
 
 def curves(
-    rev: str, names: list[str], logs: str | list[tuple[str, str | None]], seed: int = 0
+    rev: str,
+    names: list[str],
+    logs: str | list[tuple[str, str | None]],
+    seed: int = 0,
+    keep_partial: bool = False,
 ) -> pd.DataFrame:
     """The merged curves of the named cells (full recipe names), seed ``seed``. ``logs`` is one log
-    text, or pairs of a log text and the cell its untagged lines belong to."""
+    text, or pairs of a log text and the cell its untagged lines belong to. A fold a running cell
+    has not finished is left out unless ``keep_partial``."""
     if isinstance(logs, str):
         logs = [(logs, None)]
     keys = ["name", "fold", "member", "stage", "epoch"]
@@ -109,7 +114,7 @@ def curves(
     # A cell still running has no bundle: take the log's errors, and only for finished folds.
     table["fold_mae"] = table["fold_mae"].fillna(table["log_mae"])
     last = table.groupby(["name", "fold", "member", "stage"])["epoch"].transform("max")
-    unfinished = table["total"].notna() & (last < table["total"])
+    unfinished = table["total"].notna() & (last < table["total"]) & (not keep_partial)
     return table[~unfinished].drop(columns=["log_mae", "total"]).reset_index(drop=True)
 
 
@@ -151,13 +156,16 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--partial", action="store_true", help="keep the epochs so far of a fold still training"
+    )
     args = parser.parse_args()
 
     logs = []
     for item in args.log:
         path, _, cell = item.partition("=")
         logs.append((Path(path).read_text(errors="replace"), cell or None))
-    table = curves(args.rev, args.names.split(","), logs, args.seed)
+    table = curves(args.rev, args.names.split(","), logs, args.seed, args.partial)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(args.output, index=False)
     logger.info("wrote %d rows to %s", len(table), args.output)

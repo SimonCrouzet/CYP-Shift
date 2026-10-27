@@ -76,3 +76,17 @@ def test_a_running_cell_takes_its_held_out_errors_from_the_log_for_finished_fold
         "fold_mae",
         "train_loss",
     ]
+
+
+def test_the_epochs_so_far_of_an_unfinished_fold_are_kept_on_request(tmp_path, monkeypatch):
+    running = "\n".join(
+        [
+            "10:00:00 fold 1/2 | 10 train, 5 held out",
+            "10:00:01 member 1/1 stage 1/1 epoch 1/3  train 0.50  fold MAE 0.90",
+            "10:00:02 member 1/1 stage 1/1 epoch 2/3  train 0.40  fold MAE 0.70",
+        ]
+    )
+    monkeypatch.setattr(script, "BUNDLES", tmp_path)
+    assert script.curves("rev", ["cell_a"], [(running, "cell_a")]).empty
+    kept = script.curves("rev", ["cell_a"], [(running, "cell_a")], keep_partial=True)
+    assert kept["epoch"].tolist() == [1, 2] and kept["fold_mae"].tolist() == [0.9, 0.7]
