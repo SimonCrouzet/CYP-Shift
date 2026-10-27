@@ -897,10 +897,14 @@ def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
 
 
 def test_the_factor_report_marks_only_changes_beyond_the_adopt_margin(monkeypatch):
-    scores = pd.Series({"ref": 0.6652, "small": 0.6671, "large": 0.6752, "better": 0.6552})
-    monkeypatch.setattr(
-        night_run, "ranked_means", lambda phase=None: pd.DataFrame({"mean": scores})
+    done = pd.DataFrame(
+        {
+            "name": ["ref", "ref", "ref", "small", "large", "better"],
+            "seed": [0, 1, 2, 0, 0, 0],
+            "macro_ST_RAE": [0.6652, 0.7500, 0.7500, 0.6671, 0.6752, 0.6552],
+        }
     )
+    monkeypatch.setattr(night_run, "_completed", lambda phase=None: done)
     cells = (
         night_run.Cell("small", (), "factor", "base"),
         night_run.Cell("large", (), "factor", "base"),
@@ -910,6 +914,9 @@ def test_the_factor_report_marks_only_changes_beyond_the_adopt_margin(monkeypatc
     table = night_run._report_factors(cells, names).set_index("cell")
     assert table["beyond_margin"].to_dict() == {"small": False, "large": True, "better": True}
     assert table.loc["better", "change"] < 0 < table.loc["large", "change"]
+    assert (
+        table.loc["small", "reference_score"] == 0.6652
+    )  # the other seeds of the reference are not averaged in
 
 
 def _night_base(sets=()):

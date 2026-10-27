@@ -2333,8 +2333,11 @@ SHARE_CELLS = (
 
 
 def _report_factors(cells: tuple[Cell, ...], names: dict[str, str]) -> pd.DataFrame:
-    """Each cell's score beside its reference's, and whether the change exceeds the adopt margin."""
-    scores = ranked_means("reg")["mean"]
+    """Each cell's score beside its reference's, and whether the change exceeds the adopt margin.
+    Scores are those at the first seed, where every cell was run: a recipe repeated at other seeds
+    is not averaged over them, which would compare a mean with a single run."""
+    done = _completed("reg")
+    scores = done[done["seed"] == SEEDS[0]].groupby("name")["macro_ST_RAE"].mean()
     rows = []
     for cell in cells:
         reference = cell.control or "base"
