@@ -1321,3 +1321,13 @@ def test_the_boosted_cells_run_on_the_base_recipes_data_and_alone_by_tag(monkeyp
         assert overrides["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET
     assert deep["model.boosted.n_estimators"] == 1000
     assert pinball["model.objective"] == "pinball" and pinball["model.objective_tau"] == 0.6
+
+
+def test_a_curve_cell_can_be_selected_alone_by_its_tag(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("CYP_CELLS", "curve_heads_both_budget")
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs))
+    night_run.run_questions()
+    (overrides,) = seen.values()
+    assert overrides["model.kind"] == "curve"
+    assert overrides["sources.qhts_representation"] == "both"

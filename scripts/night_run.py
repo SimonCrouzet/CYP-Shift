@@ -2658,7 +2658,10 @@ def run_questions() -> None:
         names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
         graph[names[cell.tag]] = overrides
     graph = dict(sorted(graph.items(), key=lambda item: _fit_cost_rank(item[1])))
-    curve = {_recipe_name(tag, o, declared): o for tag, o in CURVE_CELLS.items()}
+    curve = {}
+    for tag, overrides in CURVE_CELLS.items():
+        names[tag] = _recipe_name(tag, overrides, declared)
+        curve[names[tag]] = overrides
     fair = fair_configs(tuple(FAIR_FAMILIES))
     tabular = {n: spec[4] for n, spec in fair.items() if spec[1] != "tfm"}
     tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
