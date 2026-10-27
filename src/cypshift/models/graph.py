@@ -505,16 +505,20 @@ class _FoldMonitor(pl.Callback):
         self.pruned = False
 
     def _measure(self, module: pl.LightningModule) -> float:
+        was_training = module.training
         module.eval()
         total, count = 0.0, 0
-        with torch.no_grad():
-            for batch in self.loader:
-                batch = module.transfer_batch_to_device(batch, module.device, 0)
-                predicted = module(batch.bmg, batch.V_d, batch.X_d)[:, VALUE]
-                truth = batch.Y[:, VALUE]
-                seen = torch.isfinite(truth)
-                total += float((predicted[seen] - truth[seen]).abs().sum())
-                count += int(seen.sum())
+        try:
+            with torch.no_grad():
+                for batch in self.loader:
+                    batch = module.transfer_batch_to_device(batch, module.device, 0)
+                    predicted = module(batch.bmg, batch.V_d, batch.X_d)[:, VALUE]
+                    truth = batch.Y[:, VALUE]
+                    seen = torch.isfinite(truth)
+                    total += float((predicted[seen] - truth[seen]).abs().sum())
+                    count += int(seen.sum())
+        finally:
+            module.train(was_training)  # the next epoch trains with dropout on, as unmonitored
         return total / count * self.spread
 
     def on_train_epoch_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:

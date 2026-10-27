@@ -699,3 +699,32 @@ def test_mammal_pretraining_and_another_embedding_cannot_both_be_appended(monkey
     _fake_embedding(monkeypatch)
     with pytest.raises(ValueError, match="already appends the MAMMAL embedding"):
         GraphNetwork(pretraining="mammal", molecular_embedding="chemeleon")
+
+
+def test_the_fold_monitor_leaves_the_model_in_training_mode():
+    import torch
+
+    from cypshift.models.graph import _FoldMonitor
+
+    class Batch:
+        bmg = V_d = X_d = None
+        Y = torch.tensor([[1.0, 0.0], [2.0, 0.0]])
+
+    class Module(torch.nn.Module):
+        device = "cpu"
+
+        def transfer_batch_to_device(self, batch, device, dataloader_idx):
+            return batch
+
+        def forward(self, bmg, v_d, x_d):
+            return torch.tensor([[1.5, 0.0], [1.5, 0.0]])
+
+    module = Module()
+    monitor = _FoldMonitor([Batch()], spread=1.0, patience=0, prune_at=None, prune_above=None)
+    module.train()
+    monitor.on_train_epoch_end(None, module)
+    assert module.training
+    assert monitor.error == [0.5]
+    module.eval()
+    monitor.on_train_epoch_end(None, module)
+    assert not module.training  # a model that was not training is not switched on
