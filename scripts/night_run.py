@@ -2511,6 +2511,8 @@ CAPACITY_CELLS = tuple(
     )
     for tag, values in _CAPACITY_STEPS.items()
 )
+#: The base recipe trained for 100 epochs instead of 30.
+EPOCHS_CELLS = (Cell("epochs_100", (("model.graph.epochs", 100),), "epochs"),)
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
 CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
@@ -2543,7 +2545,14 @@ def run_questions() -> None:
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
     base = _recipe_name("both_budget", recipe, declared)
-    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS, *EMBEDDING_CELLS, *CAPACITY_CELLS)
+    cells = (
+        *ASSAY_CELLS,
+        *QHTS_CELLS,
+        *CHEMELEON_CELLS,
+        *EMBEDDING_CELLS,
+        *CAPACITY_CELLS,
+        *EPOCHS_CELLS,
+    )
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:
         overrides = _apply(recipe, cell.sets)
