@@ -17,8 +17,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402 -- after the backend is chosen
-from matplotlib.axes import Axes  # noqa: E402
 import pandas as pd  # noqa: E402
+from matplotlib.axes import Axes  # noqa: E402
 
 SURFACE = "#fcfcfb"
 INK, INK_SECONDARY, GRID = "#0b0b0b", "#52514e", "#e6e5e1"
