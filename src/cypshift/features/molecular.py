@@ -197,7 +197,10 @@ def _with_cache(name: str, smiles: Sequence[str], compute: Callable) -> pd.DataF
     out[hit] = values[rows[hit]]
     if not hit.all():
         missing = sorted({s for s, found in zip(smiles, hit, strict=True) if not found})
-        fresh = compute(missing)
+        try:
+            fresh = compute(missing)
+        except ValueError:
+            return compute(smiles)  # raises with the failing position in the caller's list
         fresh = fresh.to_numpy(np.float32) if isinstance(fresh, pd.DataFrame) else fresh
         position = {s: i for i, s in enumerate(missing)}
         for j in np.flatnonzero(~hit):
