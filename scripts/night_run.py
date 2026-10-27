@@ -2490,6 +2490,9 @@ EMBEDDING_CELLS = (
 #: regularised step.
 _CAPACITY_STEPS = {
     "graph_a": (500, 4, 500, 2, 16, None, None, None),
+    # A with half the recipe's dropout and with twice it.
+    "graph_a_drop0p05": (500, 4, 500, 2, 16, 0.05, None, None),
+    "graph_a_drop0p2": (500, 4, 500, 2, 16, 0.20, None, None),
     "graph_b": (700, 5, 700, 2, 32, 0.15, None, None),
     "graph_c": (1000, 6, 1000, 3, 64, 0.20, 8e-4, None),
     # B again with more dropout and a lower peak learning rate, trained for 100 epochs: at the lower
