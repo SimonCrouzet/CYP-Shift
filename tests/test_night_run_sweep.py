@@ -1176,3 +1176,20 @@ def test_the_queue_switch_splits_the_questions_plan_into_graph_and_other_cells(m
     monkeypatch.setenv("CYP_QUEUE", "none")
     with pytest.raises(ValueError):
         night_run.run_questions()
+
+
+def test_the_chemeleon_and_plain_queues_split_the_graph_cells(monkeypatch):
+    def queue(which):
+        seen = {}
+        monkeypatch.setenv("CYP_QUEUE", which)
+        monkeypatch.setattr(
+            night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs)
+        )
+        night_run.run_questions()
+        return seen
+
+    chemeleon, plain, graph = queue("chemeleon"), queue("plain"), queue("graph")
+    assert len(chemeleon) == 3 and len(plain) == 7 and len(graph) == 10
+    assert not set(chemeleon) & set(plain) and set(chemeleon) | set(plain) == set(graph)
+    assert all(o.get("model.graph.pretraining") == "chemeleon" for o in chemeleon.values())
+    assert not any(o.get("model.graph.pretraining") == "chemeleon" for o in plain.values())

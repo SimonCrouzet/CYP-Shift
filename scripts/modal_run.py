@@ -501,9 +501,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--queue",
-        choices=("all", "graph", "other"),
+        choices=("all", "graph", "chemeleon", "plain", "other"),
         default="all",
-        help="remote CYP_QUEUE: the questions plan's graph cells only, the others only, or all",
+        help="remote CYP_QUEUE: part of the questions plan's queue (see night_run.QUEUES)",
     )
     run.add_argument(
         "--shard",

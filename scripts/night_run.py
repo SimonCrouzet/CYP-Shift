@@ -2486,6 +2486,11 @@ CURVE_CELLS = {
 }
 
 
+#: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
+#: large GPU), the other graph fits, all graph fits, everything else, or all.
+QUEUES = ("all", "graph", "chemeleon", "plain", "other")
+
+
 def shard_of(group: dict, shard: str) -> dict:
     """Every ``count``-th entry of ``group`` from ``index``, for ``shard`` = ``"index/count"``: the
     shards of one group are disjoint and together hold all of it."""
@@ -2520,9 +2525,18 @@ def run_questions() -> None:
     # slot; the TabPFN fits, which hold the most memory, come last.
     other = {**tabular, **curve}
     queue = os.environ.get("CYP_QUEUE", "all")
-    if queue not in ("all", "graph", "other"):
-        raise ValueError(f"CYP_QUEUE={queue!r} is not one of all, graph, other")
-    if queue == "graph":
+    if queue not in QUEUES:
+        raise ValueError(f"CYP_QUEUE={queue!r} is not one of {', '.join(QUEUES)}")
+    if queue != "other":
+        encoder = {
+            n: o for n, o in graph.items() if o.get("model.graph.pretraining") == "chemeleon"
+        }
+        graph = {
+            "graph": graph,
+            "chemeleon": encoder,
+            "plain": {n: o for n, o in graph.items() if n not in encoder},
+        }.get(queue, graph)
+    if queue in ("graph", "chemeleon", "plain"):
         other, tfm = {}, {}
     elif queue == "other":
         graph = {}
