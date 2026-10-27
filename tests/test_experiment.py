@@ -203,7 +203,11 @@ class TestCapabilityContract:
         [
             {"auxiliary.scored_weight": -1.0},
             {"sources.structure": True, "model.kind": "neural"},
-            {"model.kind": "graph", "features.molecular_embedding": "mammal"},
+            {
+                "model.kind": "graph",
+                "model.graph.pretraining": "mammal",
+                "features.molecular_embedding": "chemeleon",
+            },
             {"model.kind": "curve", "model.objective": "absolute"},
             # The analysis-note avenues are graph-only, or mutually exclusive, so a run that
             # could not apply the setting is refused rather than credited with it.
@@ -422,3 +426,10 @@ def test_the_readout_must_have_at_least_one_hidden_layer():
     config.override("model.graph.ffn_layers", 0)
     with pytest.raises(ValueError, match="ffn_layers"):
         config.validate()
+
+
+def test_the_graph_accepts_a_frozen_embedding_as_a_feature_block():
+    config = ExperimentConfig()
+    for key, value in {"model.kind": "graph", "features.molecular_embedding": "chemeleon"}.items():
+        config.override(key, value)
+    config.validate()

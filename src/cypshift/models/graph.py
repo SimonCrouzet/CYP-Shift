@@ -609,6 +609,7 @@ class GraphNetwork:
         mechanism: bool = False,
         ionization_geometry: bool = False,
         ionization_cache: str = "data/external/ionization/features.parquet",
+        molecular_embedding: str = "none",
         use_structure: bool = False,
         structure_cache: str = "data/structure",
         seed: int = 0,
@@ -706,11 +707,20 @@ class GraphNetwork:
         )
         if use_structure:
             self._n_conditioning += len(STRUCTURE_FEATURE_NAMES)
-        # "mammal" pretraining appends the cached MAMMAL embedding to the readout's
-        # conditioning slot (x_d) as fixed input features; widen the readout to fit it.
-        self._embedding = embedding_block("mammal") if pretraining == "mammal" else None
-        if self._embedding is not None:
-            self._n_conditioning += embedding_width("mammal")
+        # A cached molecule embedding (``molecular_embedding``, or MAMMAL under "mammal"
+        # pretraining) is appended to the readout's conditioning slot (x_d) as fixed input
+        # features; the readout is widened to fit it.
+        source = molecular_embedding if molecular_embedding != "none" else None
+        if pretraining == "mammal":
+            if source not in (None, "mammal"):
+                raise ValueError(
+                    f"pretraining='mammal' already appends the MAMMAL embedding; "
+                    f"molecular_embedding={molecular_embedding!r} cannot be added as well"
+                )
+            source = "mammal"
+        self._embedding = embedding_block(source) if source else None
+        if source:
+            self._n_conditioning += embedding_width(source)
         # Computed descriptor blocks (physchem / mechanistic / ionization geometry) the
         # learned graph cannot derive, appended to the readout's conditioning slot. The
         # graph's own fingerprint is left off -- the message passing replaces it.

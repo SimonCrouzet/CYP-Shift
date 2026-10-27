@@ -670,3 +670,32 @@ def test_the_matmul_precision_is_set_before_training_and_before_prediction(monke
     net.predict(["CCO", "CCN"])
     assert calls == ["medium", "medium"]
     assert GraphNetwork().matmul_precision == "high"
+
+
+def _fake_embedding(monkeypatch, width=3):
+    from cypshift.models import graph as graph_module
+
+    monkeypatch.setattr(
+        graph_module,
+        "embedding_block",
+        lambda source: lambda smiles: np.array([[float(len(s))] * width for s in smiles]),
+    )
+    monkeypatch.setattr(graph_module, "embedding_width", lambda source: width)
+
+
+def test_a_molecular_embedding_widens_the_conditioning_and_is_appended_to_the_readout_input(
+    monkeypatch,
+):
+    _fake_embedding(monkeypatch, width=3)
+    base = GraphNetwork(targets=("CYP2D6",))._n_conditioning
+    model = GraphNetwork(targets=("CYP2D6",), molecular_embedding="chemeleon")
+    assert model._n_conditioning == base + 3
+    block = model._continuous_blocks(["CC", "CCO", "CC"])
+    assert block.shape == (3, 3)
+    assert block[:, 0].tolist() == [2.0, 3.0, 2.0]
+
+
+def test_mammal_pretraining_and_another_embedding_cannot_both_be_appended(monkeypatch):
+    _fake_embedding(monkeypatch)
+    with pytest.raises(ValueError, match="already appends the MAMMAL embedding"):
+        GraphNetwork(pretraining="mammal", molecular_embedding="chemeleon")

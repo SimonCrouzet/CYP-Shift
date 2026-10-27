@@ -817,10 +817,18 @@ class ExperimentConfig:
                     f"{self.model.kind!r}"
                 )
         if self.model.kind == "graph":
-            if self.features.molecular_embedding != "none":
+            if (
+                self.model.graph.pretraining == "mammal"
+                and self.features.molecular_embedding
+                not in (
+                    "none",
+                    "mammal",
+                )
+            ):
                 raise ValueError(
-                    "the graph model reads embeddings through model.graph.pretraining='mammal', "
-                    "not features.molecular_embedding"
+                    "model.graph.pretraining='mammal' already appends the MAMMAL embedding; "
+                    f"features.molecular_embedding={self.features.molecular_embedding!r} cannot "
+                    "be added as well"
                 )
             if self.model.graph.separate_trunks and self.model.graph.adapt_target != "none":
                 # Separate trunks already give each isoform its own encoder, so a per-isoform

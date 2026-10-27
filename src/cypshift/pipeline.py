@@ -171,6 +171,7 @@ def build_model(
             mechanism=config.features.use_mechanistic,
             ionization_geometry=config.features.use_ionization_geometry,
             ionization_cache=config.features.ionization_cache,
+            molecular_embedding=config.features.molecular_embedding,
             use_structure=config.sources.structure,
             structure_cache=config.features.structure_cache,
             conditioning=config.conditioning.strategy,
