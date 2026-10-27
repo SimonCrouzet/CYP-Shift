@@ -49,3 +49,30 @@ def test_an_untagged_single_cell_log_is_assigned_to_the_named_cell(tmp_path, mon
     monkeypatch.setattr(script, "BUNDLES", tmp_path)
     table = script.curves("rev", ["cell_a"], [(untagged, "cell_a")])
     assert table["train_loss"].tolist() == [0.5, 0.4, 0.6, 0.3]
+
+
+def test_a_running_cell_takes_its_held_out_errors_from_the_log_for_finished_folds_only(
+    tmp_path, monkeypatch
+):
+    running = """\
+10:00:00 fold 1/2 | 10 train, 5 held out
+10:00:01 member 1/1 stage 1/1 epoch 1/2  train 0.50  fold MAE 0.90  0.1 min elapsed, 0.1 min left
+10:00:02 member 1/1 stage 1/1 epoch 2/2  train 0.40  fold MAE 0.70  0.2 min elapsed, 0.0 min left
+10:00:03 fold 2/2 | 10 train, 5 held out
+10:00:04 member 1/1 stage 1/1 epoch 1/2  train 0.60  fold MAE 0.80  0.1 min elapsed, 0.1 min left
+"""
+    monkeypatch.setattr(script, "BUNDLES", tmp_path)
+    table = script.curves("rev", ["cell_a"], [(running, "cell_a")])
+    assert table[["fold", "epoch", "fold_mae", "train_loss"]].values.tolist() == [
+        [0, 1, 0.9, 0.5],
+        [0, 2, 0.7, 0.4],
+    ]
+    assert list(table.columns) == [
+        "name",
+        "fold",
+        "member",
+        "stage",
+        "epoch",
+        "fold_mae",
+        "train_loss",
+    ]

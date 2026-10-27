@@ -2,7 +2,9 @@
 
 A cell run with ``CYP_MONITOR=1 CYP_EARLY_STOP=0`` records, for each cross-validation fold, the
 mean absolute error of its held-out compounds after every epoch (``curves.json`` in the run bundle).
-The training loss per epoch is only in the sweep log, so the log lines are read too.
+The training loss per epoch is only in the sweep log, so the log lines are read too. A cell that
+is still running has no bundle yet; its held-out errors are then read from the log's ``fold MAE``
+column, for the folds that have finished.
 
     python scripts/export_learning_curves.py --rev questions2-m1 --names NAME_A,NAME_B \\
         --log scratch/sweep_g.log --output notes/learning_curves_capacity.csv
@@ -26,16 +28,18 @@ BUNDLES = Path("data/run_bundles")
 # A run of several cells at once tags each line with the cell's name; a single-cell run does not.
 FOLD = re.compile(r"^\S+ (?:\[([^\]]+)\] )?fold (\d+)/(\d+) \|")
 EPOCH = re.compile(
-    r"^\S+ (?:\[([^\]]+)\] )?member (\d+)/\d+ stage (\d+)/\d+ epoch (\d+)/\d+\s+train ([\d.]+)"
+    r"^\S+ (?:\[([^\]]+)\] )?member (\d+)/\d+ stage (\d+)/\d+ epoch (\d+)/(\d+)"
+    r"\s+train ([\d.]+)(?:\s+fold MAE ([\d.]+))?"
 )
 
 
 def train_losses(
     log: str, only: set[str] | None = None, untagged: str | None = None
 ) -> pd.DataFrame:
-    """``name, fold, member, stage, epoch, train_loss`` for every epoch line of the log; the fold
-    is the one the cell's latest ``fold k/n`` line announced. Lines without a cell tag (a log of a
-    single-cell run) belong to ``untagged``."""
+    """``name, fold, member, stage, epoch, train_loss`` for every epoch line of the log, plus
+    ``log_mae`` (the monitor's held-out error, when logged) and ``total`` (the stage's epochs); the
+    fold is the one the cell's latest ``fold k/n`` line announced. Lines without a cell tag (a log
+    of a single-cell run) belong to ``untagged``."""
     fold: dict[str, int] = {}
     rows = []
     for line in log.splitlines():
@@ -53,10 +57,15 @@ def train_losses(
                     "member": int(epoch.group(2)),
                     "stage": int(epoch.group(3)),
                     "epoch": int(epoch.group(4)),
-                    "train_loss": float(epoch.group(5)),
+                    "train_loss": float(epoch.group(6)),
+                    "log_mae": float(epoch.group(7)) if epoch.group(7) else None,
+                    "total": int(epoch.group(5)),
                 }
             )
-    return pd.DataFrame(rows, columns=["name", "fold", "member", "stage", "epoch", "train_loss"])
+    return pd.DataFrame(
+        rows,
+        columns=["name", "fold", "member", "stage", "epoch", "train_loss", "log_mae", "total"],
+    )
 
 
 def fold_errors(bundle: Path, name: str) -> pd.DataFrame:
@@ -96,7 +105,12 @@ def curves(
     losses = pd.concat(
         [train_losses(text, set(names), untagged) for text, untagged in logs], ignore_index=True
     )
-    return errors.merge(losses, on=keys, how="outer").sort_values(keys).reset_index(drop=True)
+    table = errors.merge(losses, on=keys, how="outer").sort_values(keys).reset_index(drop=True)
+    # A cell still running has no bundle: take the log's errors, and only for finished folds.
+    table["fold_mae"] = table["fold_mae"].fillna(table["log_mae"])
+    last = table.groupby(["name", "fold", "member", "stage"])["epoch"].transform("max")
+    unfinished = table["total"].notna() & (last < table["total"])
+    return table[~unfinished].drop(columns=["log_mae", "total"]).reset_index(drop=True)
 
 
 def _epoch_of_lowest(fold: pd.DataFrame) -> int:

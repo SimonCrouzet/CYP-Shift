@@ -153,13 +153,14 @@ def draw_table(
     styles: dict[str, Style],
     curves: dict[str, dict[str, float]],
     metrics: pd.DataFrame | None,
+    folds: int,
 ) -> None:
     """One row per cell: a swatch in the cell's colour and line style, its label, the
     final-prediction metrics and the curve summary."""
     groups = []
     if metrics is not None:
         groups.append(("Final out-of-fold predictions (mean of the 4 enzymes)", METRIC_COLUMNS))
-    groups.append(("Learning curve (mean of the 5 folds)", CURVE_COLUMNS))
+    groups.append((f"Learning curve (mean of the {folds} folds)", CURVE_COLUMNS))
     columns = [column for _, group in groups for column in group]
     first, width = 0.34, (1 - 0.34) / len(columns)
     axis.set_xlim(0, 1)
@@ -232,10 +233,19 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mae-limits", type=float, nargs=2, default=(0.52, 0.60))
-    parser.add_argument("--title", default="Learning curves, mean of the 5 cross-validation folds")
+    parser.add_argument(
+        "--folds",
+        type=int,
+        nargs="+",
+        help="keep only these folds (0-based), e.g. the folds a still-running cell has finished",
+    )
+    parser.add_argument("--title", help="default: the number of folds averaged")
     args = parser.parse_args()
 
     table = pd.read_csv(args.csv)
+    if args.folds is not None:
+        table = table[table["fold"].isin(args.folds)]
+    folds = table["fold"].nunique()
     pairs = [item.split("=", 1) for item in args.labels]
     names = [name for name, _ in pairs]
     short = {name: text.split("|")[0] for name, text in pairs}
@@ -293,8 +303,9 @@ def main() -> None:
         axis.set_xlim(1, int(table["epoch"].max()))
     metrics = pd.read_csv(args.metrics) if args.metrics else None
     curves = {name: curve_summary(table, name) for name in names}
-    draw_table(table_axis, names, legend, styles, curves, metrics)
-    figure.text(0.07, fraction(0.27), args.title, color=INK, fontsize=13, va="top")
+    draw_table(table_axis, names, legend, styles, curves, metrics, folds)
+    title = args.title or f"Learning curves, mean of the {folds} cross-validation folds"
+    figure.text(0.07, fraction(0.27), title, color=INK, fontsize=13, va="top")
     note = "line = mean over folds, dot = lowest point of the mean held-out curve"
     if variants:
         note += "; dashed = same model, other training settings"
