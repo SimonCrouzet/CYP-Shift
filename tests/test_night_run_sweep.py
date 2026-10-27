@@ -884,6 +884,26 @@ def test_each_share_cell_differs_from_its_reference_in_one_factor():
     assert all("model.graph.epochs" not in dict(c.sets) for c in night_run.SHARE_CELLS)
 
 
+def test_the_by_source_cells_restrict_maxmin_75_to_one_sources_groups():
+    base = night_run._apply(
+        dict(night_run.REGRESSION[night_run.SUBSET_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    maxmin = dict(next(c for c in night_run.SHARE_CELLS if c.tag == "maxmin_75").sets)
+    cells = {cell.tag: dict(cell.sets) for cell in night_run.ASSAY_CELLS}
+    assert set(cells) == {"maxmin_75_octant", "maxmin_75_tox21"}
+    for sets in cells.values():
+        assert night_run._is_valid(night_run._apply(base, tuple(sets.items())))
+        assert {k: v for k, v in sets.items() if k != "auxiliary.row_selection_assays"} == maxmin
+    assert cells["maxmin_75_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
+    assert set(cells["maxmin_75_tox21"]["auxiliary.row_selection_assays"]) == {
+        "luminescent_ac50",
+        "luminescent_max_response",
+    }
+    keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.ASSAY_CELLS}
+    keys.add(night_run._resolved_key(night_run._apply(base, tuple(maxmin.items()))))
+    assert len(keys) == 3
+
+
 def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
     capped = night_run._resolved_key(
         {

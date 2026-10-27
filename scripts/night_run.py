@@ -2332,6 +2332,13 @@ SHARE_CELLS = (
 )
 
 
+#: MaxMin 75% restricted to one source's groups, the other source kept whole (``run_assays``).
+ASSAY_CELLS = (
+    _share_cell("maxmin_75_octant", "row selection", "base", "maxmin", 0.75, SHARE_OCTANT),
+    _share_cell("maxmin_75_tox21", "row selection", "base", "maxmin", 0.75, SHARE_TOX21),
+)
+
+
 def _report_factors(cells: tuple[Cell, ...], names: dict[str, str]) -> pd.DataFrame:
     """Each cell's score beside its reference's, and whether the change exceeds the adopt margin.
     Scores are those at the first seed, where every cell was run: a recipe repeated at other seeds
@@ -2368,6 +2375,13 @@ def run_share() -> None:
     against its reference in ``data/share_factors.csv``."""
     names = _run_cells(SHARE_CELLS, "share_blends.csv", SUBSET_BASE)
     _report_factors(SHARE_CELLS, names).to_csv(RESULTS.parent / "share_factors.csv", index=False)
+
+
+def run_assays() -> None:
+    """The MaxMin 75% cells restricted to one source (``ASSAY_CELLS``); blends in
+    ``data/assay_blends.csv``, each cell against the full table in ``data/assay_factors.csv``."""
+    names = _run_cells(ASSAY_CELLS, "assay_blends.csv", SUBSET_BASE)
+    _report_factors(ASSAY_CELLS, names).to_csv(RESULTS.parent / "assay_factors.csv", index=False)
 
 
 #: The random 75% cell of the share plan, recorded before the plan dropped its random cells; it is a
@@ -2595,6 +2609,11 @@ def main() -> None:
     if PLAN == "night":
         logger.info("=== Model-side round on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
         run_night()
+        wandb_finish()
+        return
+    if PLAN == "assays":
+        logger.info("=== MaxMin 75%% by source on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
+        run_assays()
         wandb_finish()
         return
     if PLAN == "share":
