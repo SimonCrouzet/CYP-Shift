@@ -1108,6 +1108,14 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
         "chemeleon_lr3e4_e60": {"model.graph.epochs"},
         "epochs_100": {"model.graph.epochs"},
         "direct_finetune_30": {"training.preset"},
+        "graph_b_reg_per_target": {
+            *capacity,
+            "model.graph.dropout",
+            "model.graph.learning_rate",
+            "model.graph.epochs",
+            "model.graph.finetune_per_target_epochs",
+            "model.graph.finetune_per_target_lr",
+        },
         "per_target_finetune": {
             "model.graph.finetune_per_target_epochs",
             "model.graph.finetune_per_target_lr",
@@ -1167,7 +1175,7 @@ def test_the_questions_queue_alternates_graph_and_cpu_fits_and_ends_with_tabpfn(
     )
     night_run.run_questions()
     kinds = [overrides.get("model.kind", "boosted") for overrides in queue.values()]
-    assert len(queue) == 41
+    assert len(queue) == 42
     assert kinds[-4:] == ["tfm"] * 4 and "tfm" not in kinds[:-4]
     assert kinds[0:6:2] == ["graph"] * 3 and "graph" not in kinds[1:6:2]
     first = list(queue.values())[0]
@@ -1215,9 +1223,9 @@ def test_the_queue_switch_splits_the_questions_plan_into_graph_and_other_cells(m
 
     graph, other = queue("graph"), queue("other")
     kinds = {c.get("model.kind", "boosted") for c in graph.values()}
-    assert kinds == {"graph"} and len(graph) == 23
+    assert kinds == {"graph"} and len(graph) == 24
     assert "graph" not in {c.get("model.kind", "boosted") for c in other.values()}
-    assert len(graph) + len(other) == 41
+    assert len(graph) + len(other) == 42
     monkeypatch.setenv("CYP_QUEUE", "none")
     with pytest.raises(ValueError):
         night_run.run_questions()
@@ -1234,11 +1242,11 @@ def test_the_chemeleon_and_plain_queues_split_the_graph_cells(monkeypatch):
         return seen
 
     chemeleon, plain, graph = queue("chemeleon"), queue("plain"), queue("graph")
-    assert len(chemeleon) == 3 and len(plain) == 10 and len(graph) == 23
+    assert len(chemeleon) == 3 and len(plain) == 10 and len(graph) == 24
     assert not set(chemeleon) & set(plain)
     rest = set(queue("embedding")) | set(queue("capacity"))
     assert set(chemeleon) | set(plain) | rest == set(graph)
-    assert len(queue("embedding")) == 2 and len(queue("capacity")) == 8
+    assert len(queue("embedding")) == 2 and len(queue("capacity")) == 9
     assert all(o.get("model.graph.pretraining") == "chemeleon" for o in chemeleon.values())
     assert not any(o.get("model.graph.pretraining") == "chemeleon" for o in plain.values())
 

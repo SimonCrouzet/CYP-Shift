@@ -2538,6 +2538,16 @@ FINETUNE_30_CELLS = (
         ),
         "heads",
     ),
+    # The regularised B at 100 epochs, then the same per-isoform fine-tune.
+    Cell(
+        "graph_b_reg_per_target",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            ("model.graph.finetune_per_target_epochs", 30),
+            ("model.graph.finetune_per_target_lr", 1e-4),
+        ),
+        "heads",
+    ),
 )
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
