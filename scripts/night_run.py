@@ -2489,7 +2489,7 @@ CURVE_CELLS = {
 def run_questions() -> None:
     """The recipe with Novartis and its one-factor cells (by-source MaxMin, qHTS representation,
     CheMeleon), the same-input comparison of the families and the curve model, as one queue: the
-    cheap fits first, the CheMeleon fits ahead of the other graph fits, TabPFN last. Factors in
+    graph fits (CheMeleon first) alternating with the CPU-bound ones, TabPFN last. Factors in
     ``data/questions_factors.csv``, the comparison in ``data/fair_panel.csv``."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
@@ -2507,7 +2507,12 @@ def run_questions() -> None:
     fair = fair_configs(tuple(FAIR_FAMILIES))
     tabular = {n: spec[4] for n, spec in fair.items() if spec[1] != "tfm"}
     tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
-    run_phase("reg", {**tabular, **curve, **graph, **tfm}, SEEDS)
+    # The graph fits (the GPU) and the CPU-bound fits alternate, so the GPU is busy from the first
+    # slot; the TabPFN fits, which hold the most memory, come last.
+    mixed = {}
+    for pair in itertools.zip_longest(graph.items(), {**tabular, **curve}.items()):
+        mixed.update(item for item in pair if item is not None)
+    run_phase("reg", {**mixed, **tfm}, SEEDS)
     _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
     _report_fair(fair)
     rows = ranked_means("reg")["mean"]

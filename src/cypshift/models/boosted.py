@@ -16,6 +16,7 @@ governed by the learning rate rather than by curvature.
 """
 
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -113,6 +114,14 @@ def pinball_gradient(
         return gradient * weight, np.ones_like(y_pred) * weight
 
     return objective
+
+
+def fit_threads() -> dict[str, int]:
+    """LightGBM's ``n_jobs`` from ``OMP_NUM_THREADS`` when it is set. Left alone, LightGBM uses
+    every core the machine reports whatever share this process was given, which stalls fits that
+    run side by side."""
+    value = os.environ.get("OMP_NUM_THREADS", "")
+    return {"n_jobs": int(value)} if value.isdigit() and int(value) > 0 else {}
 
 
 class BoostedTrees:
@@ -275,6 +284,7 @@ class BoostedTrees:
                     colsample_bytree=self.colsample_bytree,
                     random_state=self.seed + member,
                     verbose=-1,
+                    **fit_threads(),
                 )
                 if self.loss == "soft_threshold":
                     parameters["objective"] = soft_threshold_gradient(

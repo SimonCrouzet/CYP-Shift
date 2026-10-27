@@ -199,3 +199,14 @@ def test_a_clear_shift_is_called_time_dependent():
     )
     flags = model.predict_is_time_dependent(["CCO", "CCN"])
     assert flags.all()
+
+
+def test_fit_threads_follow_omp_num_threads(monkeypatch):
+    from cypshift.models.boosted import fit_threads
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    assert fit_threads() == {"n_jobs": 3}
+    monkeypatch.setenv("OMP_NUM_THREADS", "")
+    assert fit_threads() == {}
+    monkeypatch.delenv("OMP_NUM_THREADS")
+    assert fit_threads() == {}

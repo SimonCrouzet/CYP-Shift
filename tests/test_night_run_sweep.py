@@ -1110,3 +1110,20 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
     for overrides in night_run.CURVE_CELLS.values():
         assert night_run._is_valid(overrides)
         assert overrides["model.kind"] == "curve" and overrides["sources.novartis"]
+
+
+def test_the_questions_queue_alternates_graph_and_cpu_fits_and_ends_with_tabpfn(monkeypatch):
+    queue = {}
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: queue.update(configs))
+    monkeypatch.setattr(night_run, "_report_factors", lambda cells, names: pd.DataFrame())
+    monkeypatch.setattr(night_run, "_report_fair", lambda configs: pd.DataFrame())
+    monkeypatch.setattr(
+        night_run, "ranked_means", lambda phase: pd.DataFrame({"mean": [], "std": [], "count": []})
+    )
+    night_run.run_questions()
+    kinds = [overrides.get("model.kind", "boosted") for overrides in queue.values()]
+    assert len(queue) == 41
+    assert kinds[-6:] == ["tfm"] * 6 and "tfm" not in kinds[:-6]
+    assert kinds[0:6:2] == ["graph"] * 3 and "graph" not in kinds[1:6:2]
+    first = list(queue.values())[0]
+    assert first.get("model.graph.pretraining") == "chemeleon"  # the slowest graph fits first

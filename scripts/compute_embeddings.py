@@ -57,8 +57,9 @@ def canonical(smiles: str) -> str | None:
     return Chem.MolToSmiles(molecule) if molecule else None
 
 
-def gather_smiles(data_dir: Path, extra: list[Path]) -> list[str]:
-    """Unique canonical SMILES from the challenge files and any extra CSVs."""
+def gather_smiles(data_dir: Path, extra: list[Path], raw: bool = False) -> list[str]:
+    """Unique canonical SMILES from the challenge files and any extra CSVs (the strings as they
+    are written when ``raw``)."""
     series = []
     for name in CHALLENGE_FILES:
         path = data_dir / name
@@ -66,13 +67,14 @@ def gather_smiles(data_dir: Path, extra: list[Path]) -> list[str]:
             series.append(pd.read_csv(path)["SMILES"])
     for path in extra:
         series.append(pd.read_csv(path)["SMILES"])
-    raw = pd.concat(series, ignore_index=True) if series else pd.Series([], dtype=str)
-    canon = {c for c in (canonical(s) for s in raw.dropna().unique()) if c}
-    logger.info("gathered %d unique canonical SMILES", len(canon))
-    return sorted(canon)
+    strings = pd.concat(series, ignore_index=True) if series else pd.Series([], dtype=str)
+    unique = strings.dropna().unique()
+    found = set(unique) if raw else {c for c in (canonical(s) for s in unique) if c}
+    logger.info("gathered %d unique %s SMILES", len(found), "raw" if raw else "canonical")
+    return sorted(found)
 
 
-def gather_aux_smiles(data_dir: Path, sources: list[str]) -> list[str]:
+def gather_aux_smiles(data_dir: Path, sources: list[str], raw: bool = False) -> list[str]:
     """Unique canonical SMILES of the named auxiliary sources, as the pipeline's loaders return
     them for every enzyme it can pull rows for, the scored ones and their relatives (both qHTS
     quantities, inactives included)."""
@@ -94,7 +96,8 @@ def gather_aux_smiles(data_dir: Path, sources: list[str]) -> list[str]:
                 except Exception as error:  # noqa: BLE001 -- a source without data for this enzyme
                     logger.info("%s %s %s: %s", source, enzyme, kwargs, error)
                     continue
-                found.update(c for c in (canonical(s) for s in rows["SMILES"].unique()) if c)
+                unique = rows["SMILES"].dropna().unique()
+                found.update(unique if raw else (c for c in map(canonical, unique) if c))
     logger.info("gathered %d unique canonical SMILES from %s", len(found), sources)
     return sorted(found)
 
