@@ -72,10 +72,11 @@ def gather_smiles(data_dir: Path, extra: list[Path]) -> list[str]:
 
 def gather_aux_smiles(data_dir: Path, sources: list[str]) -> list[str]:
     """Unique canonical SMILES of the named auxiliary sources, as the pipeline's loaders return
-    them for the four scored enzymes (both qHTS quantities, inactives included)."""
+    them for every enzyme it can pull rows for, the scored ones and their relatives (both qHTS
+    quantities, inactives included)."""
     import importlib
 
-    from cypshift.config import ISOFORMS
+    from cypshift.data.sequences import ACCESSIONS
 
     challenge = pd.read_csv(data_dir / CHALLENGE_FILES[0])["SMILES"]
     found: set[str] = set()
@@ -84,7 +85,7 @@ def gather_aux_smiles(data_dir: Path, sources: list[str]) -> list[str]:
         variants = [{}]
         if source in ("tox21", "veith"):
             variants = [{"include_inactives": True}, {"representation": "max_response"}]
-        for enzyme in ISOFORMS:
+        for enzyme in ACCESSIONS:
             for kwargs in variants:
                 try:
                     rows = loader(enzyme, challenge, **kwargs)
@@ -190,7 +191,9 @@ def main() -> None:
     frame.insert(0, "SMILES", smiles)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{args.source}.parquet"
-    frame.to_parquet(path)
+    temporary = path.with_name(path.name + ".tmp")
+    frame.to_parquet(temporary)
+    temporary.replace(path)  # a reader never sees a half-written cache
     # A provenance manifest: which model and prompt produced these vectors, and the RDKit
     # canonicalisation the reader keys on, so a cache from a different model is identifiable.
     manifest = {

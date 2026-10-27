@@ -139,9 +139,16 @@ def test_auxiliary_potency_rows_join_the_fit_behind_one_indicator_column_per_ass
             row("CC(=O)O", "luminescent_ac50", 4.0, censored=True),  # censored: dropped
             row("CCCC", "luminescent_max_response", 0.5),  # a response, not a potency: dropped
             row("CCCCC", "fluorogenic_pic50", 8.0, target="CYP2D6"),  # another endpoint
+            row("CCCCCC", "luminescent_ac50", 3.0, target="CYP2C19"),  # not a scored endpoint
         ]
     )
+    featurised = []
+    raw_features = model._raw_features
+    monkeypatch.setattr(
+        model, "_raw_features", lambda smiles: featurised.extend(smiles) or raw_features(smiles)
+    )
     model.fit(observations)
+    assert "CCCCCC" not in featurised
     assert sorted(recorder.y.tolist()) == [5.0, 6.0, 7.0]
     assert model._aux_assays == ("fluorogenic_pic50",)
     width = model._raw_features(["CCO"]).shape[1]

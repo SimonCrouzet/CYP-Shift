@@ -2321,6 +2321,7 @@ def run_subset() -> None:
 #: (``SHARE_TOX21``, ``SHARE_OCTANT``).
 SHARE_TOX21 = ("luminescent_ac50", "luminescent_max_response")
 SHARE_OCTANT = ("fluorogenic_pic50",)
+SHARE_NOVARTIS = ("reversible_pic50",)
 
 
 def _share_cell(
@@ -2340,10 +2341,12 @@ SHARE_CELLS = (
 )
 
 
-#: MaxMin 75% restricted to one source's groups, the other source kept whole (``run_assays``).
+#: MaxMin 75% restricted to one source's groups, the other sources kept whole, on the recipe with
+#: Octant, Tox21 and Novartis.
 ASSAY_CELLS = (
     _share_cell("maxmin_75_octant", "row selection", "base", "maxmin", 0.75, SHARE_OCTANT),
     _share_cell("maxmin_75_tox21", "row selection", "base", "maxmin", 0.75, SHARE_TOX21),
+    _share_cell("maxmin_75_novartis", "row selection", "base", "maxmin", 0.75, SHARE_NOVARTIS),
 )
 
 
@@ -2387,12 +2390,16 @@ def run_share() -> None:
 
 #: The families that read the shared feature set, each on the same feature sets and the same
 #: rows (no screen pseudo-labels, which the TabPFN model does not read), so a difference between
-#: families is not a difference in inputs. The curve is
-#: scored in the TDI phase, which records its MCC beside the ST-RAE.
+#: families is not a difference in inputs. The curve's one fit scores both tracks: its MCC is
+#: recorded beside the ST-RAE.
 FAIR_FEATURES = ("dense", "chemeleon", "dense_chemeleon", "fp_dense")
 FAIR_DATA = {
-    "challenge": {"sources.screen": False},
-    "octant_tox21": {"sources.screen": False, "sources.octant": True, "sources.tox21": True},
+    "octant_tox21_novartis": {
+        "sources.screen": False,
+        "sources.octant": True,
+        "sources.tox21": True,
+        "sources.novartis": True,
+    },
 }
 FAIR_FAMILIES = {
     "tfm": ("reg", {"model.kind": "tfm"}),
@@ -2429,6 +2436,12 @@ def run_fair() -> None:
     for phase in ("reg", "tdi"):
         todo = {name: spec[4] for name, spec in configs.items() if spec[0] == phase}
         run_phase(phase, todo, SEEDS)
+    _report_fair(configs)
+
+
+def _report_fair(configs: dict[str, tuple[str, str, str, str, dict]]) -> pd.DataFrame:
+    """The recorded ``fair_configs`` rows by family, feature set and data, to
+    ``data/fair_panel.csv``."""
     done = _completed()
     done = done[done["name"].isin(configs)].drop_duplicates("name", keep="last")
     done["family"] = done["name"].map(lambda n: configs[n][1])
@@ -2438,12 +2451,74 @@ def run_fair() -> None:
     table = done[[*columns, "macro_MCC", "minutes"]].sort_values(["features", "data", "family"])
     logger.info("same-input comparison:\n%s", table.round(4).to_string(index=False))
     table.to_csv(RESULTS.parent / "fair_panel.csv", index=False)
+    return table
+
+
+#: The qHTS representation on the recipe with Novartis, whose own representation is ``both``:
+#: potency alone (the control that choice never had), the response alone, and Tox21's inactives
+#: kept as censored rows.
+QHTS_CELLS = (
+    Cell("qhts_pic50", (("sources.qhts_representation", "pic50"),), "qhts"),
+    Cell("qhts_max_response", (("sources.qhts_representation", "max_response"),), "qhts"),
+    Cell("tox21_inactives", (("auxiliary.tox21_include_inactives", True),), "qhts"),
+)
+#: The CheMeleon encoder as the graph's initial weights, fine-tuned: at the default peak learning
+#: rate, at 3e-4, and at 3e-4 for 60 epochs, each against the cell before it.
+_CHEMELEON = ("model.graph.pretraining", "chemeleon")
+CHEMELEON_CELLS = (
+    Cell("chemeleon", (_CHEMELEON,), "encoder"),
+    Cell(
+        "chemeleon_lr3e4", (_CHEMELEON, ("model.graph.learning_rate", 3e-4)), "encoder", "chemeleon"
+    ),
+    Cell(
+        "chemeleon_lr3e4_e60",
+        (_CHEMELEON, ("model.graph.learning_rate", 3e-4), ("model.graph.epochs", 60)),
+        "encoder",
+        "chemeleon_lr3e4",
+    ),
+)
+#: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
+#: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
+CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
+CURVE_CELLS = {
+    "curve_heads": {**TDI["curve_heads"], **CURVE_DATA},
+    "curve_graph_heads": {**TDI["curve_graph_heads"], **CURVE_DATA},
+}
+
+
+def run_questions() -> None:
+    """The recipe with Novartis and its one-factor cells (by-source MaxMin, qHTS representation,
+    CheMeleon), the same-input comparison of the families and the curve model, as one queue: the
+    cheap fits first, the CheMeleon fits ahead of the other graph fits, TabPFN last. Factors in
+    ``data/questions_factors.csv``, the comparison in ``data/fair_panel.csv``."""
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    recipe = _apply(dict(REGRESSION[FOCUS_BASE]), _BOTH + _BUDGET)
+    base = _recipe_name("both_budget", recipe, declared)
+    cells = (*ASSAY_CELLS, *QHTS_CELLS, *CHEMELEON_CELLS)
+    names, graph = {"base": base}, {base: recipe}
+    for cell in cells:
+        overrides = _apply(recipe, cell.sets)
+        if not _is_valid(overrides):
+            raise ValueError(f"cell {cell.tag} is not a valid configuration")
+        names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
+        graph[names[cell.tag]] = overrides
+    graph = dict(sorted(graph.items(), key=lambda item: _fit_cost_rank(item[1])))
+    curve = {_recipe_name(tag, o, declared): o for tag, o in CURVE_CELLS.items()}
+    fair = fair_configs(tuple(FAIR_FAMILIES))
+    tabular = {n: spec[4] for n, spec in fair.items() if spec[1] != "tfm"}
+    tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
+    run_phase("reg", {**tabular, **curve, **graph, **tfm}, SEEDS)
+    _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
+    _report_fair(fair)
+    rows = ranked_means("reg")["mean"]
+    logger.info("curve cells:\n%s", rows.reindex(list(curve)).to_string())
 
 
 def run_assays() -> None:
-    """The MaxMin 75% cells restricted to one source (``ASSAY_CELLS``); blends in
-    ``data/assay_blends.csv``, each cell against the full table in ``data/assay_factors.csv``."""
-    names = _run_cells(ASSAY_CELLS, "assay_blends.csv", SUBSET_BASE)
+    """The MaxMin 75% cells restricted to one source (``ASSAY_CELLS``) on the recipe with Novartis;
+    blends in ``data/assay_blends.csv``, each cell against the full table in
+    ``data/assay_factors.csv``."""
+    names = _run_cells(ASSAY_CELLS, "assay_blends.csv")
     _report_factors(ASSAY_CELLS, names).to_csv(RESULTS.parent / "assay_factors.csv", index=False)
 
 
@@ -2672,6 +2747,11 @@ def main() -> None:
     if PLAN == "night":
         logger.info("=== Model-side round on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
         run_night()
+        wandb_finish()
+        return
+    if PLAN == "questions":
+        logger.info("=== Novartis recipe cells, family comparison, curve (jobs: %d) ===", JOBS)
+        run_questions()
         wandb_finish()
         return
     if PLAN == "fair":

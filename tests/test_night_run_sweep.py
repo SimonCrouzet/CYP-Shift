@@ -890,18 +890,19 @@ def test_the_by_source_cells_restrict_maxmin_75_to_one_sources_groups():
     )
     maxmin = dict(next(c for c in night_run.SHARE_CELLS if c.tag == "maxmin_75").sets)
     cells = {cell.tag: dict(cell.sets) for cell in night_run.ASSAY_CELLS}
-    assert set(cells) == {"maxmin_75_octant", "maxmin_75_tox21"}
+    assert set(cells) == {"maxmin_75_octant", "maxmin_75_tox21", "maxmin_75_novartis"}
     for sets in cells.values():
         assert night_run._is_valid(night_run._apply(base, tuple(sets.items())))
         assert {k: v for k, v in sets.items() if k != "auxiliary.row_selection_assays"} == maxmin
     assert cells["maxmin_75_octant"]["auxiliary.row_selection_assays"] == ["fluorogenic_pic50"]
+    assert cells["maxmin_75_novartis"]["auxiliary.row_selection_assays"] == ["reversible_pic50"]
     assert set(cells["maxmin_75_tox21"]["auxiliary.row_selection_assays"]) == {
         "luminescent_ac50",
         "luminescent_max_response",
     }
     keys = {night_run._resolved_key(night_run._apply(base, c.sets)) for c in night_run.ASSAY_CELLS}
     keys.add(night_run._resolved_key(night_run._apply(base, tuple(maxmin.items()))))
-    assert len(keys) == 3
+    assert len(keys) == 4
 
 
 def test_the_same_input_comparison_gives_every_family_the_same_features_and_rows():
@@ -1072,3 +1073,40 @@ def test_the_row_policy_can_be_set_from_the_environment(monkeypatch):
     assert night_run.choose_row_policy().tag == "random_75"
     monkeypatch.setenv("CYP_ROW_POLICY", "none")
     assert night_run.choose_row_policy() is None
+
+
+def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
+    recipe = night_run._apply(
+        dict(night_run.REGRESSION[night_run.FOCUS_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    assert recipe["sources.novartis"] and recipe["sources.octant"] and recipe["sources.tox21"]
+    cells = (*night_run.ASSAY_CELLS, *night_run.QHTS_CELLS, *night_run.CHEMELEON_CELLS)
+    sets = {cell.tag: dict(cell.sets) for cell in cells}
+    sets["base"] = {}
+    factor = {
+        "maxmin_75_octant": {"auxiliary.row_selection", "auxiliary.row_share"},
+        "qhts_pic50": {"sources.qhts_representation"},
+        "qhts_max_response": {"sources.qhts_representation"},
+        "tox21_inactives": {"auxiliary.tox21_include_inactives"},
+        "chemeleon": {"model.graph.pretraining"},
+        "chemeleon_lr3e4": {"model.graph.learning_rate"},
+        "chemeleon_lr3e4_e60": {"model.graph.epochs"},
+    }
+    for cell in cells:
+        assert night_run._is_valid(night_run._apply(recipe, cell.sets)), cell.tag
+        reference = cell.control or "base"
+        assert reference in sets, cell.tag
+        changed = {
+            k
+            for k in set(sets[cell.tag]) | set(sets[reference])
+            if sets[cell.tag].get(k) != sets[reference].get(k)
+        }
+        if cell.tag.startswith("maxmin_75_"):
+            assert changed == {*factor["maxmin_75_octant"], "auxiliary.row_selection_assays"}
+        else:
+            assert changed == factor[cell.tag], cell.tag
+    keys = {night_run._resolved_key(night_run._apply(recipe, c.sets)) for c in cells}
+    assert len(keys) == len(cells)
+    for overrides in night_run.CURVE_CELLS.values():
+        assert night_run._is_valid(overrides)
+        assert overrides["model.kind"] == "curve" and overrides["sources.novartis"]

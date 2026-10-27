@@ -116,7 +116,9 @@ class TabularFoundationModel:
         from tabpfn import TabPFNRegressor
 
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        return TabPFNRegressor(device=device, random_state=self.seed)
+        return TabPFNRegressor(
+            device=device, random_state=self.seed, ignore_pretraining_limits=True
+        )
 
     def _fit_reducer(self, raw: NDArray[np.float32]) -> None:
         """Fit the impute/scale/PCA adaptation on the training compounds' raw features only.
@@ -155,6 +157,7 @@ class TabularFoundationModel:
             usable = usable[~usable["is_censored"].astype(bool)]
         if "assay" in usable.columns:
             usable = usable[usable["assay"].isin((REFERENCE_ASSAY, *POTENCY_ASSAYS))]
+        usable = usable[usable["target"].isin(self.targets)]  # related enzymes' rows are not read
         if usable[usable["assay"] == REFERENCE_ASSAY].empty:
             raise ValueError("no uncensored reference-assay rows to fit the tabular model on")
         self._aux_assays = tuple(
