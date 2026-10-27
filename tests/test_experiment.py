@@ -216,6 +216,13 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "model.graph.adapt_target": "CYP2D6"},
             {"model.kind": "boosted", "multifidelity.screen_strategy": "response_head"},
             {"model.kind": "boosted", "model.graph.per_target_heads": True},
+            {"model.kind": "boosted", "model.graph.finetune_per_target_epochs": 5},
+            {"model.kind": "graph", "model.graph.finetune_per_target_epochs": -1},
+            {
+                "model.kind": "graph",
+                "model.graph.finetune_per_target_epochs": 5,
+                "model.graph.separate_trunks": True,
+            },
             {
                 "model.kind": "graph",
                 "model.graph.separate_trunks": True,

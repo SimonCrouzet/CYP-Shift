@@ -728,3 +728,66 @@ def test_the_fold_monitor_leaves_the_model_in_training_mode():
     module.eval()
     monitor.on_train_epoch_end(None, module)
     assert not module.training  # a model that was not training is not switched on
+
+
+def _two_target_rows(n: int = 24) -> pd.DataFrame:
+    rows = _monitored_rows(n)
+    rows["target"] = ["CYP3A4" if i % 3 else "CYP2D6" for i in range(n)]
+    return rows
+
+
+def _finetuned(**kwargs) -> GraphNetwork:
+    return GraphNetwork(
+        hidden=16,
+        depth=2,
+        ffn_hidden=16,
+        epochs=1,
+        batch_size=8,
+        early_stopping_patience=0,
+        **kwargs,
+    )
+
+
+def test_each_scored_target_is_fine_tuned_on_its_own_rows_only(monkeypatch):
+    sizes = _recorded_loaders(monkeypatch)
+    net = _finetuned(finetune_per_target_epochs=1, finetune_per_target_lr=1e-4)
+    net.fit(_two_target_rows(24), monitor=_two_target_rows(12))
+    # the pooled stage, its monitor, then CYP2D6 (8 of 24 rows, 4 of 12) and CYP3A4 (16, 8);
+    # CYP1A2 and CYP2C9 have no rows, so they get no copy
+    assert sizes == [24, 12, 8, 4, 16, 8]
+    assert list(net._branches[0]) == [
+        "CYP2D6_pIC50_direct_inhibition",
+        "CYP3A4_pIC50_direct_inhibition",
+    ]
+    stages = [(c["stage"], c.get("target")) for c in net.curves]
+    assert stages == [(1, None), (4, "CYP2D6"), (5, "CYP3A4")]  # after 4 endpoints' worth of slots
+
+
+def test_a_target_with_a_copy_is_predicted_by_it_and_the_others_by_the_pooled_model():
+    net = _finetuned(finetune_per_target_epochs=1)
+    net.fit(_two_target_rows(24))
+    smiles = ["CCO", "CCN", "CCC"]
+    before = net.predict(smiles).mean
+    for parameter in net._branches[0]["CYP3A4_pIC50_direct_inhibition"].parameters():
+        parameter.data.add_(1.0)
+    after = net.predict(smiles).mean
+    assert not np.allclose(before[:, 3], after[:, 3])  # CYP3A4 reads its copy
+    assert np.allclose(before[:, :3], after[:, :3])  # the other three read the pooled model
+
+
+def test_a_copy_starts_from_the_pooled_model_and_then_diverges():
+    net = _finetuned(finetune_per_target_epochs=1)
+    net.fit(_two_target_rows(24))
+    pooled = net._members[0]
+    copy = net._branches[0]["CYP3A4_pIC50_direct_inhibition"]
+    assert copy is not pooled
+    assert not all(
+        torch.equal(a, b)
+        for a, b in zip(pooled.state_dict().values(), copy.state_dict().values(), strict=True)
+    )
+
+
+def test_without_per_target_fine_tuning_there_are_no_copies():
+    net = _finetuned()
+    net.fit(_two_target_rows(24))
+    assert net._branches == [{}]

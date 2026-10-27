@@ -457,6 +457,14 @@ class GraphConfig:
     learning_rate: float = 0.0
     #: Linear-warmup epochs of that schedule; the default is chemprop's own. Swept.
     warmup_epochs: int = 2
+    #: After the training stages, copy each member once per scored isoform and train the copy for
+    #: this many more epochs on that isoform's rows alone; each isoform is then predicted by its
+    #: own copy. ``0`` is off. Needs the shared-trunk graph (a separated trunk already trains one
+    #: model per isoform). Swept.
+    finetune_per_target_epochs: int = 0
+    #: Peak learning rate of that stage, with the initial and final rates a tenth of it; ``0``
+    #: keeps the model's own schedule. Ignored without ``finetune_per_target_epochs``.
+    finetune_per_target_lr: float = 0.0
     #: ``torch.set_float32_matmul_precision`` while the graph trains and predicts: ``highest`` is
     #: plain float32; ``high`` and ``medium`` let the GPU's tensor cores run the matrix products
     #: in TensorFloat-32 and bfloat16 passes, which is faster for wide layers and changes the
@@ -574,6 +582,12 @@ CURRICULUM_PRESETS: dict[str, list[Stage]] = {
         Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=10, lr=2e-4, freeze_trunk=True),
     ],
     "pooled_continue": [Stage(), Stage(epochs=1, lr=2e-4)],
+    # The same fine-tune on the challenge dose-response for 30 epochs at a peak of 1e-4, the rate
+    # the pooled schedule ends on.
+    "direct_finetune_30_lr1e4": [
+        Stage(),
+        Stage(data_spaces=("challenge",), assays=(_DRC,), epochs=30, lr=1e-4),
+    ],
     # Coarse to fine, then a short unfrozen polish at a very low lr (progressive unfreezing).
     "progressive": [
         Stage(data_spaces=("distant_aux", "near_aux")),
@@ -730,6 +744,18 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
                 "and model.graph.prune_tolerance must be non-negative"
+            )
+        if graph.finetune_per_target_epochs < 0 or graph.finetune_per_target_lr < 0:
+            raise ValueError(
+                "model.graph.finetune_per_target_epochs and model.graph.finetune_per_target_lr "
+                "must be non-negative"
+            )
+        if graph.finetune_per_target_epochs and (
+            self.model.kind != "graph" or graph.separate_trunks
+        ):
+            raise ValueError(
+                "model.graph.finetune_per_target_epochs needs model.kind='graph' with one shared "
+                "trunk (model.graph.separate_trunks off)"
             )
         if (graph.monitor_fold or graph.prune_reference) and (
             self.model.kind != "graph" or graph.separate_trunks

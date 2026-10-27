@@ -155,6 +155,8 @@ def build_model(
             aggregation=config.model.graph.aggregation,
             learning_rate=config.model.graph.learning_rate,
             warmup_epochs=config.model.graph.warmup_epochs,
+            finetune_per_target_epochs=config.model.graph.finetune_per_target_epochs,
+            finetune_per_target_lr=config.model.graph.finetune_per_target_lr,
             matmul_precision=config.model.graph.matmul_precision,
             early_stopping_patience=config.model.graph.early_stopping_patience,
             stages=tuple(

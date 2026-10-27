@@ -727,6 +727,8 @@ def _resolved_key(overrides: dict) -> str:
             del auxiliary["row_share"]
         if not auxiliary["row_selection_assays"]:
             del auxiliary["row_selection_assays"]
+    if not graph["finetune_per_target_epochs"]:
+        del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:
         # An inactive opt-in setting is not part of a recipe's identity, so names recorded before
         # the setting existed still match.
@@ -2523,6 +2525,20 @@ CAPACITY_CELLS = tuple(
 )
 #: The base recipe trained for 100 epochs instead of 30.
 EPOCHS_CELLS = (Cell("epochs_100", (("model.graph.epochs", 100),), "epochs"),)
+#: The base recipe's pooled 30 epochs followed by 30 more at a peak learning rate of 1e-4 (the
+#: pooled schedule's final rate): on the challenge dose-response rows of all isoforms, or in a copy
+#: per scored isoform on that isoform's rows alone.
+FINETUNE_30_CELLS = (
+    Cell("direct_finetune_30", (("training.preset", "direct_finetune_30_lr1e4"),), "fine-tuning"),
+    Cell(
+        "per_target_finetune",
+        (
+            ("model.graph.finetune_per_target_epochs", 30),
+            ("model.graph.finetune_per_target_lr", 1e-4),
+        ),
+        "heads",
+    ),
+)
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
 CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
@@ -2562,6 +2578,7 @@ def run_questions() -> None:
         *EMBEDDING_CELLS,
         *CAPACITY_CELLS,
         *EPOCHS_CELLS,
+        *FINETUNE_30_CELLS,
     )
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:

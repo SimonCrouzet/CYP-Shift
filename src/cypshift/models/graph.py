@@ -606,6 +606,8 @@ class GraphNetwork:
         matmul_precision: str = "high",
         early_stopping_patience: float = 0.1,
         stages: tuple[ResolvedStage, ...] = (),
+        finetune_per_target_epochs: int = 0,
+        finetune_per_target_lr: float = 0.0,
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -687,6 +689,13 @@ class GraphNetwork:
         self.curves: list[dict] = []
         #: Training curriculum, one entry per stage; empty trains one pooled stage of ``epochs``.
         self.stages = tuple(stages)
+        #: After the stages, copy each member once per scored target and train the copy for this
+        #: many more epochs on that target's rows alone (peak learning rate
+        #: ``finetune_per_target_lr``, 0 keeps the model's schedule); a target is then predicted by
+        #: its own copy. 0 turns it off. The copies are stages ``len(stages) + 1`` onward in the
+        #: curves and the log, in the order of ``endpoints``.
+        self.finetune_per_target_epochs = finetune_per_target_epochs
+        self.finetune_per_target_lr = finetune_per_target_lr
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -705,6 +714,8 @@ class GraphNetwork:
         self.structure_cache = structure_cache
         self.seed = seed
         self._members: list[cpmodels.MPNN] = []
+        #: Per member, the per-target copies by endpoint (empty without ``finetune_per_target``).
+        self._branches: list[dict[str, cpmodels.MPNN]] = []
         self._conditioning_sources = SOURCES if source_heads else None
         self._n_conditioning = n_condition_columns(
             conditioning, targets, self.assays, sources=self._conditioning_sources
@@ -1030,12 +1041,14 @@ class GraphNetwork:
             or [ResolvedStage(DATA_SPACES, None, self.epochs, self.learning_rate, False)],
         )
 
-        watched = None
+        watched = watched_points = None
         if monitor is not None:
             watched = monitor[np.isfinite(monitor["value"])].reset_index(drop=True)
             watched_points = self._datapoints(watched, labelled=True)
         self.curves = []
         self._members = []
+        self._branches = []
+        n_stages = len(stages) + (len(self.endpoints) if self.finetune_per_target_epochs else 0)
         for member in range(self.n_members):
             pl.seed_everything(self.seed + member, workers=True)
             if self.ensemble == "bagging":
@@ -1052,76 +1065,135 @@ class GraphNetwork:
                 rows = member_rows[rows_for_stage(usable, stage)[member_rows]]
                 if rows.size == 0:
                     continue
-                self._configure_stage(model, stage, position)
-                dataset = cpdata.MoleculeDataset([points[i] for i in rows])
-                # Featurise every molecule graph once, before training, so an epoch only collates
-                # cached graphs instead of re-featurising each molecule (forked loader workers
-                # read the cache without copying it).
-                dataset.cache = True
-                loader = cpdata.build_dataloader(
-                    dataset, batch_size=self.batch_size, num_workers=self.num_workers
+                watched_rows = (
+                    None if watched is None else np.flatnonzero(rows_for_stage(watched, stage))
                 )
-                label = f"member {member + 1}/{self.n_members} stage {position + 1}/{len(stages)}"
-                fold_monitor = None
-                if watched is not None:
-                    watched_rows = np.flatnonzero(rows_for_stage(watched, stage))
-                    if watched_rows.size:
-                        watched_dataset = cpdata.MoleculeDataset(
-                            [watched_points[i] for i in watched_rows]
-                        )
-                        watched_dataset.cache = True
-                        fold_monitor = _FoldMonitor(
-                            cpdata.build_dataloader(
-                                watched_dataset,
-                                batch_size=self.batch_size,
-                                shuffle=False,
-                                num_workers=self.num_workers,
-                            ),
-                            self._spread,
-                            patience_epochs(self.early_stopping_patience, stage.epochs),
-                            prune_epoch(stage.epochs) if position == 0 else None,
-                            prune_above,
-                        )
-                callbacks: list[pl.Callback] = [_EpochReport(label, fold_monitor)]
-                if fold_monitor is not None:
-                    callbacks.insert(0, fold_monitor)
-                trainer = pl.Trainer(
-                    max_epochs=stage.epochs,
-                    accelerator="auto",
-                    logger=False,
-                    callbacks=callbacks,
-                    enable_checkpointing=False,
-                    enable_progress_bar=False,
-                    enable_model_summary=False,
+                self._train_stage(
+                    model,
+                    stage,
+                    (member, position, n_stages),
+                    (points, rows),
+                    (watched_points, watched_rows),
+                    prune_above,
                 )
-                if len(stages) > 1:
-                    logger.info(
-                        "stage %d/%d: %d rows, %d epochs, peak lr %s%s",
-                        position + 1,
-                        len(stages),
-                        rows.size,
-                        stage.epochs,
-                        stage.lr or "default",
-                        ", encoder frozen" if stage.freeze_trunk else "",
+            branches: dict[str, cpmodels.MPNN] = {}
+            if self.finetune_per_target_epochs:
+                tail = ResolvedStage(
+                    DATA_SPACES,
+                    None,
+                    self.finetune_per_target_epochs,
+                    self.finetune_per_target_lr,
+                    False,
+                )
+                for offset, endpoint in enumerate(self.endpoints):
+                    target = endpoint.split("_")[0]
+                    on_target = (usable["target"] == target).to_numpy()
+                    rows = member_rows[on_target[member_rows]]
+                    if rows.size == 0:
+                        continue
+                    branch = self._build()
+                    branch.load_state_dict(model.state_dict())
+                    watched_rows = (
+                        None
+                        if watched is None
+                        else np.flatnonzero((watched["target"] == target).to_numpy())
                     )
-                trainer.fit(model, loader)
-                if fold_monitor is not None:
-                    self.curves.append(
-                        {
-                            "member": member + 1,
-                            "stage": position + 1,
-                            "epochs": stage.epochs,
-                            "error": fold_monitor.error,
-                        }
+                    self._train_stage(
+                        branch,
+                        tail,
+                        (member, len(stages) + offset, n_stages),
+                        (points, rows),
+                        (watched_points, watched_rows),
+                        prune_above,
+                        target,
                     )
-                    if fold_monitor.pruned:
-                        raise PrunedError(
-                            f"{label}: fold error {fold_monitor.error[-1]:.4f} at epoch "
-                            f"{len(fold_monitor.error)} is above the limit {prune_above:.4f}"
-                        )
+                    branches[endpoint] = branch
             self._members.append(model)
+            self._branches.append(branches)
             logger.info("member %d trained", member)
         return self
+
+    def _train_stage(
+        self,
+        model: cpmodels.MPNN,
+        stage: ResolvedStage,
+        place: tuple[int, int, int],
+        training: tuple[list, NDArray[np.int_]],
+        monitoring: tuple[list | None, NDArray[np.int_] | None],
+        prune_above: float | None,
+        target: str | None = None,
+    ) -> None:
+        """Train ``model`` on the given rows for one stage; ``place`` is (member, position of the
+        stage, number of stages), ``monitoring`` the monitor datapoints and the rows of them this
+        stage is measured on."""
+        member, position, n_stages = place
+        points, rows = training
+        watched_points, watched_rows = monitoring
+        self._configure_stage(model, stage, position)
+        dataset = cpdata.MoleculeDataset([points[i] for i in rows])
+        # Featurise every molecule graph once, before training, so an epoch only collates
+        # cached graphs instead of re-featurising each molecule (forked loader workers
+        # read the cache without copying it).
+        dataset.cache = True
+        loader = cpdata.build_dataloader(
+            dataset, batch_size=self.batch_size, num_workers=self.num_workers
+        )
+        label = f"member {member + 1}/{self.n_members} stage {position + 1}/{n_stages}"
+        fold_monitor = None
+        if watched_rows is not None and watched_rows.size:
+            watched_dataset = cpdata.MoleculeDataset([watched_points[i] for i in watched_rows])
+            watched_dataset.cache = True
+            fold_monitor = _FoldMonitor(
+                cpdata.build_dataloader(
+                    watched_dataset,
+                    batch_size=self.batch_size,
+                    shuffle=False,
+                    num_workers=self.num_workers,
+                ),
+                self._spread,
+                patience_epochs(self.early_stopping_patience, stage.epochs),
+                prune_epoch(stage.epochs) if position == 0 else None,
+                prune_above,
+            )
+        callbacks: list[pl.Callback] = [_EpochReport(label, fold_monitor)]
+        if fold_monitor is not None:
+            callbacks.insert(0, fold_monitor)
+        trainer = pl.Trainer(
+            max_epochs=stage.epochs,
+            accelerator="auto",
+            logger=False,
+            callbacks=callbacks,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            enable_model_summary=False,
+        )
+        if n_stages > 1:
+            logger.info(
+                "stage %d/%d: %d rows, %d epochs, peak lr %s%s%s",
+                position + 1,
+                n_stages,
+                rows.size,
+                stage.epochs,
+                stage.lr or "default",
+                ", encoder frozen" if stage.freeze_trunk else "",
+                f", {target} rows only" if target else "",
+            )
+        trainer.fit(model, loader)
+        if fold_monitor is not None:
+            self.curves.append(
+                {
+                    "member": member + 1,
+                    "stage": position + 1,
+                    "epochs": stage.epochs,
+                    "error": fold_monitor.error,
+                    **({"target": target} if target else {}),
+                }
+            )
+            if fold_monitor.pruned:
+                raise PrunedError(
+                    f"{label}: fold error {fold_monitor.error[-1]:.4f} at epoch "
+                    f"{len(fold_monitor.error)} is above the limit {prune_above:.4f}"
+                )
 
     def _configure_stage(self, model: cpmodels.MPNN, stage: ResolvedStage, position: int) -> None:
         """Set the optimiser schedule and the encoder's trainability for one stage.
@@ -1161,7 +1233,9 @@ class GraphNetwork:
             loader = cpdata.build_dataloader(
                 dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
             )
-            for index, model in enumerate(self._members):
+            for index, member_model in enumerate(self._members):
+                own = self._branches[index].get(endpoint) if index < len(self._branches) else None
+                model = member_model if own is None else own
                 model.eval()
                 with torch.no_grad():
                     predicted = torch.cat(
