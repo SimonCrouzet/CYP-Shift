@@ -2504,6 +2504,8 @@ _CAPACITY_STEPS = {
     "graph_b_drop0p25_lr5e4": (700, 5, 700, 2, 32, 0.25, 5e-4, 100),
     # C with the same dropout, peak learning rate and epochs as the regularised B.
     "graph_c_reg": (1000, 6, 1000, 3, 64, 0.30, 1e-4, 100),
+    # C with more dropout still, for twice the epochs.
+    "graph_c_drop0p4_e200": (1000, 6, 1000, 3, 64, 0.40, 1e-4, 200),
 }
 _CAPACITY_KEYS = (
     "model.graph.hidden",
