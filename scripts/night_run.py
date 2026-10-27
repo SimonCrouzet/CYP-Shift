@@ -2375,12 +2375,16 @@ RANDOM_75 = _share_cell("random_75", "row selection", "base", "random", 0.75)
 def choose_row_policy() -> Cell | None:
     """The recorded row-selection cell the night runs on: the lowest-scoring of ``RANDOM_75`` and
     ``SHARE_CELLS`` if it beats the full table by more than the adopt margin, else ``None`` (the
-    full table)."""
+    full table). ``CYP_ROW_POLICY`` (a cell tag, or ``none``) overrides the choice."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
     recipe = _apply(dict(REGRESSION[SUBSET_BASE]), _BOTH + _BUDGET)
     scores = ranked_means("reg")["mean"]
     full = _score_of(scores, _recipe_name("both_budget", recipe, declared))
     candidates = {cell.tag: cell for cell in (RANDOM_75, *SHARE_CELLS)}
+    forced = os.environ.get("CYP_ROW_POLICY")
+    if forced:
+        logger.info("row policy set by CYP_ROW_POLICY: %s", forced)
+        return None if forced == "none" else candidates[forced]
     table = {
         tag: _score_of(scores, _recipe_name(tag, _apply(recipe, cell.sets), declared))
         for tag, cell in candidates.items()

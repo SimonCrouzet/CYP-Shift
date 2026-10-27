@@ -1002,3 +1002,11 @@ def test_each_member_variant_changes_one_data_setting_of_the_declared_boosted_re
     assert set(both) == {"sources.qhts_representation"}
     assert set(budget) == {"auxiliary.per_endpoint_budget"}
     assert set(policy) == {"auxiliary.row_selection", "auxiliary.row_share"}
+
+
+def test_the_row_policy_can_be_set_from_the_environment(monkeypatch):
+    _policy_scores(monkeypatch, {})  # no cell beats the full table
+    monkeypatch.setenv("CYP_ROW_POLICY", "random_75")
+    assert night_run.choose_row_policy().tag == "random_75"
+    monkeypatch.setenv("CYP_ROW_POLICY", "none")
+    assert night_run.choose_row_policy() is None
