@@ -2561,6 +2561,20 @@ FINETUNE_30_CELLS = (
         "heads",
     ),
 )
+#: The regression recipe with the preincubated (TDI) assay_condition trained, so the one graph also
+#: calls ``is_TDI`` from the gap between its two predicted conditions: the base, and the regularised
+#: B at 100 epochs.
+TDI_GRAPH_CELLS = (
+    Cell("tdi_graph_base", (("sources.tdi_assay_condition", True),), "tdi"),
+    Cell(
+        "tdi_graph_b_reg",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            ("sources.tdi_assay_condition", True),
+        ),
+        "tdi",
+    ),
+)
 #: Boosted trees on the base recipe's data (Octant, Tox21, Novartis, qHTS ``both``, the weight
 #: budget): the deep soft-threshold member and the pinball member of the earlier blends.
 BOOSTED_BASE_CELLS = (
@@ -2585,6 +2599,13 @@ CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis":
 CURVE_CELLS = {
     "curve_heads": {**TDI["curve_heads"], **CURVE_DATA},
     "curve_graph_heads": {**TDI["curve_graph_heads"], **CURVE_DATA},
+    # The curve model on the base recipe's other data settings: qHTS ``both`` and the weight budget.
+    "curve_heads_both_budget": {
+        **TDI["curve_heads"],
+        **CURVE_DATA,
+        **dict(_BOTH),
+        **dict(_BUDGET),
+    },
 }
 
 
@@ -2619,6 +2640,7 @@ def run_questions() -> None:
         *CAPACITY_CELLS,
         *EPOCHS_CELLS,
         *FINETUNE_30_CELLS,
+        *TDI_GRAPH_CELLS,
     )
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:
