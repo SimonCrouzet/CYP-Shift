@@ -138,6 +138,9 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "PYTHONUNBUFFERED": "1",
         "HF_HOME": f"{MOUNT}/hf_cache",
     }
+    if args.monitor:
+        # Per-epoch held-out errors in the run bundles, without stopping any fit early.
+        plain.update({"CYP_MONITOR": "1", "CYP_EARLY_STOP": "0"})
     secret: dict[str, str] = {}
     for name, value in {**wandb_env(args.wandb), **token_env()}.items():
         (secret if name in SECRET_ENV else plain)[name] = value
@@ -514,6 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         default="all",
         help="remote CYP_QUEUE: part of the questions plan's queue (see night_run.QUEUES)",
+    )
+    run.add_argument(
+        "--monitor",
+        action="store_true",
+        help="record each graph fold's held-out error per epoch (CYP_MONITOR=1, no early stop)",
     )
     run.add_argument(
         "--cells",

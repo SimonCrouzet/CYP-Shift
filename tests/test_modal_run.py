@@ -496,3 +496,10 @@ def test_each_training_process_gets_a_bounded_cpu_thread_pool(local) -> None:
     assert plain["OMP_NUM_THREADS"] == "2"
     default, _ = mr.sandbox_environment(parse(), "abc1234")
     assert default["OMP_NUM_THREADS"] == "4"
+
+
+def test_monitoring_sets_the_fold_monitor_without_early_stopping(local) -> None:
+    plain, _ = mr.sandbox_environment(parse("--monitor"), "abc1234")
+    assert plain["CYP_MONITOR"] == "1" and plain["CYP_EARLY_STOP"] == "0"
+    plain, _ = mr.sandbox_environment(parse(), "abc1234")
+    assert "CYP_MONITOR" not in plain and "CYP_EARLY_STOP" not in plain
