@@ -10,7 +10,7 @@ environment then reads with no MAMMAL dependency.
 
     HF_HOME=/mnt/wsl/ext/hf_cache \\
       /mnt/wsl/ext/envs/cypshift-mammal/bin/python scripts/compute_embeddings.py \\
-      --source mammal --data-dir data
+      --source mammal --data-dir data/raw
 
 ``--source chemeleon`` runs in the main environment: the frozen CheMeleon message-passing
 encoder (the checkpoint the graph model initialises from), mean-aggregated over atoms to a
@@ -42,6 +42,8 @@ CHALLENGE_FILES = (
     "cyp-challenge-TRAIN_inhibition.csv",
     "cyp-challenge-TEST-BLINDED.csv",
     "cyp-challenge-single-concentration-TRAIN.csv",
+    "cyp-challenge-TRAIN_TDI.csv",
+    "cyp-challenge-TRAIN_Emax.csv",
 )
 SMILES_PROMPT = (
     "<@TOKENIZER-TYPE=SMILES@MAX-LEN={maxlen}><MOLECULAR_ENTITY>"
@@ -162,7 +164,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default="mammal", help="cache name under the embeddings dir")
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--data-dir", type=Path, default=Path("data/raw"))
     parser.add_argument(
         "--extra", type=Path, nargs="*", default=[], help="extra SMILES-column CSVs"
     )
@@ -171,11 +173,25 @@ def main() -> None:
     parser.add_argument(
         "--aux", nargs="*", default=[], help="auxiliary sources to embed too (chemeleon only)"
     )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="embed only the compounds missing from the existing cache and append them",
+    )
     args = parser.parse_args()
 
     smiles = gather_smiles(args.data_dir, args.extra)
+    existing = None
     if args.source == "chemeleon":
         smiles = sorted({*smiles, *gather_aux_smiles(args.data_dir, args.aux)})
+        cached = CACHE_DIR / f"{args.source}.parquet"
+        if args.update and cached.exists():
+            existing = pd.read_parquet(cached)
+            known = set(existing["SMILES"])
+            smiles = [s for s in smiles if s not in known]
+            logger.info("%d compounds missing from the cache", len(smiles))
+            if not smiles:
+                return
         vectors = chemeleon_vectors(smiles, args.device)
         model, prompt = "CheMeleon message passing (frozen), mean aggregation", None
     else:
@@ -189,6 +205,8 @@ def main() -> None:
         model, prompt = MAMMAL_MODEL, SMILES_PROMPT
     frame = pd.DataFrame(vectors, columns=[f"e{i}" for i in range(vectors.shape[1])])
     frame.insert(0, "SMILES", smiles)
+    if existing is not None:
+        frame = pd.concat([existing, frame], ignore_index=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{args.source}.parquet"
     temporary = path.with_name(path.name + ".tmp")
