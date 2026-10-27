@@ -2422,13 +2422,15 @@ NIGHT_CELLS = (
     Cell("norm_pooling", (("model.graph.aggregation", "norm"),), "pooling"),
 )
 #: Other model families, run for the blend on the base's data settings where the family takes them:
-#: boosted trees, and the dense-feature TabPFN and neural models.
+#: boosted trees and the dense-feature neural model. The TabPFN member (``tfm_fs_dense``) is run
+#: alone by the members plan: its fit holds most of the GPU memory, and graph fits beside it slow
+#: to a crawl.
 NIGHT_MEMBERS = (
     "boosted_octant_tox21_deep",
     "boosted_pinball_t60",
-    "tfm_fs_dense",
     "neural_fs_dense",
 )
+DECLARED_MEMBERS = (*NIGHT_MEMBERS, "tfm_fs_dense")
 #: Seeds the base recipe is repeated at: the spread between runs, and the gain of averaging two.
 NIGHT_SEEDS = (1, 2)
 
@@ -2493,11 +2495,11 @@ MEMBER_VARIANTS = (
 
 
 def run_members() -> None:
-    """``NIGHT_MEMBERS`` as declared and the ``MEMBER_VARIANTS`` of the boosted member; each variant
-    against the declared recipe in ``data/members_factors.csv``."""
+    """``DECLARED_MEMBERS`` as declared and the ``MEMBER_VARIANTS`` of the boosted member; each
+    variant against the declared recipe in ``data/members_factors.csv``."""
     declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
-    names = {member: member for member in NIGHT_MEMBERS}
-    configs = {member: REGRESSION[member] for member in NIGHT_MEMBERS}
+    names = {member: member for member in DECLARED_MEMBERS}
+    configs = {member: REGRESSION[member] for member in DECLARED_MEMBERS}
     for cell in MEMBER_VARIANTS:
         overrides = _apply(REGRESSION[cell.control], cell.sets)
         if not _is_valid(overrides):
