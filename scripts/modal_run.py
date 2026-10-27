@@ -130,6 +130,7 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "CYP_JOBS": str(args.jobs),
         "OMP_NUM_THREADS": str(args.threads),
         "CYP_PLAN": args.plan,
+        "CYP_SHARD": args.shard,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
         "PYTHONUNBUFFERED": "1",
@@ -496,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="remote CYP_JOBS: configurations trained at the same time on the one GPU",
+    )
+    run.add_argument(
+        "--shard",
+        default="",
+        help="remote CYP_SHARD, 'index/count': run only that share of the questions plan's queue",
     )
     run.add_argument("--ref", default="HEAD", help="git ref to archive and run")
     run.add_argument(

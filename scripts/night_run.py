@@ -2486,6 +2486,15 @@ CURVE_CELLS = {
 }
 
 
+def shard_of(group: dict, shard: str) -> dict:
+    """Every ``count``-th entry of ``group`` from ``index``, for ``shard`` = ``"index/count"``: the
+    shards of one group are disjoint and together hold all of it."""
+    index, count = (int(part) for part in shard.split("/"))
+    if not 0 <= index < count:
+        raise ValueError(f"CYP_SHARD={shard!r} needs 0 <= index < count")
+    return dict(list(group.items())[index::count])
+
+
 def run_questions() -> None:
     """The recipe with Novartis and its one-factor cells (by-source MaxMin, qHTS representation,
     CheMeleon), the same-input comparison of the families and the curve model, as one queue: the
@@ -2509,10 +2518,17 @@ def run_questions() -> None:
     tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
     # The graph fits (the GPU) and the CPU-bound fits alternate, so the GPU is busy from the first
     # slot; the TabPFN fits, which hold the most memory, come last.
+    other = {**tabular, **curve}
+    shard = os.environ.get("CYP_SHARD", "")
+    if shard:
+        graph, other, tfm = (shard_of(group, shard) for group in (graph, other, tfm))
     mixed = {}
-    for pair in itertools.zip_longest(graph.items(), {**tabular, **curve}.items()):
+    for pair in itertools.zip_longest(graph.items(), other.items()):
         mixed.update(item for item in pair if item is not None)
     run_phase("reg", {**mixed, **tfm}, SEEDS)
+    if shard:
+        logger.info("shard %s of the queue done; reports are made from the merged results", shard)
+        return
     _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
     _report_fair(fair)
     rows = ranked_means("reg")["mean"]

@@ -1127,3 +1127,32 @@ def test_the_questions_queue_alternates_graph_and_cpu_fits_and_ends_with_tabpfn(
     assert kinds[0:6:2] == ["graph"] * 3 and "graph" not in kinds[1:6:2]
     first = list(queue.values())[0]
     assert first.get("model.graph.pretraining") == "chemeleon"  # the slowest graph fits first
+
+
+def test_shards_of_the_questions_queue_are_disjoint_and_together_complete(monkeypatch):
+    def queue(shard):
+        seen = {}
+        monkeypatch.setenv("CYP_SHARD", shard)
+        monkeypatch.setattr(
+            night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs)
+        )
+        night_run.run_questions()
+        return seen
+
+    first, second = queue("0/2"), queue("1/2")
+    monkeypatch.delenv("CYP_SHARD")
+    whole = {}
+    monkeypatch.setattr(night_run, "run_phase", lambda p, configs, s: whole.update(configs))
+    monkeypatch.setattr(night_run, "_report_factors", lambda cells, names: pd.DataFrame())
+    monkeypatch.setattr(night_run, "_report_fair", lambda configs: pd.DataFrame())
+    monkeypatch.setattr(
+        night_run, "ranked_means", lambda phase: pd.DataFrame({"mean": [], "std": [], "count": []})
+    )
+    night_run.run_questions()
+    assert not set(first) & set(second)
+    assert set(first) | set(second) == set(whole)
+    for part in (first, second):
+        kinds = {overrides.get("model.kind", "boosted") for overrides in part.values()}
+        assert "graph" in kinds and "tfm" in kinds
+    with pytest.raises(ValueError):
+        night_run.shard_of({"a": {}}, "2/2")
