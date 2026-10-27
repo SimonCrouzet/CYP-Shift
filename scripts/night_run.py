@@ -2498,6 +2498,8 @@ _CAPACITY_STEPS = {
     # B again with more dropout and a lower peak learning rate, trained for 100 epochs: at the lower
     # rate the held-out error of the 30-epoch run was still falling when it stopped.
     "graph_b_reg": (700, 5, 700, 2, 32, 0.30, 1e-4, 100),
+    # C with the same dropout, peak learning rate and epochs as the regularised B.
+    "graph_c_reg": (1000, 6, 1000, 3, 64, 0.30, 1e-4, 100),
 }
 _CAPACITY_KEYS = (
     "model.graph.hidden",
