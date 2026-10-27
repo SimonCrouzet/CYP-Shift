@@ -503,3 +503,9 @@ def test_monitoring_sets_the_fold_monitor_without_early_stopping(local) -> None:
     assert plain["CYP_MONITOR"] == "1" and plain["CYP_EARLY_STOP"] == "0"
     plain, _ = mr.sandbox_environment(parse(), "abc1234")
     assert "CYP_MONITOR" not in plain and "CYP_EARLY_STOP" not in plain
+
+
+def test_seeds_are_passed_to_the_sweep_as_an_env_var(local) -> None:
+    plain, _ = mr.sandbox_environment(parse("--seeds", "1,2"), "abc1234")
+    assert plain["CYP_SEEDS"] == "1,2"
+    assert mr.sandbox_environment(parse(), "abc1234")[0]["CYP_SEEDS"] == ""

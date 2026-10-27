@@ -1277,3 +1277,12 @@ def test_named_cells_select_graph_cells_of_the_questions_plan_and_unknown_names_
     monkeypatch.setenv("CYP_CELLS", "no_such_cell")
     with pytest.raises(ValueError, match="names no cell"):
         night_run.run_questions()
+
+
+def test_cyp_seeds_run_the_chosen_cells_at_those_seeds_only(monkeypatch):
+    seen = []
+    monkeypatch.setenv("CYP_CELLS", "base")
+    monkeypatch.setenv("CYP_SEEDS", "1,2")
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: seen.append(seeds))
+    night_run.run_questions()
+    assert seen == [[1, 2]]

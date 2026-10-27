@@ -133,6 +133,7 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "CYP_SHARD": args.shard,
         "CYP_QUEUE": args.queue,
         "CYP_CELLS": args.cells,
+        "CYP_SEEDS": args.seeds,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
         "PYTHONUNBUFFERED": "1",
@@ -527,6 +528,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--cells",
         default="",
         help="remote CYP_CELLS: comma-separated cell tags of the questions plan to run alone",
+    )
+    run.add_argument(
+        "--seeds",
+        default="",
+        help="remote CYP_SEEDS: comma-separated seeds of the questions plan's cells (default 0)",
     )
     run.add_argument(
         "--shard",

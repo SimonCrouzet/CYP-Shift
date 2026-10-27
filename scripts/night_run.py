@@ -2654,8 +2654,9 @@ def run_questions() -> None:
     mixed = {}
     for pair in itertools.zip_longest(graph.items(), other.items()):
         mixed.update(item for item in pair if item is not None)
-    run_phase("reg", {**mixed, **tfm}, SEEDS)
-    if shard or only or queue != "all":
+    seeds = [int(seed) for seed in os.environ.get("CYP_SEEDS", "").split(",") if seed] or SEEDS
+    run_phase("reg", {**mixed, **tfm}, seeds)
+    if shard or only or queue != "all" or seeds != SEEDS:
         logger.info("part of the queue done; reports are made from the merged results")
         return
     _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
