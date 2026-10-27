@@ -42,3 +42,10 @@ def test_a_cell_without_a_curves_file_still_gets_its_training_losses(tmp_path, m
     monkeypatch.setattr(script, "BUNDLES", tmp_path)
     table = script.curves("rev", ["cell_a"], LOG)
     assert table["fold_mae"].isna().all() and len(table) == 4
+
+
+def test_an_untagged_single_cell_log_is_assigned_to_the_named_cell(tmp_path, monkeypatch):
+    untagged = "\n".join(line.replace("[cell_a] ", "") for line in LOG.splitlines()[:-1])
+    monkeypatch.setattr(script, "BUNDLES", tmp_path)
+    table = script.curves("rev", ["cell_a"], [(untagged, "cell_a")])
+    assert table["train_loss"].tolist() == [0.5, 0.4, 0.6, 0.3]

@@ -23,28 +23,33 @@ import pandas as pd
 logger = logging.getLogger("export_learning_curves")
 
 BUNDLES = Path("data/run_bundles")
-FOLD = re.compile(r"^\S+ \[([^\]]+)\] fold (\d+)/(\d+) \|")
+# A run of several cells at once tags each line with the cell's name; a single-cell run does not.
+FOLD = re.compile(r"^\S+ (?:\[([^\]]+)\] )?fold (\d+)/(\d+) \|")
 EPOCH = re.compile(
-    r"^\S+ \[([^\]]+)\] member (\d+)/\d+ stage (\d+)/\d+ epoch (\d+)/\d+\s+train ([\d.]+)"
+    r"^\S+ (?:\[([^\]]+)\] )?member (\d+)/\d+ stage (\d+)/\d+ epoch (\d+)/\d+\s+train ([\d.]+)"
 )
 
 
-def train_losses(log: str, only: set[str] | None = None) -> pd.DataFrame:
+def train_losses(
+    log: str, only: set[str] | None = None, untagged: str | None = None
+) -> pd.DataFrame:
     """``name, fold, member, stage, epoch, train_loss`` for every epoch line of the log; the fold
-    is the one the cell's latest ``fold k/n`` line announced."""
+    is the one the cell's latest ``fold k/n`` line announced. Lines without a cell tag (a log of a
+    single-cell run) belong to ``untagged``."""
     fold: dict[str, int] = {}
     rows = []
     for line in log.splitlines():
         start = FOLD.match(line)
         if start:
-            fold[start.group(1)] = int(start.group(2)) - 1
+            fold[start.group(1) or untagged] = int(start.group(2)) - 1
             continue
         epoch = EPOCH.match(line)
-        if epoch and epoch.group(1) in fold and (only is None or epoch.group(1) in only):
+        name = epoch.group(1) or untagged if epoch else None
+        if epoch and name in fold and (only is None or name in only):
             rows.append(
                 {
-                    "name": epoch.group(1),
-                    "fold": fold[epoch.group(1)],
+                    "name": name,
+                    "fold": fold[name],
                     "member": int(epoch.group(2)),
                     "stage": int(epoch.group(3)),
                     "epoch": int(epoch.group(4)),
@@ -76,14 +81,21 @@ def fold_errors(bundle: Path, name: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def curves(rev: str, names: list[str], log: str, seed: int = 0) -> pd.DataFrame:
-    """The merged curves of the named cells (full recipe names), seed ``seed``."""
+def curves(
+    rev: str, names: list[str], logs: str | list[tuple[str, str | None]], seed: int = 0
+) -> pd.DataFrame:
+    """The merged curves of the named cells (full recipe names), seed ``seed``. ``logs`` is one log
+    text, or pairs of a log text and the cell its untagged lines belong to."""
+    if isinstance(logs, str):
+        logs = [(logs, None)]
     keys = ["name", "fold", "member", "stage", "epoch"]
     errors = pd.concat(
         [fold_errors(BUNDLES / rev / f"reg_{name}_seed{seed}", name) for name in names],
         ignore_index=True,
     )
-    losses = train_losses(log, set(names))
+    losses = pd.concat(
+        [train_losses(text, set(names), untagged) for text, untagged in logs], ignore_index=True
+    )
     return errors.merge(losses, on=keys, how="outer").sort_values(keys).reset_index(drop=True)
 
 
@@ -117,13 +129,21 @@ def main() -> None:
         "--rev", required=True, help="the run's results namespace, e.g. questions2-m1"
     )
     parser.add_argument("--names", required=True, help="comma-separated full recipe names")
-    parser.add_argument("--log", type=Path, nargs="*", default=[], help="sweep log files")
+    parser.add_argument(
+        "--log",
+        nargs="*",
+        default=[],
+        help="sweep log files; PATH=NAME gives the cell an untagged single-cell log belongs to",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    log = "\n".join(path.read_text(errors="replace") for path in args.log)
-    table = curves(args.rev, args.names.split(","), log, args.seed)
+    logs = []
+    for item in args.log:
+        path, _, cell = item.partition("=")
+        logs.append((Path(path).read_text(errors="replace"), cell or None))
+    table = curves(args.rev, args.names.split(","), logs, args.seed)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(args.output, index=False)
     logger.info("wrote %d rows to %s", len(table), args.output)
