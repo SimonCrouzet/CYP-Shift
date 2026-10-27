@@ -1156,3 +1156,23 @@ def test_shards_of_the_questions_queue_are_disjoint_and_together_complete(monkey
         assert "graph" in kinds and "tfm" in kinds
     with pytest.raises(ValueError):
         night_run.shard_of({"a": {}}, "2/2")
+
+
+def test_the_queue_switch_splits_the_questions_plan_into_graph_and_other_cells(monkeypatch):
+    def queue(which):
+        seen = {}
+        monkeypatch.setenv("CYP_QUEUE", which)
+        monkeypatch.setattr(
+            night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs)
+        )
+        night_run.run_questions()
+        return seen
+
+    graph, other = queue("graph"), queue("other")
+    kinds = {c.get("model.kind", "boosted") for c in graph.values()}
+    assert kinds == {"graph"} and len(graph) == 10
+    assert "graph" not in {c.get("model.kind", "boosted") for c in other.values()}
+    assert len(graph) + len(other) == 28
+    monkeypatch.setenv("CYP_QUEUE", "none")
+    with pytest.raises(ValueError):
+        night_run.run_questions()

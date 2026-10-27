@@ -2519,6 +2519,13 @@ def run_questions() -> None:
     # The graph fits (the GPU) and the CPU-bound fits alternate, so the GPU is busy from the first
     # slot; the TabPFN fits, which hold the most memory, come last.
     other = {**tabular, **curve}
+    queue = os.environ.get("CYP_QUEUE", "all")
+    if queue not in ("all", "graph", "other"):
+        raise ValueError(f"CYP_QUEUE={queue!r} is not one of all, graph, other")
+    if queue == "graph":
+        other, tfm = {}, {}
+    elif queue == "other":
+        graph = {}
     shard = os.environ.get("CYP_SHARD", "")
     if shard:
         graph, other, tfm = (shard_of(group, shard) for group in (graph, other, tfm))
@@ -2526,8 +2533,8 @@ def run_questions() -> None:
     for pair in itertools.zip_longest(graph.items(), other.items()):
         mixed.update(item for item in pair if item is not None)
     run_phase("reg", {**mixed, **tfm}, SEEDS)
-    if shard:
-        logger.info("shard %s of the queue done; reports are made from the merged results", shard)
+    if shard or queue != "all":
+        logger.info("part of the queue done; reports are made from the merged results")
         return
     _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
     _report_fair(fair)

@@ -131,6 +131,7 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "OMP_NUM_THREADS": str(args.threads),
         "CYP_PLAN": args.plan,
         "CYP_SHARD": args.shard,
+        "CYP_QUEUE": args.queue,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
         "PYTHONUNBUFFERED": "1",
@@ -497,6 +498,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="remote CYP_JOBS: configurations trained at the same time on the one GPU",
+    )
+    run.add_argument(
+        "--queue",
+        choices=("all", "graph", "other"),
+        default="all",
+        help="remote CYP_QUEUE: the questions plan's graph cells only, the others only, or all",
     )
     run.add_argument(
         "--shard",
