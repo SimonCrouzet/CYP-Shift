@@ -2507,6 +2507,32 @@ def run_members() -> None:
     )
 
 
+def run_fullseeds() -> None:
+    """The full-table recipe at ``NIGHT_SEEDS`` beside the random 75% cell at the same seeds, so
+    their difference is paired by seed (``data/fullseeds.csv``)."""
+    import blend
+
+    declared = {_resolved_key(overrides): name for name, overrides in REGRESSION.items()}
+    recipe = _apply(dict(REGRESSION[SUBSET_BASE]), _BOTH + _BUDGET)
+    full = _recipe_name("both_budget", recipe, declared)
+    random = _recipe_name("random_75", _apply(recipe, RANDOM_75.sets), declared)
+    run_phase("reg", {full: recipe}, SEEDS, {full: list(NIGHT_SEEDS)})
+    rows = []
+    for seed in (SEEDS[0], *NIGHT_SEEDS):
+        members = blend.load_members(REV, seed)
+        scores = {
+            label: blend.rank_single({n: members[n]})[n]
+            for label, n in (("full", full), ("random_75", random))
+            if n in members
+        }
+        rows.append({"seed": seed, **scores})
+    table = pd.DataFrame(rows)
+    if {"full", "random_75"} <= set(table):
+        table["random_75_minus_full"] = table["random_75"] - table["full"]
+    logger.info("full table and random 75%% by seed:\n%s", table.to_string(index=False))
+    table.to_csv(RESULTS.parent / "fullseeds.csv", index=False)
+
+
 def run_night() -> None:
     """The model-side cells (``NIGHT_CELLS``) and other-family members (``NIGHT_MEMBERS``) on the
     chosen row policy, the base repeated at ``NIGHT_SEEDS``; each cell against its reference in
@@ -2545,6 +2571,11 @@ def main() -> None:
     if PLAN == "finetune":
         logger.info("=== Staged graph training on the focus data recipe (jobs: %d) ===", JOBS)
         run_finetune()
+        wandb_finish()
+        return
+    if PLAN == "fullseeds":
+        logger.info("=== Full table at two more seeds, paired with random 75%% ===")
+        run_fullseeds()
         wandb_finish()
         return
     if PLAN == "members":
