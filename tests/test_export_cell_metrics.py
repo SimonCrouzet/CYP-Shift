@@ -66,3 +66,23 @@ def test_a_blend_averages_the_predictions_of_its_cells(tmp_path, monkeypatch):
     table = script.cell_metrics("rev", ["low"], blends={"both": ["low", "rev/high"]})
     rows = table.set_index("name")["MAE"]
     assert rows["low"] == pytest.approx(0.0) and rows["both"] == pytest.approx(0.5)
+
+
+def test_a_member_spec_carries_its_namespace_seed_and_weight():
+    assert script.split_member("a", "r", 0) == ("r", "a", 0, 1.0)
+    assert script.split_member("q/a@3:0.5", "r", 0) == ("q", "a", 3, 0.5)
+
+
+def test_a_blend_weights_its_members_and_reads_each_members_seed(tmp_path, monkeypatch):
+    for name, offset in (("exact", -0.5), ("off", 0.5)):
+        for seed in (0, 1):
+            table = _oof()
+            for column in (c for c in table.columns if c.endswith("_pred")):
+                table[column] = table[column] + offset
+            bundle = tmp_path / "rev" / f"reg_{name}_seed{seed}"
+            bundle.mkdir(parents=True)
+            table.to_parquet(bundle / "out_of_fold.parquet")
+    monkeypatch.setattr(script, "BUNDLES", tmp_path)
+    table = script.cell_metrics("rev", [], blends={"mix": ["exact@1:3", "off@0:1"]})
+    # 3/4 of an exact and 1/4 of a prediction off by 1: a constant error of 0.25
+    assert table.set_index("name")["MAE"]["mix"] == pytest.approx(0.25)

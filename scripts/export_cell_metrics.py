@@ -7,9 +7,11 @@ One row per cell (full recipe name). Each metric is computed per enzyme on the c
 a measurement for it, then averaged over the four enzymes, as the leaderboard does. The columns are
 the ones ``plot_learning_curves.py --metrics`` reads.
 
-A name may carry its run's namespace, ``REV/NAME``, when the cells come from several runs. With
+A name may carry its run's namespace, ``REV/NAME``, and a seed, ``NAME@SEED``, when the cells come
+from several runs or seeds; in a ``--blend`` member, ``:WEIGHT`` after that sets its weight (default
+1; the weights are normalised). With
 ``--per-enzyme`` the rows are one per cell and enzyme instead. ``--blend LABEL=NAME+NAME`` adds the
-equal-weight average of the named cells' predictions as one more cell (all on the same folds).
+weighted average of the named cells' predictions as one more cell.
 """
 
 import argparse
@@ -64,20 +66,31 @@ def bundle_metrics(oof: pd.DataFrame) -> dict[str, float]:
     return enzyme_metrics(oof)[list(COLUMNS)].mean().to_dict()
 
 
-def blend(tables: list[pd.DataFrame]) -> pd.DataFrame:
-    """The equal-weight average of the predictions of out-of-fold tables over the same compounds."""
+def blend(tables: list[pd.DataFrame], weights: list[float] | None = None) -> pd.DataFrame:
+    """The weighted average (equal by default) of the predictions of out-of-fold tables over the
+    same compounds."""
     first = tables[0].set_index("Molecule_Name")
+    weight = np.asarray(weights if weights is not None else np.ones(len(tables)), dtype=float)
+    weight = weight / weight.sum()
     out = first.copy()
     for column in (c for c in first.columns if c.endswith("_pred")):
-        out[column] = np.mean(
-            [t.set_index("Molecule_Name").reindex(first.index)[column] for t in tables], axis=0
-        )
+        stacked = [t.set_index("Molecule_Name").reindex(first.index)[column] for t in tables]
+        out[column] = np.average(stacked, axis=0, weights=weight)
     return out.reset_index()
 
 
+def split_member(spec: str, rev: str, seed: int) -> tuple[str, str, int, float]:
+    """``(rev, name, seed, weight)`` of ``[REV/]NAME[@SEED][:WEIGHT]``."""
+    spec, _, weight = spec.partition(":")
+    spec, _, own_seed = spec.partition("@")
+    if "/" in spec:
+        rev, _, spec = spec.rpartition("/")
+    return rev, spec, int(own_seed) if own_seed else seed, float(weight) if weight else 1.0
+
+
 def read_cell(rev: str, name: str, seed: int = 0) -> pd.DataFrame:
-    """The out-of-fold table of a cell; ``name`` may be ``REV/NAME``."""
-    rev, _, name = name.rpartition("/") if "/" in name else (rev, "", name)
+    """The out-of-fold table of a cell; ``name`` may be ``[REV/]NAME[@SEED]``."""
+    rev, name, seed, _ = split_member(name, rev, seed)
     return pd.read_parquet(BUNDLES / rev / f"reg_{name}_seed{seed}" / "out_of_fold.parquet")
 
 
@@ -92,7 +105,8 @@ def cell_metrics(
     ``reg_<name>_seed<seed>`` and from the equal-weight ``blends`` of cells."""
     tables = {name: read_cell(rev, name, seed) for name in names}
     for label, members in (blends or {}).items():
-        tables[label] = blend([read_cell(rev, member, seed) for member in members])
+        weights = [split_member(member, rev, seed)[3] for member in members]
+        tables[label] = blend([read_cell(rev, member, seed) for member in members], weights)
     rows = []
     for name, table in tables.items():
         if per_enzyme:
