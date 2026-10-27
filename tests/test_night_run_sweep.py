@@ -1114,7 +1114,10 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
                 ("graph_a", set()),
                 ("graph_b", {"model.graph.dropout"}),
                 ("graph_c", {"model.graph.dropout", "model.graph.learning_rate"}),
-                ("graph_b_reg", {"model.graph.dropout", "model.graph.learning_rate"}),
+                (
+                    "graph_b_reg",
+                    {"model.graph.dropout", "model.graph.learning_rate", "model.graph.epochs"},
+                ),
             )
         },
     }

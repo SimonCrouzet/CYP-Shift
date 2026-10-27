@@ -2486,13 +2486,15 @@ EMBEDDING_CELLS = (
 #: Larger graphs on the same data, three steps up in capacity: encoder width and depth, readout
 #: width and layers, and the conditioning embedding grow in every step; dropout rises from the
 #: second step and the peak learning rate falls in the last. ``None`` keeps the recipe's value.
-#: Loss, pooling, epochs and every data setting stay those of the recipe.
+#: Loss, pooling and every data setting stay those of the recipe; the epochs do too except in the
+#: regularised step.
 _CAPACITY_STEPS = {
-    "graph_a": (500, 4, 500, 2, 16, None, None),
-    "graph_b": (700, 5, 700, 2, 32, 0.15, None),
-    "graph_c": (1000, 6, 1000, 3, 64, 0.20, 8e-4),
-    # B again with more dropout and a lower peak learning rate, against its overfitting curve.
-    "graph_b_reg": (700, 5, 700, 2, 32, 0.30, 1e-4),
+    "graph_a": (500, 4, 500, 2, 16, None, None, None),
+    "graph_b": (700, 5, 700, 2, 32, 0.15, None, None),
+    "graph_c": (1000, 6, 1000, 3, 64, 0.20, 8e-4, None),
+    # B again with more dropout and a lower peak learning rate, trained for 100 epochs: at the lower
+    # rate the held-out error of the 30-epoch run was still falling when it stopped.
+    "graph_b_reg": (700, 5, 700, 2, 32, 0.30, 1e-4, 100),
 }
 _CAPACITY_KEYS = (
     "model.graph.hidden",
@@ -2502,6 +2504,7 @@ _CAPACITY_KEYS = (
     "conditioning.embedding_dim",
     "model.graph.dropout",
     "model.graph.learning_rate",
+    "model.graph.epochs",
 )
 CAPACITY_CELLS = tuple(
     Cell(
