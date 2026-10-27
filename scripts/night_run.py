@@ -2551,6 +2551,24 @@ FINETUNE_30_CELLS = (
         "heads",
     ),
 )
+#: Boosted trees on the base recipe's data (Octant, Tox21, Novartis, qHTS ``both``, the weight
+#: budget): the deep soft-threshold member and the pinball member of the earlier blends.
+BOOSTED_BASE_CELLS = (
+    Cell(
+        "boosted_deep_base_data",
+        (("model.kind", "boosted"), *DEEP.items()),
+        "family",
+    ),
+    Cell(
+        "boosted_pinball_base_data",
+        (
+            ("model.kind", "boosted"),
+            ("model.objective", "pinball"),
+            ("model.objective_tau", 0.6),
+        ),
+        "family",
+    ),
+)
 #: The dose-response curve model, whose one fit reads out both the pIC50 and the TDI call, on the
 #: recipe's sources: the fingerprint-and-descriptor backbone and the graph backbone.
 CURVE_DATA = {"sources.octant": True, "sources.tox21": True, "sources.novartis": True}
@@ -2606,7 +2624,14 @@ def run_questions() -> None:
     tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
     # The graph fits (the GPU) and the CPU-bound fits alternate, so the GPU is busy from the first
     # slot; the TabPFN fits, which hold the most memory, come last.
-    other = {**tabular, **curve}
+    boosted = {}
+    for cell in BOOSTED_BASE_CELLS:
+        overrides = _apply(recipe, cell.sets)
+        if not _is_valid(overrides):
+            raise ValueError(f"cell {cell.tag} is not a valid configuration")
+        names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
+        boosted[names[cell.tag]] = overrides
+    other = {**tabular, **curve, **boosted}
     queue = os.environ.get("CYP_QUEUE", "all")
     if queue not in QUEUES:
         raise ValueError(f"CYP_QUEUE={queue!r} is not one of {', '.join(QUEUES)}")
@@ -2647,7 +2672,8 @@ def run_questions() -> None:
             raise ValueError(f"CYP_CELLS names no cell of the plan: {unknown}")
         wanted = {names[tag] for tag in only}
         graph = {n: o for n, o in graph.items() if n in wanted}
-        other, tfm = {}, {}
+        other = {n: o for n, o in other.items() if n in wanted}
+        tfm = {n: o for n, o in tfm.items() if n in wanted}
     shard = os.environ.get("CYP_SHARD", "")
     if shard:
         graph, other, tfm = (shard_of(group, shard) for group in (graph, other, tfm))
