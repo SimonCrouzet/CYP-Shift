@@ -44,7 +44,7 @@ def test_raw_features_include_the_fingerprint():
 def test_pca_adaptation_compresses_to_the_configured_width():
     """impute -> scale -> PCA reduces the shared feature set to pca_components."""
     model = TabularFoundationModel(n_bits=256, pca_components=8)
-    model._fit_reducer(SMILES)
+    model._fit_reducer(model._raw_features(SMILES))
     reduced = model._features(SMILES)
     assert reduced.shape == (len(SMILES), 8)
 
@@ -53,21 +53,21 @@ def test_pca_width_capped_by_available_rank():
     """When PCA applies, its width is capped by the data's rank (n_samples), never an error."""
     # pca_components below the feature count (273) triggers PCA; it is then capped by samples.
     model = TabularFoundationModel(n_bits=256, pca_components=100)
-    model._fit_reducer(SMILES)
+    model._fit_reducer(model._raw_features(SMILES))
     assert model._features(SMILES).shape[1] <= len(SMILES)
 
 
 def test_no_pca_when_set_already_fits_under_ceiling():
     """A feature set already within pca_components is passed through unchanged -- no PCA."""
     model = TabularFoundationModel(n_bits=256, pca_components=10_000)
-    model._fit_reducer(SMILES)
+    model._fit_reducer(model._raw_features(SMILES))
     assert model._features(SMILES).shape[1] == model._raw_features(SMILES).shape[1]
 
 
 def test_dense_only_feature_set_drops_the_fingerprint():
     """use_fingerprint=False gives a small dense set (no Morgan), which needs no PCA."""
     model = TabularFoundationModel(n_bits=256, use_fingerprint=False, pca_components=500)
-    model._fit_reducer(SMILES)
+    model._fit_reducer(model._raw_features(SMILES))
     width = model._features(SMILES).shape[1]
     assert width == model._raw_features(SMILES).shape[1]  # passthrough, no PCA
     assert width < 256  # the 256 fingerprint bits are absent
@@ -77,6 +77,7 @@ class _Recorder:
     """A stand-in regressor that records the labels it was fit on (no TabPFN)."""
 
     def fit(self, features, y):
+        self.features = np.asarray(features)
         self.y = np.asarray(y, dtype=float)
         return self
 
@@ -114,3 +115,37 @@ def test_fit_uses_only_uncensored_reference_assay_rows(monkeypatch):
     )
     model.fit(observations)
     assert sorted(recorder.y.tolist()) == [5.0, 6.0]
+
+
+def test_auxiliary_potency_rows_join_the_fit_behind_one_indicator_column_per_assay(monkeypatch):
+    recorder = _Recorder()
+    model = TabularFoundationModel(n_bits=64, pca_components=10_000)
+    monkeypatch.setattr(model, "_regressor", lambda: recorder)
+
+    def row(smiles, assay, value, target="CYP1A2", censored=False):
+        return {
+            "SMILES": smiles,
+            "target": target,
+            "assay": assay,
+            "value": value,
+            "is_censored": censored,
+        }
+
+    observations = pd.DataFrame(
+        [
+            row("CCO", "direct_inhibition_drc", 5.0),
+            row("c1ccccc1", "direct_inhibition_drc", 6.0),
+            row("CCN", "fluorogenic_pic50", 7.0),
+            row("CC(=O)O", "luminescent_ac50", 4.0, censored=True),  # censored: dropped
+            row("CCCC", "luminescent_max_response", 0.5),  # a response, not a potency: dropped
+            row("CCCCC", "fluorogenic_pic50", 8.0, target="CYP2D6"),  # another endpoint
+        ]
+    )
+    model.fit(observations)
+    assert sorted(recorder.y.tolist()) == [5.0, 6.0, 7.0]
+    assert model._aux_assays == ("fluorogenic_pic50",)
+    width = model._raw_features(["CCO"]).shape[1]
+    assert recorder.features.shape == (3, width + 1)
+    indicator = dict(zip(recorder.y, recorder.features[:, -1], strict=True))
+    assert indicator == {5.0: 0.0, 6.0: 0.0, 7.0: 1.0}
+    assert model._features(["CCO"])[0, -1] == 0.0  # a scored compound is on no auxiliary assay

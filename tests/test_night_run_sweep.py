@@ -904,6 +904,40 @@ def test_the_by_source_cells_restrict_maxmin_75_to_one_sources_groups():
     assert len(keys) == 3
 
 
+def test_the_same_input_comparison_gives_every_family_the_same_features_and_rows():
+    configs = night_run.fair_configs(tuple(night_run.FAIR_FAMILIES))
+    assert len(configs) == (
+        len(night_run.FAIR_FAMILIES) * len(night_run.FAIR_FEATURES) * len(night_run.FAIR_DATA)
+    )
+    for name, (_, family, features, data, overrides) in configs.items():
+        assert night_run._is_valid(overrides), name
+        shared = {k: v for k, v in overrides.items() if k.startswith(("features.", "sources."))}
+        expected = {
+            **{
+                k: v
+                for k, v in night_run.FAIR_FAMILIES[family][1].items()
+                if k.startswith(("features.", "sources."))
+            },
+            **night_run.FEATURE_SETS[features],
+            **night_run.FAIR_DATA[data],
+        }
+        assert shared == expected, name
+    for features in night_run.FAIR_FEATURES:
+        for data in night_run.FAIR_DATA:
+            seen = {
+                f: {k: v for k, v in c[4].items() if k.startswith("features.")}
+                for n, c in configs.items()
+                for f in [c[1]]
+                if c[2] == features and c[3] == data
+            }
+            assert len({repr(sorted(v.items())) for v in seen.values()}) == 1, (features, data)
+    chemeleon = night_run.FEATURE_SETS["chemeleon"]
+    assert chemeleon["features.molecular_embedding"] == "chemeleon"
+    assert (
+        not chemeleon["features.use_fingerprint"] and not chemeleon["features.use_physicochemical"]
+    )
+
+
 def test_a_row_cap_recipe_does_not_carry_the_unused_share_and_assay_fields():
     capped = night_run._resolved_key(
         {
@@ -971,8 +1005,9 @@ def test_a_member_takes_the_base_recipes_data_settings_unless_its_family_cannot(
     assert boosted["auxiliary.row_selection"] == "random"
     assert boosted["model.objective"] == "pinball"  # its own model settings are kept
     tfm = night_run._member_recipe("tfm_fs_dense", base)
-    assert "sources.octant" not in tfm and "auxiliary.row_selection" not in tfm
-    assert tfm["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET  # the one it accepts
+    assert tfm["sources.octant"] and tfm["sources.tox21"]
+    assert "sources.qhts_representation" not in tfm  # no response head: "both" is refused
+    assert tfm["auxiliary.per_endpoint_budget"] == night_run.FOCUS_BUDGET
     assert night_run._is_valid(tfm)
 
 

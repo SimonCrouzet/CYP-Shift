@@ -19,7 +19,7 @@ from cypshift.data.assembly import ASSAYS, DATA_SPACES, RESPONSE_ASSAY
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 from cypshift.data.selection import SELECTIONS
-from cypshift.data.sources import LOADER_SOURCES, supplying
+from cypshift.data.sources import supplying
 from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 #: Isoforms eligible for a per-isoform adaptation block, plus the ``"none"`` default.
@@ -99,7 +99,7 @@ SCREEN_STRATEGIES = (
 
 #: Molecular foundation-model embeddings that can be appended as a feature block. Each
 #: (but ``none``) needs a precomputed cache from scripts/compute_embeddings.py.
-EMBEDDING_SOURCES = ("none", "mammal")
+EMBEDDING_SOURCES = ("none", "mammal", "chemeleon")
 
 MODEL_KINDS = ("boosted", "neural", "graph", "curve", "per_target_ensemble", "tfm")
 OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
@@ -173,7 +173,8 @@ class FeatureConfig:
     structure_cache: str = "data/structure"
     #: Append a molecular foundation-model embedding as a feature block. ``none`` uses
     #: only the fingerprint/descriptor features; ``mammal`` appends cached MAMMAL
-    #: embeddings (see EMBEDDING_SOURCES). The vectors are precomputed offline by
+    #: embeddings and ``chemeleon`` the frozen CheMeleon encoder's 2048-wide molecule vectors
+    #: (see EMBEDDING_SOURCES). The vectors are precomputed offline by
     #: scripts/compute_embeddings.py into data/external/embeddings and only read here,
     #: so the main environment never depends on the embedding model.
     molecular_embedding: str = "none"
@@ -924,9 +925,10 @@ class ExperimentConfig:
                             "configure training through the model.curve.* fields instead"
                         )
         if self.model.kind == "tfm":
-            # The tabular backend has no sample weights, censoring or objective, and trains only
-            # on the uncensored reference-assay rows (see TabularFoundationModel.fit). Reject the
-            # settings that would be accepted and then ignored or dropped.
+            # The tabular backend has no sample weights, censoring or objective, and trains on the
+            # uncensored reference-assay and auxiliary potency rows (see
+            # TabularFoundationModel.fit). Reject the settings that would be accepted and then
+            # ignored.
             if self.model.objective != "soft_threshold":
                 raise ValueError(
                     "model.kind='tfm' has no training objective; model.objective is ignored"
@@ -937,12 +939,6 @@ class ExperimentConfig:
                 )
             if self.sources.tdi_assay_condition:
                 raise ValueError("model.kind='tfm' cannot use the preincubated assay_condition")
-            auxiliary_on = [name for name in LOADER_SOURCES if getattr(self.sources, name)]
-            if auxiliary_on:
-                raise ValueError(
-                    "model.kind='tfm' trains only on reference-assay rows; the auxiliary "
-                    f"sources {auxiliary_on} would be dropped"
-                )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

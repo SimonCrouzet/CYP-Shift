@@ -10,10 +10,12 @@ to ``pca_components`` -- fit on the training compounds and applied unchanged to 
 adaptation compresses the shared feature set; it does not substitute a different one.
 
 It fits one regressor per endpoint, on the compounds that carry that label, which sidesteps the
-sparse multi-label coverage. It has no sample weights and no custom objective, so it cannot see
-the interval-censored loss; it is meant as a blend member whose different inductive bias
-complements the boosted/graph families. Backend is a parameter so a second tabular foundation
-model (e.g. Mitra) can slot in behind the same interface later.
+sparse multi-label coverage. Auxiliary potency rows of the same endpoint (Octant, Tox21, ...) join
+the context with one indicator column per auxiliary assay, so the regressor can place each assay on
+its own scale; the scored compounds carry zeros in those columns. It has no sample weights and no
+custom objective, so it cannot see the interval-censored loss; it is meant as a blend member whose
+different inductive bias complements the boosted/graph families. Backend is a parameter so a second
+tabular foundation model (e.g. Mitra) can slot in behind the same interface later.
 
 Needs the ``tfm`` extra (``pip install cypshift[tfm]``) and downloads its weights to the
 HuggingFace cache; ``HF_HOME`` is pointed at the shared ext cache if unset.
@@ -35,6 +37,9 @@ from cypshift.models.base import PredictiveDistribution
 logger = logging.getLogger(__name__)
 os.environ.setdefault("HF_HOME", "/mnt/wsl/ext/hf_cache")
 TFM_BACKENDS = ("tabpfn",)
+#: The auxiliary assays whose rows are potencies on the scored endpoint's own axis. Screen,
+#: preincubated and response rows are different quantities and never enter the context.
+POTENCY_ASSAYS = ("fluorogenic_pic50", "luminescent_ac50", "literature_ic50", "reversible_pic50")
 
 
 class TabularFoundationModel:
@@ -80,6 +85,8 @@ class TabularFoundationModel:
         self.seed = seed
         self._models: dict[str, object] = {}
         self._reducer: object | None = None
+        #: The auxiliary assays that got an indicator column at fit time, in column order.
+        self._aux_assays: tuple[str, ...] = ()
 
     def _raw_features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
         """The shared configured feature set -- identical assembly to the other models."""
@@ -97,10 +104,12 @@ class TabularFoundationModel:
         )
 
     def _features(self, smiles: Sequence[str]) -> NDArray[np.float32]:
-        """The shared feature set compressed by the fitted impute/scale/PCA adaptation."""
+        """The shared feature set compressed by the fitted impute/scale/PCA adaptation, followed
+        by zeros for the auxiliary-assay indicators (a scored compound is on no auxiliary assay)."""
         if self._reducer is None:
             raise RuntimeError("feature reducer not fitted; call fit first")
-        return self._reducer.transform(self._raw_features(smiles)).astype(np.float32)
+        reduced = self._reducer.transform(self._raw_features(smiles)).astype(np.float32)
+        return np.hstack([reduced, np.zeros((len(reduced), len(self._aux_assays)), np.float32)])
 
     def _regressor(self) -> object:
         import torch
@@ -109,8 +118,8 @@ class TabularFoundationModel:
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         return TabPFNRegressor(device=device, random_state=self.seed)
 
-    def _fit_reducer(self, smiles: Sequence[str]) -> None:
-        """Fit the impute/scale/PCA adaptation on the training compounds only.
+    def _fit_reducer(self, raw: NDArray[np.float32]) -> None:
+        """Fit the impute/scale/PCA adaptation on the training compounds' raw features only.
 
         PCA keeps at most ``pca_components`` components, capped by the data's own rank so a
         narrow feature set or few compounds never asks for more than exists.
@@ -120,7 +129,6 @@ class TabularFoundationModel:
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
 
-        raw = self._raw_features(smiles)
         steps = [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
         # PCA only when the assembled set exceeds the target width (e.g. the fingerprint is on);
         # a dense-only set already under the ceiling is passed through, the input TabPFN prefers.
@@ -133,31 +141,49 @@ class TabularFoundationModel:
         self._reducer = Pipeline(steps).fit(raw)
 
     def fit(self, observations: pd.DataFrame) -> "TabularFoundationModel":
-        """Fit one regressor per endpoint on that endpoint's uncensored reference-assay rows.
+        """Fit one regressor per endpoint on that endpoint's uncensored rows of the reference
+        assay and of the auxiliary potency assays.
 
-        The backend has no sample weights, no censoring and no assay conditioning, so its
-        supported training view is the uncensored reference-assay (direct dose-response) rows
-        only: screen pseudo-labels, the preincubated assay and auxiliary assays would otherwise
-        enter as interchangeable, equally-weighted measurements. The pipeline rejects the
-        settings that would add such rows for this model (see ExperimentConfig.validate).
+        The backend has no sample weights, censoring or assay conditioning. Screen
+        pseudo-labels, the preincubated assay and response rows would enter as interchangeable,
+        equally-weighted measurements, so they are left out; each auxiliary potency assay gets
+        an indicator column instead. The pipeline rejects the settings that would add the
+        excluded rows for this model (see ExperimentConfig.validate).
         """
         usable = observations[np.isfinite(observations["value"])]
-        if "assay" in usable.columns:
-            usable = usable[usable["assay"] == REFERENCE_ASSAY]
         if "is_censored" in usable.columns:
             usable = usable[~usable["is_censored"].astype(bool)]
-        if usable.empty:
+        if "assay" in usable.columns:
+            usable = usable[usable["assay"].isin((REFERENCE_ASSAY, *POTENCY_ASSAYS))]
+        if usable[usable["assay"] == REFERENCE_ASSAY].empty:
             raise ValueError("no uncensored reference-assay rows to fit the tabular model on")
-        self._fit_reducer(usable["SMILES"].drop_duplicates().tolist())
+        self._aux_assays = tuple(
+            assay for assay in POTENCY_ASSAYS if (usable["assay"] == assay).any()
+        )
+        unique = usable["SMILES"].drop_duplicates().tolist()
+        raw = self._raw_features(unique)
+        self._fit_reducer(raw)
+        reduced = self._reducer.transform(raw).astype(np.float32)
+        position = {smiles: i for i, smiles in enumerate(unique)}
         for isoform in self.targets:
             rows = usable[usable["target"] == isoform]
-            if rows.empty:
+            if rows[rows["assay"] == REFERENCE_ASSAY].empty:
                 continue
-            features = self._features(rows["SMILES"].tolist())
+            indicators = np.column_stack(
+                [(rows["assay"] == assay).to_numpy(np.float32) for assay in self._aux_assays]
+                or [np.zeros((len(rows), 0), np.float32)]
+            )
+            features = np.hstack([reduced[[position[s] for s in rows["SMILES"]]], indicators])
             model = self._regressor()
             model.fit(features, rows["value"].to_numpy(float))
             self._models[isoform] = model
-            logger.info("tfm %s: fit on %d compounds, %d features", isoform, *features.shape)
+            logger.info(
+                "tfm %s: fit on %d rows (%d auxiliary), %d features",
+                isoform,
+                len(rows),
+                int((rows["assay"] != REFERENCE_ASSAY).sum()),
+                features.shape[1],
+            )
         if not self._models:
             raise ValueError("no endpoint had finite labels to fit on")
         return self

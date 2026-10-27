@@ -1,10 +1,10 @@
 """Compute molecular foundation-model embeddings and cache them for the feature block.
 
-Runs in the **dedicated MAMMAL environment**, not the main one -- MAMMAL pulls transformers
-5 and a full torch/TF stack, which is why it is isolated. It reads the challenge SMILES
-(plus any extra CSVs given), canonicalises them with RDKit -- the same canonicalisation
-:mod:`cypshift.features.embeddings` uses to look them up -- embeds each with MAMMAL's
-encoder (masked-mean over the last hidden state), and writes
+``--source mammal`` runs in the **dedicated MAMMAL environment**, not the main one -- MAMMAL
+pulls transformers 5 and a full torch/TF stack, which is why it is isolated. It reads the
+challenge SMILES (plus any extra CSVs given), canonicalises them with RDKit -- the same
+canonicalisation :mod:`cypshift.features.embeddings` uses to look them up -- embeds each with
+MAMMAL's encoder (masked-mean over the last hidden state), and writes
 ``data/external/embeddings/<source>.parquet`` keyed by canonical SMILES, which the main
 environment then reads with no MAMMAL dependency.
 
@@ -12,9 +12,15 @@ environment then reads with no MAMMAL dependency.
       /mnt/wsl/ext/envs/cypshift-mammal/bin/python scripts/compute_embeddings.py \\
       --source mammal --data-dir data
 
+``--source chemeleon`` runs in the main environment: the frozen CheMeleon message-passing
+encoder (the checkpoint the graph model initialises from), mean-aggregated over atoms to a
+2048-wide vector.
+
+    python scripts/compute_embeddings.py --source chemeleon --aux octant tox21
+
 Only the challenge compounds are embedded by default; pass ``--extra`` CSVs (with a SMILES
-column) to cover the auxiliary sources a run turns on, since an uncached compound is an
-error at feature time, not a zero-fill.
+column), or ``--aux`` auxiliary sources (main environment only), to cover the data a run turns
+on, since an uncached compound is an error at feature time, not a zero-fill.
 """
 
 import argparse
@@ -32,7 +38,11 @@ RDLogger.DisableLog("rdApp.*")
 
 MAMMAL_MODEL = "ibm/biomed.omics.bl.sm.ma-ted-458m"
 CACHE_DIR = Path("data/external/embeddings")
-CHALLENGE_FILES = ("cyp-challenge-TRAIN_inhibition.csv", "cyp-challenge-TEST-BLINDED.csv")
+CHALLENGE_FILES = (
+    "cyp-challenge-TRAIN_inhibition.csv",
+    "cyp-challenge-TEST-BLINDED.csv",
+    "cyp-challenge-single-concentration-TRAIN.csv",
+)
 SMILES_PROMPT = (
     "<@TOKENIZER-TYPE=SMILES@MAX-LEN={maxlen}><MOLECULAR_ENTITY>"
     "<MOLECULAR_ENTITY_SMALL_MOLECULE><SEQUENCE_NATURAL_START>{smiles}<SEQUENCE_NATURAL_END><EOS>"
@@ -58,6 +68,56 @@ def gather_smiles(data_dir: Path, extra: list[Path]) -> list[str]:
     canon = {c for c in (canonical(s) for s in raw.dropna().unique()) if c}
     logger.info("gathered %d unique canonical SMILES", len(canon))
     return sorted(canon)
+
+
+def gather_aux_smiles(data_dir: Path, sources: list[str]) -> list[str]:
+    """Unique canonical SMILES of the named auxiliary sources, as the pipeline's loaders return
+    them for the four scored enzymes (both qHTS quantities, inactives included)."""
+    import importlib
+
+    from cypshift.config import ISOFORMS
+
+    challenge = pd.read_csv(data_dir / CHALLENGE_FILES[0])["SMILES"]
+    found: set[str] = set()
+    for source in sources:
+        loader = importlib.import_module(f"cypshift.data.{source}").load_auxiliary
+        variants = [{}]
+        if source in ("tox21", "veith"):
+            variants = [{"include_inactives": True}, {"representation": "max_response"}]
+        for enzyme in ISOFORMS:
+            for kwargs in variants:
+                try:
+                    rows = loader(enzyme, challenge, **kwargs)
+                except Exception as error:  # noqa: BLE001 -- a source without data for this enzyme
+                    logger.info("%s %s %s: %s", source, enzyme, kwargs, error)
+                    continue
+                found.update(c for c in (canonical(s) for s in rows["SMILES"].unique()) if c)
+    logger.info("gathered %d unique canonical SMILES from %s", len(found), sources)
+    return sorted(found)
+
+
+def chemeleon_vectors(smiles: list[str], device: str, batch_size: int = 256) -> np.ndarray:
+    """The frozen CheMeleon encoder's mean-aggregated atom states, one row per SMILES."""
+    import torch
+    from chemprop import data, featurizers
+    from chemprop import nn as cpnn
+
+    from cypshift.models.graph import chemeleon_message_passing
+
+    encoder = chemeleon_message_passing(Path("data/external/chemeleon/chemeleon_mp.pt"))
+    encoder = encoder.eval().to(device)
+    aggregate = cpnn.MeanAggregation()
+    featuriser = featurizers.SimpleMoleculeMolGraphFeaturizer()
+    out = []
+    for start in range(0, len(smiles), batch_size):
+        chunk = smiles[start : start + batch_size]
+        batch = data.BatchMolGraph([featuriser(Chem.MolFromSmiles(s)) for s in chunk])
+        batch.to(device)
+        with torch.no_grad():
+            out.append(aggregate(encoder(batch), batch.batch).cpu().numpy())
+        if (start // batch_size) % 20 == 0:
+            logger.info("  embedded %d / %d", start, len(smiles))
+    return np.vstack(out)
 
 
 def mammal_embedder(device: str, maxlen: int) -> Callable[[str], np.ndarray]:
@@ -107,16 +167,25 @@ def main() -> None:
     )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--maxlen", type=int, default=512)
+    parser.add_argument(
+        "--aux", nargs="*", default=[], help="auxiliary sources to embed too (chemeleon only)"
+    )
     args = parser.parse_args()
 
     smiles = gather_smiles(args.data_dir, args.extra)
-    embed = mammal_embedder(args.device, args.maxlen)
-    vectors = []
-    for i, one in enumerate(smiles):
-        vectors.append(embed(one))
-        if i % 200 == 0:
-            logger.info("  embedded %d / %d", i, len(smiles))
-    vectors = np.vstack(vectors)
+    if args.source == "chemeleon":
+        smiles = sorted({*smiles, *gather_aux_smiles(args.data_dir, args.aux)})
+        vectors = chemeleon_vectors(smiles, args.device)
+        model, prompt = "CheMeleon message passing (frozen), mean aggregation", None
+    else:
+        embed = mammal_embedder(args.device, args.maxlen)
+        vectors = []
+        for i, one in enumerate(smiles):
+            vectors.append(embed(one))
+            if i % 200 == 0:
+                logger.info("  embedded %d / %d", i, len(smiles))
+        vectors = np.vstack(vectors)
+        model, prompt = MAMMAL_MODEL, SMILES_PROMPT
     frame = pd.DataFrame(vectors, columns=[f"e{i}" for i in range(vectors.shape[1])])
     frame.insert(0, "SMILES", smiles)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,8 +195,9 @@ def main() -> None:
     # canonicalisation the reader keys on, so a cache from a different model is identifiable.
     manifest = {
         "source": args.source,
-        "model": MAMMAL_MODEL,
-        "prompt": SMILES_PROMPT,
+        "model": model,
+        "prompt": prompt,
+        "auxiliary_sources": args.aux,
         "max_len": args.maxlen,
         "width": int(vectors.shape[1]),
         "n_compounds": len(frame),

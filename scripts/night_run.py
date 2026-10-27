@@ -662,6 +662,14 @@ FEATURE_SETS = {
         }
     ),
     "emb": _feature_set(**{"features.molecular_embedding": "mammal"}),
+    "chemeleon": _feature_set(**{"features.molecular_embedding": "chemeleon"}),
+    "dense_chemeleon": _feature_set(
+        **{
+            "features.use_physicochemical": True,
+            "features.use_mechanistic": True,
+            "features.molecular_embedding": "chemeleon",
+        }
+    ),
     "full": _feature_set(
         **{
             "features.use_fingerprint": True,
@@ -2377,6 +2385,61 @@ def run_share() -> None:
     _report_factors(SHARE_CELLS, names).to_csv(RESULTS.parent / "share_factors.csv", index=False)
 
 
+#: The families that read the shared feature set, each on the same feature sets and the same
+#: rows (no screen pseudo-labels, which the TabPFN model does not read), so a difference between
+#: families is not a difference in inputs. The curve is
+#: scored in the TDI phase, which records its MCC beside the ST-RAE.
+FAIR_FEATURES = ("dense", "chemeleon", "dense_chemeleon", "fp_dense")
+FAIR_DATA = {
+    "challenge": {"sources.screen": False},
+    "octant_tox21": {"sources.screen": False, "sources.octant": True, "sources.tox21": True},
+}
+FAIR_FAMILIES = {
+    "tfm": ("reg", {"model.kind": "tfm"}),
+    "neural": ("reg", {"model.kind": "neural"}),
+    "boosted": ("reg", {}),
+    "curve": ("tdi", TDI["curve_heads"]),
+}
+
+
+def fair_configs(families: tuple[str, ...]) -> dict[str, tuple[str, str, str, str, dict]]:
+    """``{name: (phase, family, features, data, overrides)}`` for every family, feature set and
+    data setting of the same-input comparison."""
+    out = {}
+    for family in families:
+        phase, base = FAIR_FAMILIES[family]
+        for features in FAIR_FEATURES:
+            for data, sources in FAIR_DATA.items():
+                name = f"fair_{family}_{features}_{data}"
+                out[name] = (
+                    phase,
+                    family,
+                    features,
+                    data,
+                    {**base, **FEATURE_SETS[features], **sources},
+                )
+    return out
+
+
+def run_fair() -> None:
+    """The same-input comparison (``fair_configs``), the families in ``CYP_FAMILIES`` (default
+    all) one after another; the table by family, feature set and data in ``data/fair_panel.csv``."""
+    families = tuple(os.environ.get("CYP_FAMILIES", ",".join(FAIR_FAMILIES)).split(","))
+    configs = fair_configs(families)
+    for phase in ("reg", "tdi"):
+        todo = {name: spec[4] for name, spec in configs.items() if spec[0] == phase}
+        run_phase(phase, todo, SEEDS)
+    done = _completed()
+    done = done[done["name"].isin(configs)].drop_duplicates("name", keep="last")
+    done["family"] = done["name"].map(lambda n: configs[n][1])
+    done["features"] = done["name"].map(lambda n: configs[n][2])
+    done["data"] = done["name"].map(lambda n: configs[n][3])
+    columns = ["family", "features", "data", "macro_ST_RAE", "CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"]
+    table = done[[*columns, "macro_MCC", "minutes"]].sort_values(["features", "data", "family"])
+    logger.info("same-input comparison:\n%s", table.round(4).to_string(index=False))
+    table.to_csv(RESULTS.parent / "fair_panel.csv", index=False)
+
+
 def run_assays() -> None:
     """The MaxMin 75% cells restricted to one source (``ASSAY_CELLS``); blends in
     ``data/assay_blends.csv``, each cell against the full table in ``data/assay_factors.csv``."""
@@ -2609,6 +2672,11 @@ def main() -> None:
     if PLAN == "night":
         logger.info("=== Model-side round on the Octant + Tox21 recipe (jobs: %d) ===", JOBS)
         run_night()
+        wandb_finish()
+        return
+    if PLAN == "fair":
+        logger.info("=== Same-input comparison of the model families (jobs: %d) ===", JOBS)
+        run_fair()
         wandb_finish()
         return
     if PLAN == "assays":
