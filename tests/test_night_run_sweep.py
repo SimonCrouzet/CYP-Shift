@@ -1212,3 +1212,17 @@ def test_the_short_chemeleon_queue_leaves_out_the_sixty_epoch_cell(monkeypatch):
     assert len(seen) == 2
     assert all(o["model.graph.pretraining"] == "chemeleon" for o in seen.values())
     assert all(o.get("model.graph.epochs", 30) == 30 for o in seen.values())
+
+
+def test_named_cells_select_graph_cells_of_the_questions_plan_and_unknown_names_are_refused(
+    monkeypatch,
+):
+    seen = {}
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs))
+    monkeypatch.setenv("CYP_CELLS", "qhts_pic50,maxmin_75_novartis")
+    night_run.run_questions()
+    assert len(seen) == 2
+    assert {o.get("sources.qhts_representation") for o in seen.values()} == {"pic50", "both"}
+    monkeypatch.setenv("CYP_CELLS", "no_such_cell")
+    with pytest.raises(ValueError, match="names no cell"):
+        night_run.run_questions()

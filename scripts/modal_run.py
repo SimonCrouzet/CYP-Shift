@@ -132,6 +132,7 @@ def sandbox_environment(args: argparse.Namespace, revision: str) -> tuple[dict[s
         "CYP_PLAN": args.plan,
         "CYP_SHARD": args.shard,
         "CYP_QUEUE": args.queue,
+        "CYP_CELLS": args.cells,
         "CYP_REV": revision,
         "PYTHONPATH": f"{WORKDIR}/src:{WORKDIR}/scripts",
         "PYTHONUNBUFFERED": "1",
@@ -504,6 +505,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("all", "graph", "chemeleon", "chemeleon30", "embedding", "plain", "other"),
         default="all",
         help="remote CYP_QUEUE: part of the questions plan's queue (see night_run.QUEUES)",
+    )
+    run.add_argument(
+        "--cells",
+        default="",
+        help="remote CYP_CELLS: comma-separated cell tags of the questions plan to run alone",
     )
     run.add_argument(
         "--shard",

@@ -2556,6 +2556,14 @@ def run_questions() -> None:
         other, tfm = {}, {}
     elif queue == "other":
         graph = {}
+    only = [tag for tag in os.environ.get("CYP_CELLS", "").split(",") if tag]
+    if only:
+        unknown = [tag for tag in only if tag not in names]
+        if unknown:
+            raise ValueError(f"CYP_CELLS names no cell of the plan: {unknown}")
+        wanted = {names[tag] for tag in only}
+        graph = {n: o for n, o in graph.items() if n in wanted}
+        other, tfm = {}, {}
     shard = os.environ.get("CYP_SHARD", "")
     if shard:
         graph, other, tfm = (shard_of(group, shard) for group in (graph, other, tfm))
@@ -2563,7 +2571,7 @@ def run_questions() -> None:
     for pair in itertools.zip_longest(graph.items(), other.items()):
         mixed.update(item for item in pair if item is not None)
     run_phase("reg", {**mixed, **tfm}, SEEDS)
-    if shard or queue != "all":
+    if shard or only or queue != "all":
         logger.info("part of the queue done; reports are made from the merged results")
         return
     _report_factors(cells, names).to_csv(RESULTS.parent / "questions_factors.csv", index=False)
