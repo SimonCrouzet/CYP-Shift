@@ -6,6 +6,10 @@
 One row per cell (full recipe name). Each metric is computed per enzyme on the compounds that have
 a measurement for it, then averaged over the four enzymes, as the leaderboard does. The columns are
 the ones ``plot_learning_curves.py --metrics`` reads.
+
+A name may carry its run's namespace, ``REV/NAME``, when the cells come from several runs. With
+``--per-enzyme`` the rows are one per cell and enzyme instead. ``--blend LABEL=NAME+NAME`` adds the
+equal-weight average of the named cells' predictions as one more cell (all on the same folds).
 """
 
 import argparse
@@ -29,8 +33,8 @@ ENZYMES = ("CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4")
 COLUMNS = ("Pearson", "MAE", "R2", "ST-RAE", "Spearman")
 
 
-def bundle_metrics(oof: pd.DataFrame) -> dict[str, float]:
-    """The five metrics of an out-of-fold table, each averaged over the enzymes."""
+def enzyme_metrics(oof: pd.DataFrame) -> pd.DataFrame:
+    """The five metrics of an out-of-fold table, one row per enzyme."""
     rows = []
     for enzyme in ENZYMES:
         target = f"{enzyme}_pIC50_direct_inhibition"
@@ -38,41 +42,89 @@ def bundle_metrics(oof: pd.DataFrame) -> dict[str, float]:
         keep = oof[target].notna().to_numpy() & ~np.isnan(pred)
         truth, pred = oof.loc[keep, target].to_numpy(), pred[keep]
         rows.append(
-            (
-                pearsonr(pred, truth)[0],
-                mean_absolute_error(truth, pred),
-                r2_score(truth, pred),
-                soft_threshold_rae(
+            {
+                "enzyme": enzyme,
+                "Pearson": pearsonr(pred, truth)[0],
+                "MAE": mean_absolute_error(truth, pred),
+                "R2": r2_score(truth, pred),
+                "ST-RAE": soft_threshold_rae(
                     truth,
                     pred,
                     oof.loc[keep, f"{target}_conf_low"].to_numpy(),
                     oof.loc[keep, f"{target}_conf_high"].to_numpy(),
                 ),
-                spearmanr(pred, truth).statistic,
-            )
+                "Spearman": spearmanr(pred, truth).statistic,
+            }
         )
-    return dict(zip(COLUMNS, np.mean(rows, axis=0).tolist(), strict=True))
+    return pd.DataFrame(rows)
 
 
-def cell_metrics(rev: str, names: list[str], seed: int = 0) -> pd.DataFrame:
-    """``name`` plus the five metrics, one row per cell, from ``reg_<name>_seed<seed>``."""
+def bundle_metrics(oof: pd.DataFrame) -> dict[str, float]:
+    """The five metrics of an out-of-fold table, each averaged over the enzymes."""
+    return enzyme_metrics(oof)[list(COLUMNS)].mean().to_dict()
+
+
+def blend(tables: list[pd.DataFrame]) -> pd.DataFrame:
+    """The equal-weight average of the predictions of out-of-fold tables over the same compounds."""
+    first = tables[0].set_index("Molecule_Name")
+    out = first.copy()
+    for column in (c for c in first.columns if c.endswith("_pred")):
+        out[column] = np.mean(
+            [t.set_index("Molecule_Name").reindex(first.index)[column] for t in tables], axis=0
+        )
+    return out.reset_index()
+
+
+def read_cell(rev: str, name: str, seed: int = 0) -> pd.DataFrame:
+    """The out-of-fold table of a cell; ``name`` may be ``REV/NAME``."""
+    rev, _, name = name.rpartition("/") if "/" in name else (rev, "", name)
+    return pd.read_parquet(BUNDLES / rev / f"reg_{name}_seed{seed}" / "out_of_fold.parquet")
+
+
+def cell_metrics(
+    rev: str,
+    names: list[str],
+    seed: int = 0,
+    blends: dict[str, list[str]] | None = None,
+    per_enzyme: bool = False,
+) -> pd.DataFrame:
+    """``name`` plus the five metrics, one row per cell (or per cell and enzyme), from
+    ``reg_<name>_seed<seed>`` and from the equal-weight ``blends`` of cells."""
+    tables = {name: read_cell(rev, name, seed) for name in names}
+    for label, members in (blends or {}).items():
+        tables[label] = blend([read_cell(rev, member, seed) for member in members])
     rows = []
-    for name in names:
-        path = BUNDLES / rev / f"reg_{name}_seed{seed}" / "out_of_fold.parquet"
-        rows.append({"name": name, **bundle_metrics(pd.read_parquet(path))})
-    return pd.DataFrame(rows, columns=["name", *COLUMNS])
+    for name, table in tables.items():
+        if per_enzyme:
+            rows += [{"name": name, **row} for row in enzyme_metrics(table).to_dict("records")]
+        else:
+            rows.append({"name": name, **bundle_metrics(table)})
+    columns = ["name", "enzyme", *COLUMNS] if per_enzyme else ["name", *COLUMNS]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--rev", required=True, help="the run's results namespace")
-    parser.add_argument("--names", required=True, help="comma-separated full recipe names")
+    parser.add_argument("--names", default="", help="comma-separated full recipe names")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--per-enzyme", action="store_true", help="one row per cell and enzyme")
+    parser.add_argument(
+        "--blend",
+        nargs="*",
+        default=[],
+        help="LABEL=NAME+NAME: the equal-weight average of the cells' predictions, as one cell",
+    )
     args = parser.parse_args()
 
-    table = cell_metrics(args.rev, args.names.split(","), args.seed)
+    blends = {
+        label: members.split("+") for label, members in (item.split("=", 1) for item in args.blend)
+    }
+    table = cell_metrics(
+        args.rev, args.names.split(",") if args.names else [], args.seed, blends, args.per_enzyme
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(args.output, index=False)
     logger.info("wrote %d rows to %s", len(table), args.output)
