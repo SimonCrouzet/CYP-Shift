@@ -1193,3 +1193,13 @@ def test_the_chemeleon_and_plain_queues_split_the_graph_cells(monkeypatch):
     assert not set(chemeleon) & set(plain) and set(chemeleon) | set(plain) == set(graph)
     assert all(o.get("model.graph.pretraining") == "chemeleon" for o in chemeleon.values())
     assert not any(o.get("model.graph.pretraining") == "chemeleon" for o in plain.values())
+
+
+def test_the_short_chemeleon_queue_leaves_out_the_sixty_epoch_cell(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("CYP_QUEUE", "chemeleon30")
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: seen.update(configs))
+    night_run.run_questions()
+    assert len(seen) == 2
+    assert all(o["model.graph.pretraining"] == "chemeleon" for o in seen.values())
+    assert all(o.get("model.graph.epochs", 30) == 30 for o in seen.values())

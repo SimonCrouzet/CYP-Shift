@@ -2487,8 +2487,9 @@ CURVE_CELLS = {
 
 
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
-#: large GPU), the other graph fits, all graph fits, everything else, or all.
-QUEUES = ("all", "graph", "chemeleon", "plain", "other")
+#: large GPU), those of them at 30 epochs, the other graph fits, all graph fits, everything else,
+#: or all.
+QUEUES = ("all", "graph", "chemeleon", "chemeleon30", "plain", "other")
 
 
 def shard_of(group: dict, shard: str) -> dict:
@@ -2534,9 +2535,12 @@ def run_questions() -> None:
         graph = {
             "graph": graph,
             "chemeleon": encoder,
+            "chemeleon30": {
+                n: o for n, o in encoder.items() if o.get("model.graph.epochs", 30) <= 30
+            },
             "plain": {n: o for n, o in graph.items() if n not in encoder},
         }.get(queue, graph)
-    if queue in ("graph", "chemeleon", "plain"):
+    if queue in ("graph", "chemeleon", "chemeleon30", "plain"):
         other, tfm = {}, {}
     elif queue == "other":
         graph = {}
