@@ -51,3 +51,9 @@ def test_a_variant_of_an_unplotted_cell_is_rejected():
 def test_more_parents_than_palette_slots_are_rejected():
     with pytest.raises(ValueError, match="at most"):
         script.assign_styles([f"cell{i}" for i in range(len(script.SERIES) + 1)], {})
+
+
+def test_the_variants_of_one_parent_take_different_dash_patterns():
+    styles = script.assign_styles(["base", "a", "b"], {"a": "base", "b": "base"})
+    assert styles["a"][0] == styles["b"][0] == styles["base"][0]
+    assert styles["a"][1] == script.DASH and styles["b"][1] != styles["a"][1]

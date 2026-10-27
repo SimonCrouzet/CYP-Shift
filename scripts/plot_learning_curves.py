@@ -35,6 +35,8 @@ INK, INK_SECONDARY, GRID = "#0b0b0b", "#52514e", "#e6e5e1"
 #: Categorical slots 1-4 of the reference palette, in order; a cell keeps its colour.
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
 DASH = (0, (4, 2.5))
+#: Line styles of the variants of one parent, in order; the first is DASH.
+VARIANT_STYLES = (DASH, (0, (1, 1.5)), (0, (4, 1.5, 1, 1.5)))
 
 #: (key, heading, format) of the table's numeric columns.
 METRIC_COLUMNS = (
@@ -76,8 +78,9 @@ def curve_summary(table: pd.DataFrame, name: str) -> dict[str, float]:
 
 
 def assign_styles(names: list[str], variants: dict[str, str]) -> dict[str, Style]:
-    """Colour and line style per cell: a variant shares its parent's colour and is dashed; the
-    other cells take the palette slots in order."""
+    """Colour and line style per cell: a variant shares its parent's colour and is dashed (a
+    parent's later variants take other dash patterns); the other cells take the palette slots in
+    order."""
     parents = [name for name in names if name not in variants]
     if len(parents) > len(SERIES):
         raise ValueError(f"at most {len(SERIES)} cells without a parent (one palette slot each)")
@@ -85,8 +88,19 @@ def assign_styles(names: list[str], variants: dict[str, str]) -> dict[str, Style
     for name, parent in variants.items():
         if parent not in colour:
             raise ValueError(f"{name}: its parent {parent} is not a plotted cell")
-        colour[name] = colour[parent]
-    return {name: (colour[name], DASH if name in variants else "-") for name in names}
+    taken: dict[str, int] = {}
+    styles: dict[str, Style] = {}
+    for name in names:
+        if name not in variants:
+            styles[name] = (colour[name], "-")
+            continue
+        parent = variants[name]
+        count = taken.get(parent, 0)
+        if count >= len(VARIANT_STYLES):
+            raise ValueError(f"at most {len(VARIANT_STYLES)} variants of {parent}")
+        taken[parent] = count + 1
+        styles[name] = (colour[parent], VARIANT_STYLES[count])
+    return styles
 
 
 def place_labels(ends: dict[str, float], gap: float) -> dict[str, float]:
