@@ -2491,6 +2491,8 @@ _CAPACITY_STEPS = {
     "graph_a": (500, 4, 500, 2, 16, None, None),
     "graph_b": (700, 5, 700, 2, 32, 0.15, None),
     "graph_c": (1000, 6, 1000, 3, 64, 0.20, 8e-4),
+    # B again with more dropout and a lower peak learning rate, against its overfitting curve.
+    "graph_b_reg": (700, 5, 700, 2, 32, 0.30, 1e-4),
 }
 _CAPACITY_KEYS = (
     "model.graph.hidden",
