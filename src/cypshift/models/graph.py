@@ -52,6 +52,7 @@ from cypshift.data.assembly import (
     ASSAYS,
     DATA_SPACES,
     SOURCES,
+    TDI_LABEL_ASSAY,
     encode_conditions,
     n_condition_columns,
 )
@@ -716,6 +717,9 @@ class GraphNetwork:
         self._members: list[cpmodels.MPNN] = []
         #: Per member, the per-target copies by endpoint (empty without ``finetune_per_target``).
         self._branches: list[dict[str, cpmodels.MPNN]] = []
+        #: Share of positive ``is_TDI`` labels per enzyme in the training rows, fixed by
+        #: ``fit`` when the label task is trained; the call is the top such share of scores.
+        self._tdi_prevalence: dict[str, float] = {}
         self._conditioning_sources = SOURCES if source_heads else None
         self._n_conditioning = n_condition_columns(
             conditioning, targets, self.assays, sources=self._conditioning_sources
@@ -1021,6 +1025,10 @@ class GraphNetwork:
             if rows.size:
                 self._resp_centre[task] = float(rows.mean())
                 self._resp_spread[task] = float(rows.std()) or 1.0
+        self._tdi_prevalence = {}
+        if TDI_LABEL_ASSAY in self.response_assays:
+            labelled = usable[usable["assay"] == TDI_LABEL_ASSAY]
+            self._tdi_prevalence = labelled.groupby("target")["value"].mean().to_dict()
         # Fit the continuous-x_d standardisation on the retained training rows, before the
         # datapoints apply it.
         continuous = self._continuous_blocks(usable["SMILES"].tolist())
@@ -1250,6 +1258,58 @@ class GraphNetwork:
         """Predict at the scored (direct-inhibition) assay condition for every endpoint."""
         return PredictiveDistribution(self._samples_at_assay(smiles, SCORED_ASSAY), self.endpoints)
 
+    def _tdi_label_scores(self, smiles: list[str]) -> NDArray[np.float64]:
+        """The trained ``is_TDI`` response of every member, averaged: ``(n, endpoints)``, NaN for an
+        enzyme that has no label rows."""
+        if not self._members:
+            raise RuntimeError("model is not fitted")
+        torch.set_float32_matmul_precision(self.matmul_precision)
+        task = self.response_assays.index(TDI_LABEL_ASSAY)
+        n = len(smiles)
+        scores = np.full((n, len(self.endpoints)), np.nan)
+        for column, endpoint in enumerate(self.endpoints):
+            isoform = endpoint.split("_")[0]
+            if isoform not in self._tdi_prevalence:
+                continue
+            frame = pd.DataFrame(
+                {
+                    "SMILES": smiles,
+                    "target": [isoform] * n,
+                    "assay": [TDI_LABEL_ASSAY] * n,
+                    "source": ["challenge"] * n,
+                }
+            )
+            dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
+            loader = cpdata.build_dataloader(
+                dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
+            )
+            members = []
+            for model in self._members:
+                model.eval()
+                with torch.no_grad():
+                    predicted = torch.cat(
+                        [model(batch.bmg, batch.V_d, batch.X_d) for batch in loader]
+                    )
+                members.append(
+                    predicted[:, RESPONSE + task].numpy() * self._resp_spread[task]
+                    + self._resp_centre[task]
+                )
+            scores[:, column] = np.mean(members, axis=0)
+        return scores
+
+    def _tdi_called_from_labels(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """Call is_TDI from the trained label response: per enzyme, the top share of the scores
+        equal to its share of positive labels in training."""
+        scores = self._tdi_label_scores(smiles)
+        flags = np.zeros(scores.shape, dtype=bool)
+        for column, endpoint in enumerate(self.endpoints):
+            prevalence = self._tdi_prevalence.get(endpoint.split("_")[0])
+            if prevalence is None:
+                continue
+            cutoff = np.quantile(scores[:, column], 1.0 - prevalence)
+            flags[:, column] = scores[:, column] >= cutoff
+        return flags
+
     def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
         """Call is_TDI by comparing the direct and preincubated assay_conditions the graph predicts.
 
@@ -1258,8 +1318,11 @@ class GraphNetwork:
         direct and the ``tdi_drc`` (preincubated) assay, then apply the organisers' shift rule
         with the model's own swept thresholds. Only meaningful when the preincubated assay_condition
         was
-        trained (``sources.tdi_assay_condition``); run_cv scores TDI only in that case.
+        trained (``sources.tdi_assay_condition``); run_cv scores TDI only in that case. With
+        the label task trained (``sources.tdi_label``) the call is read from it instead.
         """
+        if TDI_LABEL_ASSAY in self.response_assays:
+            return self._tdi_called_from_labels(smiles)
         direct = self._samples_at_assay(smiles, SCORED_ASSAY).mean(axis=0)
         preincubated = self._samples_at_assay(smiles, TDI_ASSAY).mean(axis=0)
         floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold

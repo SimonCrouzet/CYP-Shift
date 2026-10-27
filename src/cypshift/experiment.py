@@ -251,6 +251,10 @@ class SourcesConfig:
     #: The preincubated (TDI) assay_condition -- needed for the classification track, costly for the
     #: regression one, so off by default.
     tdi_assay_condition: bool = False
+    #: The ``is_TDI`` labels of the TDI table, trained directly as a response task of the
+    #: graph (CYP2D6 and CYP3A4), so the same model that predicts the pIC50 calls the TDI
+    #: track from a trained readout instead of the gap between two predicted potencies.
+    tdi_label: bool = False
     #: ChEMBL auxiliary potencies.
     chembl: bool = False
     #: SAIR auxiliary potencies (needs data/external/sair.parquet).
@@ -973,6 +977,10 @@ class ExperimentConfig:
                 )
             if self.sources.tdi_assay_condition:
                 raise ValueError("model.kind='tfm' cannot use the preincubated assay_condition")
+        if self.sources.tdi_label and self.model.kind != "graph":
+            raise ValueError(
+                f"sources.tdi_label is wired only into the graph model, not {self.model.kind!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

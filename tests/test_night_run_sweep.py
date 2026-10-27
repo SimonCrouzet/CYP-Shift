@@ -107,6 +107,7 @@ DATA_SIDE_NOT_SWEPT = {
     "data.n_matching_rounds": "holdout path only; the sweep runs scaffold cross-validation",
     "data.seed": "fixed so that configurations are compared on the same folds and seed",
     "sources.structure": "needs the Boltz cofold cache, which is empty",
+    "sources.tdi_label": "classification track; varied by the TDI cells of the questions plan",
     "multifidelity.screen_model_hidden": "screen helper width; the graph cannot take that helper",
     "training.preset": "curriculum; the graph ignores stage settings",
     "training.stages": "curriculum; the graph ignores stage settings",
@@ -1110,6 +1111,8 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
         "epochs_100": {"model.graph.epochs"},
         "direct_finetune_30": {"training.preset"},
         "tdi_graph_base": {"sources.tdi_assay_condition"},
+        "tdi_label_base": {"sources.tdi_label"},
+        "tdi_label_condition_base": {"sources.tdi_label", "sources.tdi_assay_condition"},
         "tdi_graph_b_reg": {
             *capacity,
             "model.graph.dropout",
@@ -1196,7 +1199,7 @@ def test_the_questions_queue_alternates_graph_and_cpu_fits_and_ends_with_tabpfn(
     )
     night_run.run_questions()
     kinds = [overrides.get("model.kind", "boosted") for overrides in queue.values()]
-    assert len(queue) == 49
+    assert len(queue) == 51
     assert kinds[-4:] == ["tfm"] * 4 and "tfm" not in kinds[:-4]
     assert kinds[0:6:2] == ["graph"] * 3 and "graph" not in kinds[1:6:2]
     first = list(queue.values())[0]
@@ -1244,9 +1247,9 @@ def test_the_queue_switch_splits_the_questions_plan_into_graph_and_other_cells(m
 
     graph, other = queue("graph"), queue("other")
     kinds = {c.get("model.kind", "boosted") for c in graph.values()}
-    assert kinds == {"graph"} and len(graph) == 28
+    assert kinds == {"graph"} and len(graph) == 30
     assert "graph" not in {c.get("model.kind", "boosted") for c in other.values()}
-    assert len(graph) + len(other) == 49
+    assert len(graph) + len(other) == 51
     monkeypatch.setenv("CYP_QUEUE", "none")
     with pytest.raises(ValueError):
         night_run.run_questions()
@@ -1263,7 +1266,7 @@ def test_the_chemeleon_and_plain_queues_split_the_graph_cells(monkeypatch):
         return seen
 
     chemeleon, plain, graph = queue("chemeleon"), queue("plain"), queue("graph")
-    assert len(chemeleon) == 3 and len(plain) == 11 and len(graph) == 28
+    assert len(chemeleon) == 3 and len(plain) == 13 and len(graph) == 30
     assert not set(chemeleon) & set(plain)
     rest = set(queue("embedding")) | set(queue("capacity"))
     assert set(chemeleon) | set(plain) | rest == set(graph)

@@ -250,7 +250,11 @@ def submit(
     # silently flipping the regression track's off: the submitted recipe stays the one that
     # was validated, and a config that deliberately kept the assay_condition on for regression is
     # honoured.
-    if track == "classification" and not config.sources.tdi_assay_condition:
+    if (
+        track == "classification"
+        and not config.sources.tdi_assay_condition
+        and not config.sources.tdi_label
+    ):
         logger.info(
             "classification track needs the preincubated assay_condition; "
             "enabling sources.tdi_assay_condition"

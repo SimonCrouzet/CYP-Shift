@@ -17,8 +17,10 @@ from cypshift.data.assembly import (
     RESPONSE_ASSAY,
     SCREEN_LOG2FC_ASSAY,
     SCREEN_RESPONSE_ASSAY,
+    TDI_LABEL_ASSAY,
     SourceWeights,
     build_observations,
+    tdi_label_observations,
 )
 from cypshift.data.challenge import load
 from cypshift.data.screen import pseudo_labels, response_observations
@@ -128,6 +130,8 @@ def build_model(
                 response_assays.append(SCREEN_RESPONSE_ASSAY)
             elif config.multifidelity.screen_strategy == "log2fc_response":
                 response_assays.append(SCREEN_LOG2FC_ASSAY)
+        if config.sources.tdi_label:
+            response_assays.append(TDI_LABEL_ASSAY)
         return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
@@ -356,16 +360,19 @@ def assemble_training_data(
     # returned False for every compound -- MCC 0.0, identical to answering "no" to
     # everything. It is a real measurement of the same compounds under preincubation,
     # so it belongs in the table whatever the model does with it.
-    tdi = load("tdi", Path(config.data.directory)) if config.sources.tdi_assay_condition else None
-    if tdi is not None:
+    wants_tdi = config.sources.tdi_assay_condition or config.sources.tdi_label
+    tdi_table = load("tdi", Path(config.data.directory)) if wants_tdi else None
+    if tdi_table is not None:
         # Keep every TDI-cohort compound except the held-out and test ones; intersecting
         # with the direct-labelled set instead would drop the ~1,238 compounds that carry a
-        # preincubated assay_condition but were never promoted to a direct curve.
+        # preincubated assay_condition but were never promoted to a direct curve. The labels
+        # follow the same exclusions, so a held-out compound's call cannot leak.
         if exclude_names:
-            tdi = tdi[~tdi["Molecule_Name"].isin(exclude_names)]
-        if tdi.empty:
+            tdi_table = tdi_table[~tdi_table["Molecule_Name"].isin(exclude_names)]
+        if tdi_table.empty:
             logger.info("no preincubated measurement survives the exclusions")
-            tdi = None
+            tdi_table = None
+    tdi = tdi_table if config.sources.tdi_assay_condition else None
     screen_model = None
     if not config.sources.screen:
         observations = build_observations(retained, tdi=tdi, weights=weights)
@@ -443,6 +450,9 @@ def assemble_training_data(
         if "source" not in auxiliary.columns:
             auxiliary = auxiliary.assign(source="_pooled")
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
+    if config.sources.tdi_label and tdi_table is not None:
+        labels = tdi_label_observations(tdi_table)
+        observations = pd.concat([observations, labels[observations.columns]], ignore_index=True)
     if config.training.inverse_variance_weighting:
         observations = weight_by_inverse_variance(
             observations, response_assays=precision_response_assays(config)
@@ -998,7 +1008,7 @@ def run(
     # Only score TDI when the preincubated assay_condition was actually trained; a model that merely
     # owns a predict_is_time_dependent method would otherwise report a meaningless MCC from
     # an untrained second assay_condition.
-    if config.sources.tdi_assay_condition:
+    if config.sources.tdi_assay_condition or config.sources.tdi_label:
         tdi = score_tdi(model, evaluation, directory)
         if tdi is not None:
             logger.info(
@@ -1087,7 +1097,8 @@ def run_cv(
         # trained (sources.tdi_assay_condition) and the model can predict it. Without the
         # assay_condition trained,
         # the call is meaningless (all-not-TDI, MCC ~0) and just wastes the bootstrap.
-        if config.sources.tdi_assay_condition and hasattr(model, "predict_is_time_dependent"):
+        scores_tdi = config.sources.tdi_assay_condition or config.sources.tdi_label
+        if scores_tdi and hasattr(model, "predict_is_time_dependent"):
             flags = model.predict_is_time_dependent(evaluation["SMILES"].tolist())
             fold_tdi = evaluation[["Molecule_Name"]].copy()
             for endpoint in CLASSIFICATION_ENDPOINTS:

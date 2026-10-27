@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from cypshift.config import ISOFORMS
+from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,45 @@ def build_observations(
     return observations
 
 
+def tdi_label_observations(tdi: pd.DataFrame, weight: float = 1.0) -> pd.DataFrame:
+    """The ``is_TDI`` labels (1.0 or 0.0) of the scored classification enzymes as response rows.
+
+    One row per compound and enzyme that carries a label, on the assay tag
+    :data:`TDI_LABEL_ASSAY`, so a graph with that response task learns the call directly.
+    """
+    rows = []
+    for endpoint in CLASSIFICATION_ENDPOINTS:
+        isoform = endpoint.split("_")[0]
+        present = tdi[endpoint].notna()
+        if not present.any():
+            continue
+        value = tdi.loc[present, endpoint].astype(bool).to_numpy(float)
+        rows.append(
+            pd.DataFrame(
+                {
+                    "Molecule_Name": tdi.loc[present, "Molecule_Name"].to_numpy(),
+                    "SMILES": tdi.loc[present, "SMILES"].to_numpy(),
+                    "target": isoform,
+                    "assay": TDI_LABEL_ASSAY,
+                    "value": value,
+                    "weight": weight,
+                    "conf_low": value,
+                    "conf_high": value,
+                    "is_censored": False,
+                    "data_space": "challenge",
+                    "source": "challenge",
+                }
+            )
+        )
+    if not rows:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+    return pd.concat(rows, ignore_index=True)[list(OBSERVATION_COLUMNS)]
+
+
+#: The assay tag of the ``is_TDI`` labels, read by the graph as a response task: a classification
+#: readout trained directly, in place of the gap between two predicted potencies.
+TDI_LABEL_ASSAY = "tdi_label"
+
 #: Scalar properties of each assay, so the encoding can describe the experiment rather
 #: than merely index it. A model given these can learn "preincubation" as one direction
 #: shared across every enzyme, instead of treating each (enzyme, condition) pair as an
@@ -249,6 +288,9 @@ ASSAY_METADATA = {
     # lab, fluorogenic. The raw-log2FC head reads the same screen, so it shares the profile too.
     SCREEN_RESPONSE_ASSAY: (1.0, 0.0, 0.0, 0.0),
     SCREEN_LOG2FC_ASSAY: (1.0, 0.0, 0.0, 0.0),
+    # A derived call, not a measurement of its own: the reference profile, so the call is neither
+    # a preincubated assay nor a single-concentration one.
+    TDI_LABEL_ASSAY: (0.0, 1.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

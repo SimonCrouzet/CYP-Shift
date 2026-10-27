@@ -727,6 +727,8 @@ def _resolved_key(overrides: dict) -> str:
             del auxiliary["row_share"]
         if not auxiliary["row_selection_assays"]:
             del auxiliary["row_selection_assays"]
+    if not resolved["sources"]["tdi_label"]:
+        del resolved["sources"]["tdi_label"]  # recorded names predate it
     if not graph["finetune_per_target_epochs"]:
         del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:
@@ -2566,6 +2568,12 @@ FINETUNE_30_CELLS = (
 #: B at 100 epochs.
 TDI_GRAPH_CELLS = (
     Cell("tdi_graph_base", (("sources.tdi_assay_condition", True),), "tdi"),
+    Cell("tdi_label_base", (("sources.tdi_label", True),), "tdi"),
+    Cell(
+        "tdi_label_condition_base",
+        (("sources.tdi_label", True), ("sources.tdi_assay_condition", True)),
+        "tdi",
+    ),
     Cell(
         "tdi_graph_b_reg",
         (
