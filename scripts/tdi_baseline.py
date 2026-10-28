@@ -123,6 +123,7 @@ def fold_scores(
     seed: int,
     pca: int = PCA_COMPONENTS,
     n_extra: int = 0,
+    balanced: bool = False,
 ) -> np.ndarray:
     """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold. The
     last ``n_extra`` columns (stacked potencies) skip the PCA of the foundation models."""
@@ -139,6 +140,7 @@ def fold_scores(
             n_jobs=threads,
             random_state=seed,
             verbose=-1,
+            class_weight="balanced" if balanced else None,
         )
         classifier.fit(train_x, train_y)
         return classifier.predict_proba(test_x)[:, 1]
@@ -210,6 +212,7 @@ def out_of_fold_scores(
     model: str = "lightgbm",
     pca: int = PCA_COMPONENTS,
     n_extra: int = 0,
+    balanced: bool = False,
 ) -> np.ndarray:
     """Out-of-fold positive-class probabilities of a classifier; NaN where unlabelled."""
     scores = np.full(len(labels), np.nan)
@@ -226,6 +229,7 @@ def out_of_fold_scores(
             seed,
             pca,
             n_extra,
+            balanced,
         )
         logger.info("fold %d: %d train, %d held out", fold + 1, train.sum(), test.sum())
     return scores
@@ -242,6 +246,11 @@ def main() -> None:
     parser.add_argument("--bits", type=int, default=4096)
     parser.add_argument("--model", choices=MODELS, default="lightgbm")
     parser.add_argument("--features", choices=tuple(FEATURE_SETS), default="fp_dense")
+    parser.add_argument(
+        "--balanced",
+        action="store_true",
+        help="LightGBM: weight the classes inversely to their frequency",
+    )
     parser.add_argument(
         "--pca",
         type=int,
@@ -350,7 +359,15 @@ def main() -> None:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
         scores = out_of_fold_scores(
-            columns, truth, folds, args.threads, args.seed, args.model, args.pca, n_extra
+            columns,
+            truth,
+            folds,
+            args.threads,
+            args.seed,
+            args.model,
+            args.pca,
+            n_extra,
+            args.balanced,
         )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
