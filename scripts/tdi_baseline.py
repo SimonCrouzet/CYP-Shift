@@ -176,6 +176,11 @@ def main() -> None:
     parser.add_argument("--bits", type=int, default=4096)
     parser.add_argument("--model", choices=MODELS, default="lightgbm")
     parser.add_argument(
+        "--dense-only",
+        action="store_true",
+        help="LightGBM on the dense blocks alone, the features the foundation models read",
+    )
+    parser.add_argument(
         "--direct-potency",
         action="store_true",
         help="add the enzyme's measured direct pIC50 as a feature (an upper bound for stacking "
@@ -200,7 +205,7 @@ def main() -> None:
     logger.info("featurising %d compounds", len(smiles))
     features = featurise(
         smiles,
-        fingerprint=args.model == "lightgbm",
+        fingerprint=args.model == "lightgbm" and not args.dense_only,
         physchem=True,
         mechanism=True,
         n_bits=args.bits,
