@@ -2805,6 +2805,24 @@ BOOSTED_PROBE_SETS = {
     "boosted_deep_colsample0p3": {"model.boosted.colsample_bytree": 0.3},
     "boosted_deep_min_child100": {"model.boosted.min_child_samples": 100},
 }
+#: Second round, from the winners of the first. TabPFN from the 128-wide PCA (the
+#: ``tfm_octant_dense_chemeleon_pca128`` cell): other PCA widths, a lower softmax temperature.
+TFM_PCA128 = {**TFM_CHEMELEON, "model.tfm.pca_components": 128}
+TFM_PCA128_CELLS = {
+    "tfm_pca256": {**TFM_CHEMELEON, "model.tfm.pca_components": 256},
+    "tfm_pca64": {**TFM_CHEMELEON, "model.tfm.pca_components": 64},
+    "tfm_pca32": {**TFM_CHEMELEON, "model.tfm.pca_components": 32},
+    "tfm_pca128_temp0p7": {**TFM_PCA128, "model.tfm.softmax_temperature": 0.7},
+    "tfm_pca128_temp0p5": {**TFM_PCA128, "model.tfm.softmax_temperature": 0.5},
+}
+#: Boosted trees from the squared-loss member (``boosted_deep_squared``), one setting each.
+BOOSTED_SQUARED_PROBE_SETS = {
+    "boosted_squared_min_child100": {"model.boosted.min_child_samples": 100},
+    "boosted_squared_leaves31": {"model.boosted.num_leaves": 31},
+    "boosted_squared_subsample0p6": {"model.boosted.subsample": 0.6},
+    "boosted_squared_colsample0p3": {"model.boosted.colsample_bytree": 0.3},
+    "boosted_squared_trees500": {"model.boosted.n_estimators": 500},
+}
 
 
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
@@ -2872,7 +2890,12 @@ def run_questions() -> None:
     probes = {
         **TFM_TUNING_CELLS,
         **TFM_CHEMELEON_CELLS,
+        **TFM_PCA128_CELLS,
         **{tag: {**deep, **sets} for tag, sets in BOOSTED_PROBE_SETS.items()},
+        **{
+            tag: {**deep, "model.objective": "squared", **sets}
+            for tag, sets in BOOSTED_SQUARED_PROBE_SETS.items()
+        },
     }
     for tag, overrides in probes.items():
         if tag in asked:

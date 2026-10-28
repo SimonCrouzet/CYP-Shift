@@ -1449,9 +1449,18 @@ def test_the_probes_are_valid_one_setting_changes_and_stay_out_of_the_plan(
         ),
         night_run.BOOSTED_BASE_CELLS[0].sets,
     )
+    squared = {**deep, "model.objective": "squared"}
     groups = (
         (night_run.TFM_CHEMELEON_CELLS, night_run.TFM_CHEMELEON),
         ({tag: {**deep, **sets} for tag, sets in night_run.BOOSTED_PROBE_SETS.items()}, deep),
+        (night_run.TFM_PCA128_CELLS, night_run.TFM_PCA128),
+        (
+            {
+                tag: {**squared, **sets}
+                for tag, sets in night_run.BOOSTED_SQUARED_PROBE_SETS.items()
+            },
+            squared,
+        ),
     )
     for cells, reference in groups:
         for tag, overrides in cells.items():
