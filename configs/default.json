@@ -16,7 +16,7 @@
   },
   "sources": {
     "screen": true,
-    "tdi_arm": false,
+    "tdi_assay_condition": false,
     "chembl": false,
     "sair": false,
     "octant": false,
@@ -36,7 +36,7 @@
     "screen_strategy": "extra_rows",
     "screen_weight": 0.3,
     "tdi_weight": 0.5,
-    "surrogate_hidden": 16
+    "screen_model_hidden": 16
   },
   "auxiliary": {
     "max_distance": 1.5,
@@ -49,7 +49,7 @@
     "preset": null,
     "stages": [
       {
-        "tiers": [
+        "data_spaces": [
           "distant_aux",
           "near_aux",
           "challenge"

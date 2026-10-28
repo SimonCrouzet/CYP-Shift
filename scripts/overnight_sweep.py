@@ -78,7 +78,10 @@ GRID: list[tuple[str, dict]] = [
 def already_done() -> set[str]:
     if not RESULTS.exists():
         return set()
-    return set(pd.read_csv(RESULTS)["name"])
+    table = pd.read_csv(RESULTS)
+    # Exclude FAILED rows so a failed config is retried on the next run rather than skipped
+    # as "done" by name.
+    return set(table[table["macro_ST_RAE"].astype(str) != "FAILED"]["name"])
 
 
 def record(row: dict) -> None:

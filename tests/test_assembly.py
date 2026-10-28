@@ -107,7 +107,9 @@ class TestAssayMetadata:
         assert all(len(v) == N_METADATA_COLUMNS for v in ASSAY_METADATA.values())
 
     def test_every_assay_has_metadata(self):
-        assert set(ASSAY_METADATA) == set(ASSAYS)
+        # Every core assay must have metadata; the dict may also carry extra contexts
+        # routed outside ASSAYS (the graph's response head), which still need a profile.
+        assert set(ASSAYS) <= set(ASSAY_METADATA)
 
     def test_no_column_is_a_deterministic_function_of_another(self):
         """A third column once held log10 of the top concentration: -4.0 for every
@@ -139,10 +141,24 @@ class TestAssayMetadata:
         challenge = {a: ASSAY_METADATA[a] for a in ASSAYS[:3]}
         assert len(set(challenge.values())) == len(challenge)
 
-    def test_only_the_tdi_arm_preincubates(self):
+    def test_the_preincubated_assays_are_the_tdi_curve_and_the_screen(self):
+        # The organisers ran the primary single-concentration screen (and its response/log2fc
+        # heads) under the preincubation (TDI) condition, so all carry preincubated=1.0; the
+        # direct DRC and every auxiliary assay do not.
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
-        assert preincubated == {"tdi_drc"}
+        assert preincubated == {
+            "tdi_drc",
+            "direct_inhibition_screen",
+            "direct_inhibition_screen_response",
+            "direct_inhibition_screen_log2fc",
+        }
 
     def test_only_the_screen_is_single_concentration(self):
         single = {a for a, v in ASSAY_METADATA.items() if v[1] == 0.0}
-        assert single == {"direct_inhibition_screen"}
+        # The screen's response and raw-log2FC heads read the very same single-concentration
+        # screen, so they are single-concentration too, not further exceptions to the rule.
+        assert single == {
+            "direct_inhibition_screen",
+            "direct_inhibition_screen_response",
+            "direct_inhibition_screen_log2fc",
+        }

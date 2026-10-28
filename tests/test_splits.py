@@ -1,15 +1,22 @@
 """Similarity computations and the matched-holdout selection."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from cypshift.data.splits import (
+    AnalogueSplit,
+    analogue_holdout,
+    analogue_split,
     leave_one_out_max_similarity,
     max_similarity_against_retained,
     max_similarity_to,
     morgan_fingerprints,
+    murcko_scaffold,
     similarity_matched_holdout,
     similarity_profile_gap,
+    stratified_scaffold_folds,
+    tdi_scaffold_folds,
 )
 
 # A short congeneric series plus unrelated scaffolds, so similarities are not degenerate.
@@ -90,3 +97,179 @@ def test_profile_gap_is_signed():
     low, high = np.linspace(0.1, 0.4, 50), np.linspace(0.5, 0.8, 50)
     assert similarity_profile_gap(low, high)["q50_gap"] < 0
     assert similarity_profile_gap(high, low)["q50_gap"] > 0
+
+
+def test_bin_selection_hits_the_exact_count_even_when_rounding_overshoots():
+    """Independent per-bin rounding can sum past (or short of) the target; the result must
+    still hold out exactly n_holdout compounds."""
+    from cypshift.data.splits import _select_by_bins
+
+    rng = np.random.default_rng(0)
+    scores = rng.uniform(0, 1, 200)
+    edges = np.array([-np.inf, 0.2, 0.4, 0.6, 0.8, np.inf])
+    # Shares that each round up (0.17 * 97 ~= 16.5) so the naive sum overshoots.
+    target_share = np.full(5, 0.2)
+    for n_holdout in (97, 50, 3):
+        mask = _select_by_bins(scores, edges, target_share, n_holdout, 0.5, rng)
+        assert int(mask.sum()) == n_holdout
+
+
+def test_scaffold_folds_are_a_partition():
+    """Every compound lands in exactly one fold, and all folds are used."""
+    folds = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    assert len(folds) == len(SMILES)
+    assert set(folds.tolist()) == {0, 1, 2}
+
+
+def test_a_scaffold_never_spans_two_folds():
+    """Compounds sharing a Bemis-Murcko scaffold must stay together, so an analog series
+    cannot straddle the train/validation boundary."""
+    folds = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    scaffolds = np.array([murcko_scaffold(s) for s in SMILES])
+    for scaffold in np.unique(scaffolds):
+        assert len(set(folds[scaffolds == scaffold])) == 1
+
+
+def test_scaffold_folds_are_reproducible():
+    one = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    two = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
+    assert np.array_equal(one, two)
+
+
+def _tdi_table(n_series: int = 30) -> pd.DataFrame:
+    """Small TDI table: ``n_series`` two-ring scaffold series of three members each."""
+    rng = np.random.default_rng(0)
+    rings = [
+        "c1ccccc1",
+        "c1ccncc1",
+        "c1ccsc1",
+        "c1ccoc1",
+        "c1cncnc1",
+        "C1CCCCC1",
+        "C1CCCC1",
+        "C1CC1",
+        "C1CCOC1",
+        "C1CCNCC1",
+    ]
+    rows = []
+    for series in range(n_series):
+        left, right = (
+            rings[series % len(rings)],
+            rings[(series // len(rings) + series + 1) % len(rings)],
+        )
+        for j, substituent in enumerate(["C", "Cl", "Br"]):
+            rows.append(
+                {
+                    "Molecule_Name": f"m{series}_{j}",
+                    "SMILES": f"{left}C{right}{substituent}",
+                    "CYP2D6_is_TDI": rng.choice([True, False, np.nan], p=[0.3, 0.5, 0.2]),
+                    "CYP3A4_is_TDI": rng.choice([True, False], p=[0.4, 0.6]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_tdi_folds_are_a_per_compound_scaffold_grouped_partition():
+    table = _tdi_table()
+    folds = tdi_scaffold_folds(table, n_folds=5)
+    assert folds.index.tolist() == table["Molecule_Name"].tolist()
+    assert set(folds) == set(range(5))
+    scaffolds = table["SMILES"].map(murcko_scaffold)
+    assert (folds.groupby(scaffolds.to_numpy()).nunique() == 1).all()
+
+
+def test_tdi_folds_balance_the_positives_of_each_enzyme():
+    table = _tdi_table(n_series=60)
+    folds = tdi_scaffold_folds(table, n_folds=3).to_numpy()
+    for enzyme in ("CYP2D6", "CYP3A4"):
+        positive = (table[f"{enzyme}_is_TDI"].astype(float) == 1.0).to_numpy()
+        counts = [int((positive & (folds == fold)).sum()) for fold in range(3)]
+        assert max(counts) - min(counts) <= 0.25 * sum(counts) / 3 + 3
+
+
+def test_tdi_folds_are_reproducible():
+    table = _tdi_table()
+    assert tdi_scaffold_folds(table).equals(tdi_scaffold_folds(table))
+
+
+def test_acyclic_compound_is_its_own_scaffold_group():
+    """An acyclic compound has an empty Murcko scaffold; it falls back to its own SMILES so
+    acyclic compounds do not all collapse into one group."""
+    assert murcko_scaffold("CCCCCCCC") == "CCCCCCCC"
+    assert murcko_scaffold("CCOc1ccccc1") == "c1ccccc1"
+
+
+def test_analogue_holdout_holds_out_analogues_of_retained_anchors():
+    """Every held-out compound has a retained neighbour above the threshold (it is an analogue),
+    and the holdout is roughly the requested size."""
+    mask = analogue_holdout(SMILES, holdout_fraction=0.3, min_similarity=0.4, seed=0)
+    assert mask.dtype == bool and len(mask) == len(SMILES)
+    held = int(mask.sum())
+    assert 0 < held <= len(SMILES)
+    # A held-out compound must have a retained neighbour at least as similar as the threshold;
+    # otherwise it was placed without being anyone's analogue.
+    fingerprints = morgan_fingerprints(SMILES)
+    for index in np.flatnonzero(mask):
+        to_retained = max_similarity_against_retained(fingerprints, ~mask)[index]
+        assert to_retained >= 0.4
+
+
+def test_analogue_holdout_leaves_a_compound_with_no_analogue_retained():
+    """A lone, dissimilar compound has no neighbour above the threshold, so it is never held out."""
+    smiles = ["CCOc1ccccc1", "CCOc1ccc(C)cc1", "CCOc1ccc(Cl)cc1", "[Na+].[Cl-]"]
+    mask = analogue_holdout(smiles, holdout_fraction=0.25, min_similarity=0.5, seed=0)
+    assert not mask[-1]  # the salt is unlike any aryl ether, so it stays retained
+
+
+def test_analogue_holdout_is_reproducible():
+    one = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    two = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    assert np.array_equal(one, two)
+
+
+def test_analogue_split_records_each_held_out_compound_s_anchor():
+    """F11: the split exposes the retained anchor per held-out compound, and the mask matches
+    analogue_holdout. Each held-out anchor is retained and similar above the threshold."""
+    split = analogue_split(SMILES, holdout_fraction=0.3, min_similarity=0.4, seed=0)
+    mask = analogue_holdout(SMILES, holdout_fraction=0.3, seed=0)
+    assert np.array_equal(split.holdout_mask, mask)
+    fingerprints = morgan_fingerprints(SMILES)
+    for index in np.flatnonzero(split.holdout_mask):
+        anchor = split.anchor_of[index]
+        assert anchor >= 0
+        assert not split.holdout_mask[anchor]  # the anchor is retained
+        assert max_similarity_to([fingerprints[index]], [fingerprints[anchor]])[0] >= 0.4
+    assert (split.anchor_of[~split.holdout_mask] == -1).all()  # retained carry no anchor
+
+
+def test_anchor_label_coverage_reports_same_endpoint_references():
+    """F11: coverage is the fraction of held-out-and-labelled compounds whose anchor is also
+    labelled on that endpoint."""
+    split = AnalogueSplit(
+        holdout_mask=np.array([False, False, True, True]),
+        anchor_of=np.array([-1, -1, 0, 1]),
+    )
+    labels = np.zeros((4, 4), dtype=bool)
+    labels[2, 0] = labels[0, 0] = True  # held-out 2 and its anchor 0 both labelled on endpoint 0
+    labels[3, 0] = True  # held-out 3 labelled, but its anchor 1 is not
+    coverage = split.anchor_label_coverage(labels)
+    assert coverage[0] == pytest.approx(0.5)
+    assert coverage[1] != coverage[1]  # NaN: no held-out label on endpoint 1
+
+
+def test_require_labelled_anchor_drops_a_pair_with_no_shared_endpoint():
+    """F11: with require_labelled_anchor, a neighbour whose anchor shares no measured endpoint is
+    not held out (it would have no same-endpoint reference)."""
+    smiles = ["CCO", "CCO"]  # identical, so each is the other's only neighbour
+    labels = np.array([[True, False, False, False], [False, True, False, False]])
+    without = analogue_split(smiles, holdout_fraction=0.5, min_similarity=0.5, seed=0)
+    with_rule = analogue_split(
+        smiles,
+        holdout_fraction=0.5,
+        min_similarity=0.5,
+        labels=labels,
+        require_labelled_anchor=True,
+        seed=0,
+    )
+    assert without.holdout_mask.sum() == 1
+    assert with_rule.holdout_mask.sum() == 0

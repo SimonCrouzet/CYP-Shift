@@ -105,3 +105,11 @@ def test_paired_comparison_is_more_sensitive_than_independent_spreads():
     standalone = score_submission(predictions, truth, n_repeats=200)
     comparison = paired_difference(nudged, predictions, truth, n_repeats=200)
     assert comparison.loc[MACRO_LABEL, "delta_std"] < standalone.loc[MACRO_LABEL, "ST-RAE_std"]
+
+
+def test_missing_prediction_id_is_rejected_not_silently_dropped():
+    """A truth compound with no prediction must error, not shrink the scored set (F3)."""
+    predictions, truth = _frames(n=40)
+    predictions = predictions.iloc[:-1]  # drop the last compound's prediction
+    with pytest.raises(ValueError, match="no prediction"):
+        score_submission(predictions, truth, n_repeats=10)

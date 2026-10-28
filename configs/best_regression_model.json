@@ -1,0 +1,126 @@
+{
+  "name": "best_regression_model_v1",
+  "track": "regression",
+  "description": "Weighted mean of three separately refit models: the B graph recipe with its per-isoform fine-tune (R_ft), TabPFN on dense and CheMeleon features, and boosted trees with the squared loss. Each endpoint is then standardised to the calibration targets. Evidence: cross-validation out-of-fold scores in `cv`, seed 0 unless stated; the mix in `mix_evidence`.",
+  "members": {
+    "graph_rft": {
+      "weight": 0.7,
+      "file": "submissions/final_candidates/refit_rft.csv",
+      "cell": "focus_graph_b_reg_per_target_10_lr1e5_bc8a7b",
+      "recipe": {
+        "auxiliary.per_endpoint_budget": 9.0,
+        "conditioning.embedding_dim": 32,
+        "model.graph.depth": 5,
+        "model.graph.dropout": 0.3,
+        "model.graph.epochs": 100,
+        "model.graph.ffn_hidden": 700,
+        "model.graph.ffn_layers": 2,
+        "model.graph.finetune_per_target_epochs": 10,
+        "model.graph.finetune_per_target_lr": 1e-05,
+        "model.graph.hidden": 700,
+        "model.graph.learning_rate": 0.0001,
+        "model.kind": "graph",
+        "sources.novartis": true,
+        "sources.octant": true,
+        "sources.qhts_representation": "both",
+        "sources.tox21": true
+      },
+      "cv": {
+        "oof_5_seeds_averaged": {
+          "MAE": 0.5135,
+          "Pearson": 0.6599,
+          "R2": 0.4446,
+          "ST-RAE": 0.6182
+        },
+        "oof_seed0_single_run": {
+          "MAE": 0.5208,
+          "Pearson": 0.6515,
+          "R2": 0.434,
+          "ST-RAE": 0.633
+        }
+      }
+    },
+    "tabpfn": {
+      "weight": 0.15,
+      "file": "submissions/final_candidates/refit_tabpfn.csv",
+      "cell": "tfm_all_rows_pca128",
+      "recipe": {
+        "model.kind": "tfm",
+        "features.use_fingerprint": false,
+        "features.use_physicochemical": true,
+        "features.use_mechanistic": true,
+        "features.use_ionization_geometry": false,
+        "features.molecular_embedding": "chemeleon",
+        "sources.screen": false,
+        "sources.octant": true,
+        "sources.tox21": true,
+        "sources.novartis": true,
+        "model.tfm.pca_components": 128
+      },
+      "cv": {
+        "oof_seed0_one_member_per_fold": {
+          "MAE": 0.5625,
+          "Pearson": 0.5726,
+          "R2": 0.3437,
+          "ST-RAE": 0.7255
+        }
+      }
+    },
+    "boosted": {
+      "weight": 0.15,
+      "file": "submissions/final_candidates/refit_boosted.csv",
+      "cell": "boosted_deep_squared",
+      "recipe": {
+        "model.kind": "boosted",
+        "sources.octant": true,
+        "sources.tox21": true,
+        "sources.novartis": true,
+        "sources.qhts_representation": "both",
+        "auxiliary.per_endpoint_budget": 9.0,
+        "model.boosted.num_leaves": 127,
+        "model.boosted.n_estimators": 1000,
+        "model.boosted.learning_rate": 0.03,
+        "model.objective": "squared"
+      },
+      "cv": {
+        "oof_seed0_one_member_per_fold": {
+          "MAE": 0.5565,
+          "Pearson": 0.6075,
+          "R2": 0.3815,
+          "ST-RAE": 0.7121
+        }
+      }
+    }
+  },
+  "calibration": {
+    "targets": "submissions/probes/targets_from_probe_a.json",
+    "spread": 1.0
+  },
+  "output": "submissions/final_candidates/best_model_v1.csv",
+  "mix_evidence": {
+    "weights_graph_rft_tabpfn_boosted": [
+      0.7,
+      0.15,
+      0.15
+    ],
+    "oof_of_the_mix": {
+      "MAE": 0.5082,
+      "Pearson": 0.667,
+      "R2": 0.4525,
+      "ST-RAE": 0.6064
+    },
+    "oof_of_0.8_0.1_0.1": {
+      "MAE": 0.5085,
+      "Pearson": 0.6659,
+      "R2": 0.4521,
+      "ST-RAE": 0.6073
+    },
+    "oof_R_ft_x5": {
+      "MAE": 0.5135,
+      "Pearson": 0.6599,
+      "R2": 0.4446,
+      "ST-RAE": 0.6182
+    },
+    "note": "Out-of-fold, seed-0 partners, R_ft as its 5-seed average. The weight surface is flat: TabPFN 0.10-0.15 and boosted 0.10-0.20 lie within 0.001 of each other, 0.25/0.25 gives most of the gain back. Weights chosen on one half of the compounds and scored on the other did no better than fixed 0.1/0.1 (MAE -0.0049 / Pearson +0.0067 / R2 +0.0076 against -0.0051 / +0.0061 / +0.0075). Per-enzyme weights held out: -0.0041 / +0.0078 / +0.0091 (CYP2D6 alone takes more partner weight); not adopted. Partners were not repeated at other seeds."
+  }
+}

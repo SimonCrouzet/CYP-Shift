@@ -17,12 +17,13 @@ last respect, and the weights say so rather than pretending otherwise.
 """
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from cypshift.config import ISOFORMS
+from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,32 @@ ASSAYS = (
 #: per-assay calibration is pinned to identity so the latent potency stays on this scale.
 REFERENCE_ASSAY = "direct_inhibition_drc"
 
-#: Proximity tiers, ordered from farthest to the scored endpoint to the endpoint itself.
+#: A qHTS max-response row (a 0-1 response magnitude, not a pIC50). Kept out of ``ASSAYS``
+#: because it is routed to the graph model's dedicated response head rather than pooled
+#: onto the potency scale; only that model sees it.
+RESPONSE_ASSAY = "luminescent_max_response"
+
+#: The single-concentration screen as the response it actually measured -- an inhibited
+#: fraction at one concentration, not a pIC50. Like :data:`RESPONSE_ASSAY` it is routed to
+#: the graph's response head rather than pooled onto the potency scale, so the screen informs
+#: the model without being forced onto a fully specified Hill curve first. Used by the
+#: ``response_head`` screen strategy (graph only).
+SCREEN_RESPONSE_ASSAY = "direct_inhibition_screen_response"
+
+#: The same single-concentration screen as the raw measured log2 fold-change, untransformed
+#: (no inhibited-fraction squashing, no isotonic pIC50 map). Routed to a graph response head by
+#: the ``log2fc_response`` screen strategy, so the screen enters as a measurement in its own
+#: units. Also preincubated (the screen was run under the TDI condition).
+SCREEN_LOG2FC_ASSAY = "direct_inhibition_screen_log2fc"
+
+#: Proximity data_spaces, ordered from farthest to the scored endpoint to the endpoint itself.
 #: This is *one* facet a training stage can select on -- how related the protein is: a
 #: relative or noisy outside dataset (``distant_aux``), a scored enzyme's own outside rows
 #: (``near_aux``), or the challenge's own measurements (``challenge``). The other facet is
 #: the assay a row was measured in (:data:`ASSAYS`), the *type* of data; a stage can filter
 #: on either or both, after the pattern of a proteochemometric corpus that separates target
 #: relatedness from assay context. Both are stamped on every row when it is built.
-TIERS = ("distant_aux", "near_aux", "challenge")
+DATA_SPACES = ("distant_aux", "near_aux", "challenge")
 
 OBSERVATION_COLUMNS = (
     "Molecule_Name",
@@ -65,11 +84,19 @@ OBSERVATION_COLUMNS = (
     "conf_high",
     "weight",
     "is_censored",
-    # Proximity tier of the row (see TIERS): challenge, or how far an auxiliary enzyme's
+    # Proximity data_space of the row (see DATA_SPACES): challenge, or how far an auxiliary enzyme's
     # binding site is. The data-type facet is the ``assay`` column. A training stage
     # selects on either or both.
-    "tier",
+    "data_space",
+    # Which dataset the row came from (see SOURCES). Same-chemistry sources pool into one
+    # assay by default; source-stratified conditioning keeps them apart by this column.
+    "source",
 )
+
+#: The datasets a row can originate from, for source-stratified conditioning. The challenge's
+#: own direct and preincubated measurements share "challenge"; the single-point screen is its
+#: own source; the rest are the auxiliary loaders.
+SOURCES = ("challenge", "screen", "chembl", "sair", "octant", "veith", "tox21", "novartis")
 
 
 @dataclass(frozen=True)
@@ -77,14 +104,14 @@ class SourceWeights:
     """How far each source is trusted, relative to a fitted dose-response curve.
 
     A screen pseudo-label carries the calibration residual on top of the assay's own
-    noise, so it is down-weighted rather than excluded. The TDI arm is a real curve
+    noise, so it is down-weighted rather than excluded. The TDI assay_condition is a real curve
     but measures a different condition, so it informs the shared representation
     without being treated as a direct-inhibition measurement.
     """
 
     dose_response: float = 1.0
     screen_pseudo_label: float = 0.3
-    tdi_arm: float = 0.5
+    tdi_assay_condition: float = 0.5
 
 
 #: Module-level default, so the frozen instance is shared rather than rebuilt per call.
@@ -97,6 +124,7 @@ def _from_wide(
     value_template: str,
     weight: float,
     censored_template: str | None = None,
+    source: str = "challenge",
 ) -> pd.DataFrame:
     """Melt one wide source into observation rows, one per compound and target."""
     rows = []
@@ -118,13 +146,18 @@ def _from_wide(
             }
         )
         for bound in ("conf_low", "conf_high"):
-            source = f"{column}_{bound}"
-            block[bound] = frame.loc[present, source].to_numpy(float) if source in frame else np.nan
+            bound_column = f"{column}_{bound}"
+            block[bound] = (
+                frame.loc[present, bound_column].to_numpy(float)
+                if bound_column in frame
+                else np.nan
+            )
         flag = censored_template.format(isoform=isoform) if censored_template else None
         block["is_censored"] = (
             frame.loc[present, flag].to_numpy(bool) if flag and flag in frame else False
         )
-        block["tier"] = "challenge"  # the challenge's own data; its assay carries the type
+        block["data_space"] = "challenge"  # the challenge's own data; its assay carries the type
+        block["source"] = source
         rows.append(block)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=OBSERVATION_COLUMNS)
 
@@ -141,7 +174,7 @@ def build_observations(
         inhibition: The dose-response direct-inhibition training set.
         screen_labels: Calibrated pseudo-labels from
             :func:`cypshift.data.screen.pseudo_labels`, or None to omit them.
-        tdi: The time-dependent inhibition arm, or None to omit it.
+        tdi: The time-dependent inhibition assay_condition, or None to omit it.
         weights: Relative trust in each source.
 
     Returns:
@@ -163,16 +196,70 @@ def build_observations(
                 "{isoform}_pIC50_direct_inhibition",
                 weights.screen_pseudo_label,
                 censored_template="{isoform}_is_censored",
+                source="screen",
             )
         )
     if tdi is not None:
-        sources.append(_from_wide(tdi, "tdi_drc", "{isoform}_pIC50_TDI_condition", weights.tdi_arm))
+        sources.append(
+            _from_wide(tdi, "tdi_drc", "{isoform}_pIC50_TDI_condition", weights.tdi_assay_condition)
+        )
 
     observations = pd.concat(sources, ignore_index=True)[list(OBSERVATION_COLUMNS)]
     summary = observations.groupby(["assay", "target"]).size().unstack(fill_value=0)
     logger.info("assembled %d observations:\n%s", len(observations), summary.to_string())
     return observations
 
+
+def tdi_label_observations(
+    tdi: pd.DataFrame,
+    weight: float = 1.0,
+    direct_names: Collection[str] | None = None,
+    uncovered_weight: float = 1.0,
+) -> pd.DataFrame:
+    """The ``is_TDI`` labels (1.0 or 0.0) of the scored classification enzymes as response rows.
+
+    One row per compound and enzyme that carries a label, on the assay tag
+    :data:`TDI_LABEL_ASSAY`, so a graph with that response task learns the call directly. A
+    compound not in ``direct_names`` (no direct measurement; every such label is a negative) gets
+    ``weight * uncovered_weight``, and no row at all when that is zero.
+    """
+    rows = []
+    for endpoint in CLASSIFICATION_ENDPOINTS:
+        isoform = endpoint.split("_")[0]
+        present = tdi[endpoint].notna()
+        row_weight = np.full(len(tdi), weight)
+        if direct_names is not None:
+            uncovered = ~tdi["Molecule_Name"].isin(direct_names).to_numpy()
+            row_weight[uncovered] = weight * uncovered_weight
+            present &= row_weight > 0
+        if not present.any():
+            continue
+        value = tdi.loc[present, endpoint].astype(bool).to_numpy(float)
+        rows.append(
+            pd.DataFrame(
+                {
+                    "Molecule_Name": tdi.loc[present, "Molecule_Name"].to_numpy(),
+                    "SMILES": tdi.loc[present, "SMILES"].to_numpy(),
+                    "target": isoform,
+                    "assay": TDI_LABEL_ASSAY,
+                    "value": value,
+                    "weight": row_weight[present.to_numpy()],
+                    "conf_low": value,
+                    "conf_high": value,
+                    "is_censored": False,
+                    "data_space": "challenge",
+                    "source": "challenge",
+                }
+            )
+        )
+    if not rows:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+    return pd.concat(rows, ignore_index=True)[list(OBSERVATION_COLUMNS)]
+
+
+#: The assay tag of the ``is_TDI`` labels, read by the graph as a response task: a classification
+#: readout trained directly, in place of the gap between two predicted potencies.
+TDI_LABEL_ASSAY = "tdi_label"
 
 #: Scalar properties of each assay, so the encoding can describe the experiment rather
 #: than merely index it. A model given these can learn "preincubation" as one direction
@@ -189,13 +276,15 @@ def build_observations(
 #:
 #: A concentration column was tried and removed: the screen value was measured
 #: (``concentration_M`` is 4.95049505e-05 throughout that table) but the dose-response
-#: arms carry no concentration column, so the -4.0 used for them was invented, and it was
+#: assay_conditions carry no concentration column, so the -4.0 used for them was invented, and it
+#: was
 #: a deterministic function of ``dose_response`` anyway.
 ASSAY_METADATA = {
     #                          preincubated  dose_response  luminescent  aggregate
     "direct_inhibition_drc": (0.0, 1.0, 0.0, 0.0),  # fluorogenic, single lab (reference)
     "tdi_drc": (1.0, 1.0, 0.0, 0.0),
-    "direct_inhibition_screen": (0.0, 0.0, 0.0, 0.0),
+    # The primary single-concentration screen was run under the preincubation (TDI) condition.
+    "direct_inhibition_screen": (1.0, 0.0, 0.0, 0.0),
     # Auxiliary contexts described by what separates them at the bench: a coupled
     # luminescent readout (Veith/Tox21) and multi-lab literature aggregation (ChEMBL/SAIR)
     # are the real distinctions; Octant and Novartis share the reference's fluorogenic
@@ -204,6 +293,17 @@ ASSAY_METADATA = {
     "luminescent_ac50": (0.0, 1.0, 1.0, 0.0),
     "literature_ic50": (0.0, 1.0, 0.0, 1.0),
     "reversible_pic50": (0.0, 1.0, 0.0, 0.0),
+    # The graph's response head reads the same P450-Glo luminescent curve, so it shares the
+    # luminescent dose-response profile; without an entry, metadata conditioning raised.
+    RESPONSE_ASSAY: (0.0, 1.0, 1.0, 0.0),
+    # The screen-response head reads the challenge's own single-concentration screen, so it
+    # shares that assay's profile: preincubation (TDI) condition, single concentration, single
+    # lab, fluorogenic. The raw-log2FC head reads the same screen, so it shares the profile too.
+    SCREEN_RESPONSE_ASSAY: (1.0, 0.0, 0.0, 0.0),
+    SCREEN_LOG2FC_ASSAY: (1.0, 0.0, 0.0, 0.0),
+    # A derived call, not a measurement of its own: the reference profile, so the call is neither
+    # a preincubated assay nor a single-concentration one.
+    TDI_LABEL_ASSAY: (0.0, 1.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 
@@ -213,6 +313,7 @@ def encode_conditions(
     strategy: str = "factorised",
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
+    sources: tuple[str, ...] | None = None,
 ) -> np.ndarray:
     """Encode which target and assay each observation came from.
 
@@ -234,8 +335,8 @@ def encode_conditions(
         ValueError: On an unknown strategy, target or assay.
     """
     if strategy == "factorised":
-        return one_hot_encode(observations, targets, assays)
-    if strategy == "metadata":
+        base = one_hot_encode(observations, targets, assays)
+    elif strategy == "metadata":
         unknown_targets = set(observations["target"]) - set(targets)
         unknown_assays = set(observations["assay"]) - set(assays)
         if unknown_targets or unknown_assays:
@@ -246,20 +347,34 @@ def encode_conditions(
         scalars = np.array(
             [ASSAY_METADATA[assay] for assay in observations["assay"]], dtype=np.float32
         )
-        return np.hstack([target_block, scalars])
-    raise ValueError(f"unknown conditioning strategy {strategy!r}")
+        base = np.hstack([target_block, scalars])
+    else:
+        raise ValueError(f"unknown conditioning strategy {strategy!r}")
+    if sources is None:
+        return base
+    # Source-stratified conditioning: append a one-hot over which dataset the row came from,
+    # so same-chemistry sources kept apart in assembly each get their own calibration.
+    unknown_sources = set(observations["source"]) - set(sources)
+    if unknown_sources:
+        raise ValueError(f"unrecognised source {unknown_sources}")
+    source_block = np.array(
+        [[row == s for s in sources] for row in observations["source"]], dtype=np.float32
+    )
+    return np.hstack([base, source_block]).astype(np.float32)
 
 
 def n_condition_columns(
     strategy: str = "factorised",
     targets: tuple[str, ...] = ISOFORMS,
     assays: tuple[str, ...] = ASSAYS,
+    sources: tuple[str, ...] | None = None,
 ) -> int:
     """Width of the encoding a strategy produces, without building it."""
+    extra = len(sources) if sources is not None else 0
     if strategy == "factorised":
-        return len(targets) + len(assays)
+        return len(targets) + len(assays) + extra
     if strategy == "metadata":
-        return len(targets) + N_METADATA_COLUMNS
+        return len(targets) + N_METADATA_COLUMNS + extra
     raise ValueError(f"unknown conditioning strategy {strategy!r}")
 
 

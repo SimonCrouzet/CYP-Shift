@@ -33,6 +33,14 @@ def test_type_ii_flag_fires_on_azole_rings_not_bare_pyridine():
     assert frame["is_type_ii_candidate"].tolist() == [1.0, 1.0, 0.0, 0.0]
 
 
+def test_heme_coordinator_counts_cover_pyridine_nitrile_aniline():
+    # Beyond the azole flag, the other type-II coordinators are counted as raw signal.
+    frame = mechanistic(["c1ccncc1", "N#Cc1ccccc1", "Nc1ccccc1", "CCO"])
+    assert frame["n_pyridine_n"].tolist() == [1.0, 0.0, 0.0, 0.0]
+    assert frame["n_nitrile"].tolist() == [0.0, 1.0, 0.0, 0.0]
+    assert frame["n_aniline_n"].tolist() == [0.0, 0.0, 1.0, 0.0]
+
+
 def test_azole_coordinator_count_scales_with_ring_nitrogens():
     # Coordinating nitrogens are the pyridine-type ones (no H). Imidazole has one,
     # 1,2,4-triazole two, tetrazole three.
@@ -143,3 +151,59 @@ def test_azole_coordinators_ignores_six_membered_diazines():
     assert azole_coordinators(Chem.MolFromSmiles("c1ccncc1")) == 0  # pyridine
     assert azole_coordinators(Chem.MolFromSmiles("c1cnccn1")) == 0  # pyrazine
     assert azole_coordinators(Chem.MolFromSmiles("c1c[nH]cn1")) == 1  # imidazole
+
+
+def _write_cache(directory, name, smiles, values, columns=None):
+    arrays = {"smiles": np.array(smiles, dtype=str), "values": values}
+    if columns is not None:
+        arrays["columns"] = np.array(columns, dtype=str)
+    np.savez_compressed(directory / f"{name}.npz", **arrays)
+
+
+def test_cached_rows_are_read_and_only_the_other_compounds_are_computed(tmp_path, monkeypatch):
+    from cypshift.features import molecular
+
+    smiles = ["c1ccccc1", "CCO", "c1ccccc1", "CC(=O)O"]
+    computed = molecular.compute_physicochemical(["c1ccccc1", "CC(=O)O"])
+    cached = np.full((1, computed.shape[1]), 12345.0, dtype=np.float32)
+    _write_cache(tmp_path, "physchem", ["CCO"], cached, list(computed.columns))
+    monkeypatch.setattr(molecular, "FEATURE_CACHE_DIR", tmp_path)
+    molecular._cache_table.cache_clear()
+    calls = []
+    real = molecular.compute_physicochemical
+    monkeypatch.setattr(
+        molecular, "compute_physicochemical", lambda items: calls.append(list(items)) or real(items)
+    )
+    out = molecular.physicochemical(smiles)
+    molecular._cache_table.cache_clear()
+    assert calls == [["CC(=O)O", "c1ccccc1"]]  # the compounds the cache lacks, once each
+    assert list(out.columns) == list(computed.columns)
+    assert (out.iloc[1] == 12345.0).all()
+    np.testing.assert_allclose(out.iloc[0].to_numpy(), computed.iloc[0].to_numpy())
+    np.testing.assert_allclose(out.iloc[2].to_numpy(), computed.iloc[0].to_numpy())
+    np.testing.assert_allclose(out.iloc[3].to_numpy(), computed.iloc[1].to_numpy())
+
+
+def test_a_block_without_a_cache_file_is_computed_as_before(tmp_path, monkeypatch):
+    from cypshift.features import molecular
+
+    monkeypatch.setattr(molecular, "FEATURE_CACHE_DIR", tmp_path)
+    molecular._cache_table.cache_clear()
+    smiles = ["CCO", "c1ccccc1"]
+    np.testing.assert_array_equal(
+        molecular.morgan_counts(smiles, 2, 64), molecular.compute_morgan_counts(smiles, 2, 64)
+    )
+    molecular._cache_table.cache_clear()
+
+
+def test_cached_fingerprint_counts_come_back_as_floats(tmp_path, monkeypatch):
+    from cypshift.features import molecular
+
+    counts = molecular.compute_morgan_counts(["CCO"], 2, 64)
+    _write_cache(tmp_path, "morgan_r2_b64", ["CCO"], counts.astype(np.uint16))
+    monkeypatch.setattr(molecular, "FEATURE_CACHE_DIR", tmp_path)
+    molecular._cache_table.cache_clear()
+    out = molecular.morgan_counts(["CCO"], 2, 64)
+    molecular._cache_table.cache_clear()
+    assert out.dtype == np.float32
+    np.testing.assert_array_equal(out, counts)

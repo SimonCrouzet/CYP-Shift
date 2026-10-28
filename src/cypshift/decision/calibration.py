@@ -100,8 +100,12 @@ class ConformalCalibrator:
         before being used as one. Skipping that conversion inflates the interval by
         the same factor and overshoots coverage.
 
-        The shortfall is added as aleatoric variance, so the model's own sample shape
-        is preserved and only the width changes.
+        The aleatoric variance is *set* to the gap between the calibrated target and the
+        model's own (epistemic) sample spread, so the total reaches the target. It must not
+        be added on top of the distribution's existing aleatoric variance: the target is
+        derived from the total spread, which already reflects that term, so re-adding it
+        double-counts (asking for total variance 1 on a distribution already carrying 1
+        would otherwise return 2).
         """
         missing = set(distribution.endpoints) - set(self.multipliers)
         if missing:
@@ -112,8 +116,6 @@ class ConformalCalibrator:
         z = norm.ppf(0.5 + self.level / 2)
         half_width = np.maximum(distribution.total_std, floor) * multiplier
         target_variance = (half_width / z) ** 2
-        shortfall = np.clip(target_variance - distribution.epistemic_variance, 0.0, None)
-        added = np.broadcast_to(shortfall, distribution.samples.shape).copy()
-        if distribution.aleatoric_variance is not None:
-            added = added + distribution.aleatoric_variance
+        aleatoric = np.clip(target_variance - distribution.epistemic_variance, 0.0, None)
+        added = np.broadcast_to(aleatoric, distribution.samples.shape).copy()
         return PredictiveDistribution(distribution.samples, distribution.endpoints, added)

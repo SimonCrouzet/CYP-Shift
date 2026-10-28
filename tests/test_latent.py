@@ -5,9 +5,10 @@ import pandas as pd
 import pytest
 import torch
 
-from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
+from cypshift.config import ISOFORMS
 from cypshift.data.assembly import build_observations
 from cypshift.models.latent import LatentPotencyModel, observation_loss
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
@@ -103,7 +104,9 @@ def test_the_time_dependence_call_follows_the_published_rule():
     direct = model.predict_direct(smiles)
     shift = model.predict_shift(smiles)
     expected = np.where(
-        direct > 4.0, shift > TDI_SHIFT_THRESHOLD, direct + shift > 4.0 + TDI_SHIFT_THRESHOLD
+        direct > TDI_FLOOR_DEFAULT,
+        shift > TDI_SHIFT_DEFAULT,
+        direct + shift > TDI_FLOOR_DEFAULT + TDI_SHIFT_DEFAULT,
     )
     np.testing.assert_array_equal(model.predict_is_time_dependent(smiles), expected)
 

@@ -30,6 +30,9 @@ from cypshift.data.sequences import ACCESSIONS
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 DEFAULT_INDEX = Path("data/external/sair.parquet")
 DEFAULT_CACHE = Path("data/external")
 
@@ -54,6 +57,7 @@ def clean_rows(rows: pd.DataFrame) -> pd.DataFrame:
 def load_auxiliary(
     enzyme: str,
     challenge_smiles: pd.Series,
+    dedup_mode: str = "canonical_smiles",
     cache: Path = DEFAULT_CACHE,
     index: Path = DEFAULT_INDEX,
 ) -> pd.DataFrame:
@@ -85,6 +89,6 @@ def load_auxiliary(
         frame = clean_rows(rows)
         frame.to_csv(path, index=False)
         logger.info("cached %d SAIR compounds for %s (%s)", len(frame), enzyme, accession)
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     return deduplicated

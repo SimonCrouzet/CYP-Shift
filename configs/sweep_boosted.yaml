@@ -6,6 +6,12 @@
 # Run this only after stage 1 says the boosted tree wins. If a different family wins,
 # tune that one instead -- these parameters are read by nobody else.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

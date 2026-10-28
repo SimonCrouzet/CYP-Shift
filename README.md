@@ -19,7 +19,7 @@ Entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/
 | 🎯 **Targets** | CYP1A2 · CYP2C9 · CYP2D6 · CYP3A4 |
 | 📈 **Regression track** | pIC50 × 4 isoforms, 750 blinded compounds |
 | 🔀 **Classification track** | time-dependent inhibition, CYP2D6 + CYP3A4 only |
-| 🧊 **Structure track** | pose prediction, 184 complexes, opens mid-challenge |
+| 🧊 **Structure track** | pose prediction, 20 CYP3A4 complexes, opens mid-challenge |
 | 🔬 **Assay** | fluorogenic probe (1A2/2C9/3A4) · mass-spec depletion (2D6) |
 | 📏 **Ranked on** | macro-averaged soft-threshold relative absolute error |
 | 🔁 **Submission limit** | 1 per 12 h, latest counts |
@@ -176,7 +176,7 @@ Turning several on composes. The table below is the whole menu.
 
 | source | data points | what it is |
 |---|--:|---|
-| challenge dose-response | **6,325** labels · 4,905 compounds | the 12-point curves we are scored on — direct pIC50 per compound × enzyme |
+| challenge dose-response | **6,525** labels · 4,905 compounds | the 12-point curves we are scored on — direct pIC50 per compound × enzyme |
 
 **🎯 Challenge evidence** — more of the *same* experiment, in other shapes:
 
@@ -322,7 +322,7 @@ narrow until it earns width.
 
 | source | scale | role |
 |---|---|---|
-| Dose-response pIC50 | 4,905 compounds · 6,325 labels | primary supervised target |
+| Dose-response pIC50 | 4,905 compounds · 6,525 labels | primary supervised target |
 | **Single-concentration screen** | **4,376 × 4 = 17,504** | **censored bounds, bias correction** |
 | Time-dependent inhibition arm | 6,145 compounds | classification track |
 | Emax | 6,145 compounds | — |
@@ -422,6 +422,19 @@ data/              inputs (gitignored)
 ## ⚙️ Setup
 
 ```bash
+./setup.sh          # create/check the env, install only what is missing, run the preflight
+./setup.sh --fetch  # the above, and download the core challenge data into data/raw
+```
+
+`setup.sh` finds a conda frontend, ensures the `cypshift` env exists, installs the package
+only when an import probe shows it missing (so a ready env is not reinstalled), then runs
+the visual preflight below. Knobs: `ENV_PREFIX=<path>` installs into a prefix on local disk,
+`EXTRAS=nn,tfm` installs a subset, `FORCE_UPDATE=1` rebuilds the env, `FORCE_INSTALL=1`
+reinstalls the package.
+
+The equivalent by hand:
+
+```bash
 mamba env create -f environment.yml && mamba activate cypshift
 pip install -e ".[dev]"     # everything, including the deep-learning stack
 ```
@@ -429,6 +442,19 @@ pip install -e ".[dev]"     # everything, including the deep-learning stack
 `dev` pulls in every runtime extra, so the full test suite runs. To install only what
 a given model needs, use the extras directly: the package alone gives the boosted
 model, and `.[nn]` adds the neural, graph and curve models.
+
+### Preflight
+
+`scripts/check_env.py` reports — with ✓/⚠/✗ marks — the interpreter, required and optional
+packages with versions, CUDA, the core and auxiliary data caches, and the TABPFN/HF tokens,
+then prints `READY` / `NOT READY` and the launch command. It exits non-zero only when the
+core (challenge data + always-required packages) is missing; optional packages and the
+`data/external` auxiliary caches gate only their own config families.
+
+```bash
+python scripts/check_env.py          # check an already-built env
+python scripts/check_env.py --fetch  # download the core challenge files first
+```
 
 ### Two environments
 

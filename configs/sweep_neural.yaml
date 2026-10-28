@@ -7,6 +7,12 @@
 # and its width live here rather than in the shared stage-one sweep, where a boosted or
 # graph trial cannot honour it.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

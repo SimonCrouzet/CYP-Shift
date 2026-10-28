@@ -20,10 +20,10 @@ Both are built here.
     and it keeps structure the four output numbers discard, at the cost of dimensions
     that mean nothing individually.
 
-**The surrogate is fitted on training compounds only.** Fitting it on everything and
+**The screen_model is fitted on training compounds only.** Fitting it on everything and
 then predicting for the holdout would let the screen readings of held-out compounds
 reach the model through the feature, which inflates the holdout score without
-improving anything on the blinded test set. :func:`fit_surrogate` takes the compounds
+improving anything on the blinded test set. :func:`fit_screen_model` takes the compounds
 it may learn from explicitly for that reason.
 """
 
@@ -41,10 +41,10 @@ from cypshift.features.molecular import featurise
 
 logger = logging.getLogger(__name__)
 
-SURROGATE_STRATEGIES = ("predicted_label", "embedding")
+SCREEN_MODEL_STRATEGIES = ("predicted_label", "embedding")
 
 #: Width of the screen model's hidden layer, and therefore of the ``embedding``
-#: surrogate. Small on purpose: it is an input to another model, and a wide block of
+#: screen_model. Small on purpose: it is an input to another model, and a wide block of
 #: unnamed columns would swamp the fingerprint it sits beside.
 DEFAULT_EMBEDDING_WIDTH = 16
 
@@ -54,15 +54,15 @@ MIN_COMPOUNDS_FOR_EARLY_STOPPING = 30
 
 
 @dataclass
-class Surrogate:
+class ScreenModel:
     """A model of the screen, used to featurise compounds for the real model."""
 
     network: MLPRegressor
     strategy: str
     n_bits: int
     columns: tuple[str, ...]
-    #: Centre and spread of the surrogate's own output on the training compounds.
-    #: The surrogate standardises itself because of where its columns land: they are
+    #: Centre and spread of the screen_model's own output on the training compounds.
+    #: The screen_model standardises itself because of where its columns land: they are
     #: appended last, and BlockScaler treats trailing columns as binary and passes them
     #: through unscaled. An embedding block averaging 6.2 would then sit unscaled
     #: beside a sparse fingerprint -- the same mistake that cost 0.089 when uniform
@@ -77,14 +77,14 @@ class Surrogate:
         return hidden_activations(self.network, x)
 
     def transform(self, smiles: list[str]) -> NDArray[np.float32]:
-        """Standardised surrogate features for a list of compounds."""
+        """Standardised screen_model features for a list of compounds."""
         values = self._raw(list(smiles))
         if self.centre is None or self.spread is None:
             return values
         return ((values - self.centre) / self.spread).astype(np.float32)
 
     def __call__(self, smiles: list[str]) -> NDArray[np.float32]:
-        """So a Surrogate can be handed straight to ``featurise(extra=...)``."""
+        """So a ScreenModel can be handed straight to ``featurise(extra=...)``."""
         return self.transform(list(smiles))
 
 
@@ -115,31 +115,31 @@ def screen_targets(screen: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return wide, enzymes
 
 
-def fit_surrogate(
+def fit_screen_model(
     screen: pd.DataFrame,
     trainable: set[str],
     strategy: str,
     n_bits: int = 2048,
     hidden: int = DEFAULT_EMBEDDING_WIDTH,
     seed: int = 0,
-) -> Surrogate:
+) -> ScreenModel:
     """Fit a model of the screen on the compounds it is allowed to see.
 
     Args:
         screen: The long single-concentration table.
-        trainable: Molecule names the surrogate may learn from. Compounds outside this
+        trainable: Molecule names the screen_model may learn from. Compounds outside this
             set are dropped even if the screen covers them, so a holdout compound's
             screen reading cannot reach the model through the feature.
-        strategy: One of :data:`SURROGATE_STRATEGIES`.
+        strategy: One of :data:`SCREEN_MODEL_STRATEGIES`.
         n_bits: Fingerprint width, matched to the downstream model's.
-        hidden: Width of the hidden layer, and of an ``embedding`` surrogate.
+        hidden: Width of the hidden layer, and of an ``embedding`` screen_model.
         seed: Passed to the network.
 
     Raises:
         ValueError: On an unknown strategy, or if no trainable compound has a reading.
     """
-    if strategy not in SURROGATE_STRATEGIES:
-        raise ValueError(f"unknown surrogate strategy {strategy!r}")
+    if strategy not in SCREEN_MODEL_STRATEGIES:
+        raise ValueError(f"unknown screen_model strategy {strategy!r}")
 
     wide, enzymes = screen_targets(screen)
     wide = wide[wide["Molecule_Name"].isin(trainable)]
@@ -149,6 +149,23 @@ def fit_surrogate(
     if wide.empty:
         raise ValueError("no trainable compound has a complete screen row")
 
+    return _fit_network(wide, enzymes, strategy, n_bits, hidden, seed, prefix="screen")
+
+
+def _fit_network(
+    wide: pd.DataFrame,
+    enzymes: list[str],
+    strategy: str,
+    n_bits: int,
+    hidden: int,
+    seed: int,
+    prefix: str,
+) -> ScreenModel:
+    """Fit the helper network on a complete compound x enzyme table and standardise its output.
+
+    ``wide`` has a ``SMILES`` column and one column per entry of ``enzymes``; ``prefix`` names the
+    output columns (``<prefix>_predicted_<enzyme>`` / ``<prefix>_embedding_<i>``).
+    """
     x = featurise(wide["SMILES"].tolist(), n_bits=n_bits)
     y = wide[enzymes].to_numpy(dtype=float)
     # Early stopping holds back 10% as a validation split, which sklearn refuses when
@@ -167,30 +184,96 @@ def fit_surrogate(
     )
     network.fit(x, y)
     logger.info(
-        "fitted %s surrogate on %d compounds over %d enzymes",
+        "fitted %s %s helper model on %d compounds over %d enzymes",
+        prefix,
         strategy,
         len(wide),
         len(enzymes),
     )
     columns = (
-        tuple(f"screen_predicted_{e}" for e in enzymes)
+        tuple(f"{prefix}_predicted_{e}" for e in enzymes)
         if strategy == "predicted_label"
-        else tuple(f"screen_embedding_{i}" for i in range(hidden))
+        else tuple(f"{prefix}_embedding_{i}" for i in range(hidden))
     )
-    surrogate = Surrogate(network, strategy, n_bits, columns)
+    helper = ScreenModel(network, strategy, n_bits, columns)
     # Standardise on the training compounds only, for the same reason the network is
     # fitted on them only.
-    raw = surrogate._raw(wide["SMILES"].tolist())
-    surrogate.centre = raw.mean(axis=0)
-    surrogate.spread = raw.std(axis=0) + 1e-6
-    return surrogate
+    raw = helper._raw(wide["SMILES"].tolist())
+    helper.centre = raw.mean(axis=0)
+    helper.spread = raw.std(axis=0) + 1e-6
+    return helper
 
 
-def surrogate_frame(surrogate: Surrogate, smiles: list[str]) -> pd.DataFrame:
-    """Surrogate features as a named table, for joining onto an observation set."""
-    values = surrogate.transform(smiles)
+#: Output-column prefix of the qHTS max-response helper model.
+RESPONSE_PREFIX = "qhts_response"
+
+
+def fit_response_model(
+    rows: pd.DataFrame, n_bits: int = 2048, hidden: int = DEFAULT_EMBEDDING_WIDTH, seed: int = 0
+) -> ScreenModel:
+    """Fit a helper model on the qHTS max-response rows and return it as an input-feature block.
+
+    ``rows`` is the auxiliary observation table restricted to the max-response assay: one row per
+    (compound, enzyme) with the 0-1 response in ``value``. The network maps a structure to the
+    response each enzyme would show, and its standardised output is handed to a model that has no
+    response head as extra columns (``predicted_label``), the same route the single-concentration
+    screen takes. The response rows come from the auxiliary loaders, which deduplicate against the
+    whole challenge set, so no challenge compound is in the helper's training data.
+
+    Only compounds with a reading for every enzyme present are used: a multi-output network needs
+    a complete target row.
+
+    Raises:
+        ValueError: When ``rows`` is empty or no compound has a complete row.
+    """
+    if rows.empty:
+        raise ValueError("no max-response rows to fit the response helper model on")
+    wide = rows.pivot_table(index="SMILES", columns="target", values="value", aggfunc="mean")
+    enzymes = sorted(wide.columns)
+    wide = wide.dropna(subset=enzymes).reset_index()
+    if wide.empty:
+        raise ValueError("no compound has a max-response reading for every enzyme")
+    return _fit_network(
+        wide[["SMILES", *enzymes]],
+        enzymes,
+        "predicted_label",
+        n_bits,
+        hidden,
+        seed,
+        prefix=RESPONSE_PREFIX,
+    )
+
+
+@dataclass
+class ScreenModelStack:
+    """Several helper models whose standardised outputs form one extra feature block."""
+
+    models: tuple[ScreenModel, ...]
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return tuple(column for model in self.models for column in model.columns)
+
+    def transform(self, smiles: list[str]) -> NDArray[np.float32]:
+        return np.concatenate([model.transform(list(smiles)) for model in self.models], axis=1)
+
+    def __call__(self, smiles: list[str]) -> NDArray[np.float32]:
+        return self.transform(list(smiles))
+
+
+def stack_helper_models(*models: ScreenModel | None) -> ScreenModel | ScreenModelStack | None:
+    """The one helper to hand a model: ``None``, the single model, or their concatenation."""
+    present = tuple(model for model in models if model is not None)
+    if not present:
+        return None
+    return present[0] if len(present) == 1 else ScreenModelStack(present)
+
+
+def screen_model_frame(screen_model: ScreenModel, smiles: list[str]) -> pd.DataFrame:
+    """ScreenModel features as a named table, for joining onto an observation set."""
+    values = screen_model.transform(smiles)
     return pd.DataFrame(
-        values, columns=list(surrogate.columns), index=pd.Index(smiles, name="SMILES")
+        values, columns=list(screen_model.columns), index=pd.Index(smiles, name="SMILES")
     )
 
 

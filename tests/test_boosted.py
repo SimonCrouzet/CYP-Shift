@@ -131,7 +131,7 @@ def test_the_model_satisfies_the_declared_interface():
     assert hasattr(model, "fit") and hasattr(model, "predict")
 
 
-def _two_arm_observations():
+def _two_assay_condition_observations():
     import numpy as np
     import pandas as pd
 
@@ -147,7 +147,7 @@ def _two_arm_observations():
     ]
     rng = np.random.default_rng(0)
     rows = []
-    for arm in ("direct_inhibition_drc", "tdi_drc"):
+    for assay_condition in ("direct_inhibition_drc", "tdi_drc"):
         for i, smi in enumerate(smiles):
             for target in ("CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"):
                 value = rng.uniform(4, 7)
@@ -156,7 +156,7 @@ def _two_arm_observations():
                         Molecule_Name=f"M{i}",
                         SMILES=smi,
                         target=target,
-                        assay=arm,
+                        assay=assay_condition,
                         value=value,
                         conf_low=value,
                         conf_high=value,
@@ -175,7 +175,7 @@ def test_boosted_predicts_tdi_from_two_scalar_values():
 
     from cypshift.models.boosted import BoostedTrees
 
-    observations, smiles = _two_arm_observations()
+    observations, smiles = _two_assay_condition_observations()
     model = BoostedTrees(n_bits=512, n_estimators=8, loss="squared")
     model.fit(observations)
     flags = model.predict_is_time_dependent(smiles[:3])
@@ -187,15 +187,26 @@ def test_a_clear_shift_is_called_time_dependent():
     """If the preincubated pIC50 is well above the direct one, the rule fires."""
     import numpy as np
 
-    from cypshift.config import TDI_SHIFT_THRESHOLD
     from cypshift.models.boosted import BoostedTrees
+    from cypshift.models.tdi import TDI_SHIFT_DEFAULT
 
     model = BoostedTrees()
     # stub the per-assay prediction: a big direct->preincubated shift on every isoform
     model._predict_pic50_at = lambda smiles, enzyme, assay: (
         np.full(len(smiles), 6.0)
         if assay == "tdi_drc"
-        else np.full(len(smiles), 6.0 - 2 * TDI_SHIFT_THRESHOLD)
+        else np.full(len(smiles), 6.0 - 2 * TDI_SHIFT_DEFAULT)
     )
     flags = model.predict_is_time_dependent(["CCO", "CCN"])
     assert flags.all()
+
+
+def test_fit_threads_follow_omp_num_threads(monkeypatch):
+    from cypshift.models.boosted import fit_threads
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    assert fit_threads() == {"n_jobs": 3}
+    monkeypatch.setenv("OMP_NUM_THREADS", "")
+    assert fit_threads() == {}
+    monkeypatch.delenv("OMP_NUM_THREADS")
+    assert fit_threads() == {}

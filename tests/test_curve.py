@@ -8,7 +8,7 @@ import torch
 from cypshift.config import ISOFORMS
 from cypshift.data.assembly import build_observations
 from cypshift.models.curve import (
-    ARMS,
+    ASSAY_CONDITIONS,
     DESCRIBED_CONDITIONING,
     EMAX,
     EMAX_OFFSET,
@@ -18,8 +18,48 @@ from cypshift.models.curve import (
     SCREEN_PC,
     CurveModel,
     CurveNetwork,
+    assay_condition_index,
+    build_curve_trunk,
     inhibition_at,
 )
+
+
+def test_screen_maps_to_the_preincubated_curve_condition():
+    """The primary screen was run under preincubation, so it constrains the preincubated curve
+    (index 1), alongside the TDI DRC -- not the direct curve. Direct DRC and auxiliary assays
+    stay direct (index 0)."""
+    assays = pd.Series(
+        ["direct_inhibition_drc", "tdi_drc", "direct_inhibition_screen", "literature_ic50"]
+    )
+    assert assay_condition_index(assays).tolist() == [0, 1, 1, 0]
+    assert ASSAY_CONDITIONS[1] == "preincubated"  # index 1 is the preincubated arm
+
+
+def test_curve_backbone_is_pluggable_and_the_head_reads_it():
+    """Follow-up B: an injected trunk (any features->width backbone) feeds the dose-response head
+    unchanged; the output shape is still (batch, targets, conditions, params)."""
+    n_features, width = 12, 7
+    trunk = torch.nn.Sequential(torch.nn.Linear(n_features, width), torch.nn.ReLU())
+    net = CurveNetwork(n_features, n_targets=len(ISOFORMS), trunk=trunk, trunk_output_dim=width)
+    assert net.trunk is trunk  # the injected backbone is used as-is
+    out = net(torch.zeros(3, n_features))
+    assert out.shape == (3, len(ISOFORMS), len(ASSAY_CONDITIONS), 3)
+
+
+def test_injected_trunk_requires_its_output_width():
+    with pytest.raises(ValueError, match="output width"):
+        CurveNetwork(12, n_targets=len(ISOFORMS), trunk=torch.nn.Identity())
+
+
+def test_trunk_depth_controls_the_default_backbone_layer_count():
+    """trunk_depth deepens the default backbone: depth hidden layers means depth Linear layers,
+    the last emitting hidden // 2 (the width the head reads)."""
+    deep = build_curve_trunk(n_features=16, hidden=32, dropout=0.1, depth=4)
+    linears = [m for m in deep if isinstance(m, torch.nn.Linear)]
+    assert len(linears) == 4
+    assert linears[-1].out_features == 16  # hidden // 2
+    assert build_curve_trunk(16, 32, 0.1, depth=1)(torch.zeros(2, 16)).shape == (2, 16)
+
 
 SCAFFOLDS = ["CCOc1ccc({})cc1", "c1ccc2[nH]c({})cc2c1", "Cn1cnc({})c1"]
 SMILES = [s.format(x) for s in SCAFFOLDS for x in ["C", "CC", "Cl", "Br", "F", "O", "N", "CCC"]]
@@ -162,10 +202,10 @@ def test_the_screen_saturates_for_potent_compounds():
     assert responses[3] - responses[2] < 0.1 * (responses[2] - responses[1])
 
 
-def test_the_two_arms_are_separate_curves():
+def test_the_two_assay_conditions_are_separate_curves():
     model = _model().fit(_observations())
-    direct = model.predict_pic50(SMILES[:5], arm=ARMS[0])
-    preincubated = model.predict_pic50(SMILES[:5], arm=ARMS[1])
+    direct = model.predict_pic50(SMILES[:5], assay_condition=ASSAY_CONDITIONS[0])
+    preincubated = model.predict_pic50(SMILES[:5], assay_condition=ASSAY_CONDITIONS[1])
     assert not np.allclose(direct, preincubated)
 
 
@@ -176,7 +216,7 @@ def test_parameter_order_is_what_the_loss_assumes():
 def test_an_observation_only_reaches_the_head_it_observed():
     """The property the whole decomposition rests on.
 
-    A measurement on one enzyme, in one arm, must produce gradient in that head alone.
+    A measurement on one enzyme, in one assay_condition, must produce gradient in that head alone.
     If it leaked into the others, a CYP2C9 reading would drag CYP2D6 -- which is
     exactly wrong, since the two recognise opposite charges: an acid helps at CYP2C9
     and hurts at CYP2D6, and a basic amine does the reverse.
@@ -184,11 +224,11 @@ def test_an_observation_only_reaches_the_head_it_observed():
     from cypshift.models.curve import CurveNetwork, curve_loss
 
     torch.manual_seed(0)
-    network = CurveNetwork(n_features=8, n_targets=4, n_arms=2, hidden=16, dropout=0.0)
+    network = CurveNetwork(n_features=8, n_targets=4, n_assay_conditions=2, hidden=16, dropout=0.0)
     predicted = network(torch.randn(1, 8))
 
-    observed_target, observed_arm = 1, 0
-    parameters = predicted[:, observed_target, observed_arm]
+    observed_target, observed_assay_condition = 1, 0
+    parameters = predicted[:, observed_target, observed_assay_condition]
     loss = curve_loss(
         parameters,
         observation_kind=torch.tensor([0]),
@@ -203,7 +243,7 @@ def test_an_observation_only_reaches_the_head_it_observed():
         for index, head in enumerate(network.heads)
         if head.weight.grad is not None and head.weight.grad.abs().sum() > 0
     ]
-    assert touched == [observed_target * 2 + observed_arm]
+    assert touched == [observed_target * 2 + observed_assay_condition]
 
 
 def test_a_screen_row_and_a_curve_row_constrain_different_things():
@@ -274,7 +314,7 @@ class TestFilmConditioning:
         network = self._network("film")
         with torch.no_grad():
             output = network(torch.randn(8, 32))
-        # every enzyme and arm sees the same unmodulated representation at init
+        # every enzyme and assay_condition sees the same unmodulated representation at init
         assert torch.allclose(output[:, 0, 0], output[:, 1, 1], atol=1e-6)
 
     def test_concatenating_a_descriptor_only_shifts_every_molecule_alike(self):
@@ -366,3 +406,95 @@ def test_predict_keeps_the_dropout_passes_as_members():
     )
     model.fit(observations)
     assert model.predict(["CCO"]).samples.shape[0] == 4
+
+
+def test_inhibition_has_finite_gradients_in_the_overflow_regime():
+    """The Hill curve must not produce NaN gradients when the exponent is large (F4)."""
+    import torch
+
+    from cypshift.models.curve import inhibition_at
+
+    params = torch.tensor([3.0, 5.0, 5.0], requires_grad=True)  # pIC50 far below pC
+    inhibition_at(params, torch.tensor(12.0)).backward()
+    assert torch.isfinite(params.grad).all()
+
+
+def _graph_model(**kwargs):
+    """A small graph-backbone curve for fast tests (fresh encoder, no CheMeleon download)."""
+    from cypshift.models.curve import GraphCurveModel
+
+    settings = {"hidden": 32, "depth": 2, "epochs": 3, "batch_size": 16, "n_forward_passes": 3}
+    return GraphCurveModel(**{**settings, **kwargs})
+
+
+def test_graph_curve_shares_the_readout_with_the_mlp_curve():
+    """The cross-model curve reads an answer off the curve exactly as the fingerprint MLP does:
+    both inherit the same _CurveReadout, so there is one definition of each read."""
+    from cypshift.models.curve import GraphCurveModel, _CurveReadout
+
+    assert issubclass(GraphCurveModel, _CurveReadout)
+    assert issubclass(CurveModel, _CurveReadout)
+
+
+def test_graph_curve_fits_and_reads_every_answer_off_one_curve():
+    """A D-MPNN backbone under the dose-response head: it trains, and the regression midpoint,
+    the screen-concentration response, and the is_TDI call all read off the predicted curve."""
+    model = _graph_model().fit(_observations())
+    distribution = model.predict(SMILES)
+    assert distribution.samples.shape == (3, len(SMILES), len(ISOFORMS))  # (passes, n, endpoints)
+    assert np.isfinite(distribution.samples).all()
+    assert model.predict_pic50(SMILES).shape == (len(SMILES), len(ISOFORMS))
+    response = model.predict_response(SMILES)
+    assert response.shape == (len(SMILES), len(ISOFORMS))
+    assert ((response >= 0.0) & (response <= 1.0)).all()  # a bounded inhibited fraction
+    tdi = model.predict_is_time_dependent(SMILES)
+    assert tdi.shape == (len(SMILES), len(ISOFORMS)) and tdi.dtype == bool
+
+
+def test_graph_curve_backbone_is_a_message_passing_encoder():
+    """The injected trunk is the chemprop encoder, and its output width is the encoder's -- the
+    curve head reads a learned graph representation, not a fingerprint MLP's output."""
+    from chemprop import nn as cpnn
+
+    from cypshift.models.curve import _GraphTrunk
+
+    model = _graph_model().fit(_observations())
+    assert isinstance(model._model.trunk, _GraphTrunk)
+    assert isinstance(model._model.trunk.message_passing, cpnn.BondMessagePassing)
+    assert model._model.trunk.output_dim == model._model.trunk.message_passing.output_dim
+
+
+def test_graph_curve_descriptors_ride_along_as_x_d():
+    """physchem/mechanism descriptors widen the representation the head reads (appended as x_d),
+    so the trunk output is wider than the bare encoder."""
+    bare = _graph_model().fit(_observations())
+    with_descriptors = _graph_model(physchem=True, mechanism=True).fit(_observations())
+    assert with_descriptors._model.trunk.output_dim > bare._model.trunk.output_dim
+
+
+def test_graph_curve_predicting_before_fitting_is_an_error():
+    with pytest.raises(RuntimeError, match="model is not fitted"):
+        _graph_model().predict_pic50(SMILES[:3])
+
+
+def test_graph_curve_routes_configured_dropout_to_the_readout():
+    """P2 fix: the injected trunk carries the configured dropout at the readout, so the dropout
+    is applied even when the encoder is frozen or zero-dropout and the MC passes are not
+    deterministic. CurveNetwork adds none after an injected trunk and its heads are linear."""
+    model = _graph_model(dropout=0.3).fit(_observations())
+    assert isinstance(model._model.trunk.readout_dropout, torch.nn.Dropout)
+    assert model._model.trunk.readout_dropout.p == pytest.approx(0.3)
+
+
+def test_graph_curve_mc_passes_vary_under_dropout():
+    """With non-zero dropout the Monte Carlo passes differ, so the spread reaches the interval
+    machinery rather than repeating one deterministic computation."""
+    passes = _graph_model(dropout=0.3, n_forward_passes=6).fit(_observations())._curves(SMILES)
+    assert passes.std(axis=0).max() > 0.0  # the passes are not identical
+
+
+def test_graph_curve_rejects_an_unknown_conditioning_mode():
+    from cypshift.models.curve import GraphCurveModel
+
+    with pytest.raises(ValueError, match="unknown conditioning"):
+        GraphCurveModel(conditioning="nonsense")

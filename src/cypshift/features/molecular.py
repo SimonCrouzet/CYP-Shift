@@ -18,6 +18,8 @@ That is why both blocks are kept and why the mechanistic block exists.
 
 import logging
 from collections.abc import Callable, Sequence
+from functools import cache
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -76,7 +78,7 @@ def parse(smiles: Sequence[str]) -> list[Chem.Mol]:
     return molecules
 
 
-def morgan_counts(
+def compute_morgan_counts(
     smiles: Sequence[str], radius: int = 2, n_bits: int = 2048
 ) -> NDArray[np.float32]:
     """ECFP4-equivalent count fingerprints, shape ``(n_compounds, n_bits)``."""
@@ -87,7 +89,7 @@ def morgan_counts(
     )
 
 
-def physicochemical(smiles: Sequence[str]) -> pd.DataFrame:
+def compute_physicochemical(smiles: Sequence[str]) -> pd.DataFrame:
     """Bulk physicochemical descriptors, one column per property."""
     molecules = parse(smiles)
     return pd.DataFrame(
@@ -124,7 +126,7 @@ def azole_coordinators(molecule: Chem.Mol) -> int:
     return count
 
 
-def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
+def compute_mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
     """Substructure counts chosen for a named binding mechanism, not by search.
 
     Each column corresponds to an interaction with a specific structural basis, so a
@@ -134,6 +136,11 @@ def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
     patterns = {
         "n_basic_amines": BASIC_AMINE_SMARTS,
         "n_carboxylic_acids": CARBOXYLIC_ACID_SMARTS,
+        # Type-II heme-coordinating groups beyond the azoles: a pyridine-type aromatic N (a
+        # lone pair that ligates the iron), a nitrile, and an aniline-type aromatic amine.
+        "n_pyridine_n": "[n;X2;r6]",
+        "n_nitrile": "[NX1]#[CX2]",
+        "n_aniline_n": "[NX3;H1,H2]c",
     }
     frame = pd.DataFrame(
         {
@@ -149,9 +156,77 @@ def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
         [azole_coordinators(m) for m in molecules], dtype=np.float32
     )
     frame["has_basic_amine"] = (frame["n_basic_amines"] > 0).astype(np.float32)
+    # The azole flag stays as the strict type-II signal; the pyridine/nitrile/aniline counts
+    # above are the broader coordinators, left as counts for the model to weigh.
     frame["is_type_ii_candidate"] = (frame["n_heme_coordinating_n"] > 0).astype(np.float32)
     frame = pd.concat([frame, basic_amine_geometry(molecules)], axis=1)
     return frame
+
+
+#: Where ``scripts/compute_features.py`` writes the per-compound feature blocks. A compound found
+#: there is read, not computed; any other is computed as before, so the cache can only save time.
+FEATURE_CACHE_DIR = Path("data/external/features")
+
+
+@cache
+def _cache_table(name: str) -> tuple[dict[str, int], NDArray, list[str] | None] | None:
+    """One cached block: SMILES -> row, the value matrix and its column names (None for an
+    unnamed matrix), or None when the block has no cache file."""
+    path = FEATURE_CACHE_DIR / f"{name}.npz"
+    if not path.exists():
+        return None
+    with np.load(path, allow_pickle=False) as stored:
+        smiles, values = stored["smiles"], stored["values"]
+        columns = stored["columns"].tolist() if "columns" in stored else None
+    return {s: i for i, s in enumerate(smiles.tolist())}, values, columns
+
+
+def _with_cache(name: str, smiles: Sequence[str], compute: Callable) -> pd.DataFrame | NDArray:
+    """``compute(smiles)``, except that the rows the cache holds are read from it and only the
+    other compounds are computed."""
+    smiles = list(smiles)
+    table = _cache_table(name)
+    if table is None:
+        return compute(smiles)
+    index, values, columns = table
+    rows = np.array([index.get(s, -1) for s in smiles], dtype=np.int64)
+    hit = rows >= 0
+    if not hit.any():
+        return compute(smiles)
+    out = np.empty((len(smiles), values.shape[1]), dtype=np.float32)
+    out[hit] = values[rows[hit]]
+    if not hit.all():
+        missing = sorted({s for s, found in zip(smiles, hit, strict=True) if not found})
+        try:
+            fresh = compute(missing)
+        except ValueError:
+            return compute(smiles)  # raises with the failing position in the caller's list
+        fresh = fresh.to_numpy(np.float32) if isinstance(fresh, pd.DataFrame) else fresh
+        position = {s: i for i, s in enumerate(missing)}
+        for j in np.flatnonzero(~hit):
+            out[j] = fresh[position[smiles[j]]]
+    return out if columns is None else pd.DataFrame(out, columns=columns)
+
+
+def morgan_counts(
+    smiles: Sequence[str], radius: int = 2, n_bits: int = 2048
+) -> NDArray[np.float32]:
+    """ECFP4-equivalent count fingerprints, shape ``(n_compounds, n_bits)``."""
+    return _with_cache(
+        f"morgan_r{radius}_b{n_bits}",
+        smiles,
+        lambda items: compute_morgan_counts(items, radius, n_bits),
+    )
+
+
+def physicochemical(smiles: Sequence[str]) -> pd.DataFrame:
+    """Bulk physicochemical descriptors, one column per property."""
+    return _with_cache("physchem", smiles, compute_physicochemical)
+
+
+def mechanistic(smiles: Sequence[str]) -> pd.DataFrame:
+    """Substructure counts chosen for a named binding mechanism (see ``compute_mechanistic``)."""
+    return _with_cache("mechanistic", smiles, compute_mechanistic)
 
 
 #: Bond counts separating a basic nitrogen from an aromatic ring in the CYP2D6
@@ -239,8 +314,8 @@ def featurise(
         mechanism: Include the mechanistic substructure counts.
         n_bits: Fingerprint length.
         extra: Optional block appended before the embedding, called with the same
-            compounds. This is how a multi-fidelity surrogate enters -- as an input
-            feature rather than as extra training rows. See :mod:`cypshift.data.surrogate`.
+            compounds. This is how a multi-fidelity screen_model enters -- as an input
+            feature rather than as extra training rows. See :mod:`cypshift.data.screen_model`.
         embedding: Optional foundation-model embedding block appended last. See
             :mod:`cypshift.features.embeddings`.
 
