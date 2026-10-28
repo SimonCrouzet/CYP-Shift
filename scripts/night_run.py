@@ -738,6 +738,8 @@ def _resolved_key(overrides: dict) -> str:
             del graph[field]  # recorded names predate them
     if not graph["save_embedding"]:
         del graph["save_embedding"]  # an output, not a setting of the recipe
+    if not graph["finetune_per_target_assays"]:
+        del graph["finetune_per_target_assays"]  # recorded names predate it
     if not graph["finetune_per_target_epochs"]:
         del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:
@@ -2571,6 +2573,18 @@ FINETUNE_30_CELLS = (
             ("model.graph.finetune_per_target_lr", 1e-5),
         ),
         "heads",
+    ),
+    # The same copies trained on the scored assay's rows alone, not on every assay of the isoform.
+    Cell(
+        "graph_b_reg_per_target_10_lr1e5_direct",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            ("model.graph.finetune_per_target_epochs", 10),
+            ("model.graph.finetune_per_target_lr", 1e-5),
+            ("model.graph.finetune_per_target_assays", ("direct_inhibition_drc",)),
+        ),
+        "heads",
+        "graph_b_reg_per_target_10_lr1e5",
     ),
 )
 #: The regularised B with its 10-epoch per-isoform fine-tune, with one factor changed in the

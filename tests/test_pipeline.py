@@ -778,3 +778,89 @@ def test_save_run_bundle_writes_the_auxiliary_heads_beside_the_predictions_when_
     assert pd.read_parquet(tmp_path / "a" / "out_of_fold.parquet").equals(
         pd.read_parquet(tmp_path / "b" / "out_of_fold.parquet")
     )
+
+
+class _FakeFoldModel:
+    """Predicts a constant per endpoint; has pooled members and auxiliary heads when asked to."""
+
+    def __init__(self, pooled: bool = True, heads: bool = True):
+        self._pooled, self._heads = pooled, heads
+
+    def predict(self, smiles):
+        from cypshift.models.base import PredictiveDistribution
+
+        return PredictiveDistribution(np.full((1, len(smiles), 4), 5.0), tuple(self._endpoints()))
+
+    @staticmethod
+    def _endpoints():
+        from cypshift.config import REGRESSION_ENDPOINTS
+
+        return REGRESSION_ENDPOINTS
+
+    def __getattr__(self, name):
+        if name == "predict_pooled" and self._pooled:
+            from cypshift.models.base import PredictiveDistribution
+
+            return lambda smiles: PredictiveDistribution(
+                np.full((1, len(smiles), 4), 4.0), tuple(self._endpoints())
+            )
+        if name == "predict_auxiliary" and self._heads:
+            return lambda smiles: {"luminescent_ac50": np.full((len(smiles), 4), 3.0)}
+        raise AttributeError(name)
+
+
+def test_a_folds_test_predictions_are_the_final_pooled_and_auxiliary_frames_with_its_number():
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.pipeline import fold_test_predictions
+
+    test = pd.DataFrame({"Molecule_Name": ["A", "B", "C"], "SMILES": ["CCO", "CCN", "CCC"]})
+    frames = fold_test_predictions(_FakeFoldModel(), test, 3, pooled=True)
+    assert list(frames) == ["predictions", "pooled", "auxiliary"]
+    column = f"{REGRESSION_ENDPOINTS[0]}_pred"
+    assert frames["predictions"][column].tolist() == [5.0] * 3
+    assert frames["pooled"][column].tolist() == [4.0] * 3
+    assert (frames["predictions"]["fold"] == 3).all() and (frames["auxiliary"]["fold"] == 3).all()
+    assert frames["predictions"]["Molecule_Name"].tolist() == ["A", "B", "C"]
+    assert f"{REGRESSION_ENDPOINTS[0]}__luminescent_ac50" in frames["auxiliary"].columns
+    without = fold_test_predictions(_FakeFoldModel(pooled=False, heads=False), test, 0, pooled=True)
+    assert list(without) == ["predictions"]
+    assert list(fold_test_predictions(_FakeFoldModel(), test, 0, pooled=False)) == [
+        "predictions",
+        "auxiliary",
+    ]
+
+
+def test_save_run_bundle_writes_the_test_predictions_of_the_folds_when_given(tmp_path):
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import fold_test_predictions, save_run_bundle
+
+    names = ["A", "B"]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = [5.0, 6.0]
+        evaluation[f"{endpoint}_conf_low"] = evaluation[endpoint] - 0.2
+        evaluation[f"{endpoint}_conf_high"] = evaluation[endpoint] + 0.2
+    submission = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        submission[endpoint] = [4.9, 6.1]
+    scores = pd.DataFrame({"ST-RAE_mean": [0.6]}, index=["MA"])
+    scores.index.name = "endpoint"
+    test = pd.DataFrame({"Molecule_Name": ["T1", "T2"], "SMILES": ["CCO", "CCN"]})
+    per_fold = [fold_test_predictions(_FakeFoldModel(), test, fold, pooled=True) for fold in (0, 1)]
+    stacked = {
+        kind: pd.concat([f[kind] for f in per_fold], ignore_index=True) for kind in per_fold[0]
+    }
+    config = ExperimentConfig.load()
+    save_run_bundle(
+        tmp_path / "a", config, evaluation, submission, scores, None, None, None, stacked
+    )
+    save_run_bundle(tmp_path / "b", config, evaluation, submission, scores)
+    written = sorted(path.name for path in (tmp_path / "a").glob("test_by_fold*"))
+    assert written == [
+        "test_by_fold.parquet",
+        "test_by_fold_auxiliary.parquet",
+        "test_by_fold_pooled.parquet",
+    ]
+    assert pd.read_parquet(tmp_path / "a" / "test_by_fold.parquet")["fold"].tolist() == [0, 0, 1, 1]
+    assert not list((tmp_path / "b").glob("test_by_fold*"))

@@ -163,6 +163,7 @@ def build_model(
             warmup_epochs=config.model.graph.warmup_epochs,
             finetune_per_target_epochs=config.model.graph.finetune_per_target_epochs,
             finetune_per_target_lr=config.model.graph.finetune_per_target_lr,
+            finetune_per_target_assays=config.model.graph.finetune_per_target_assays,
             matmul_precision=config.model.graph.matmul_precision,
             early_stopping_patience=config.model.graph.early_stopping_patience,
             stages=tuple(
@@ -921,6 +922,33 @@ def auxiliary_heads(model: object, evaluation: pd.DataFrame) -> pd.DataFrame | N
     return frame
 
 
+def fold_test_predictions(
+    model: object, test: pd.DataFrame, fold: int, pooled: bool
+) -> dict[str, pd.DataFrame]:
+    """What a fold's fitted model says about the blinded compounds: ``predictions`` (what
+    ``predict`` returns), ``pooled`` (the pooled members before any per-target copy, when ``pooled``
+    and the model has them) and ``auxiliary`` (the other heads, see :func:`auxiliary_heads`). Each
+    frame has ``Molecule_Name``, ``fold`` and ``<endpoint>_pred`` / ``<endpoint>__<assay>`` columns,
+    so the folds' frames can be stacked and averaged per compound."""
+    smiles = test["SMILES"].tolist()
+
+    def table(distribution: PredictiveDistribution) -> pd.DataFrame:
+        frame = test[["Molecule_Name"]].copy()
+        frame["fold"] = fold
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            frame[f"{endpoint}_pred"] = distribution.mean[:, column]
+        return frame
+
+    frames = {"predictions": table(model.predict(smiles))}
+    if pooled and hasattr(model, "predict_pooled"):
+        frames["pooled"] = table(model.predict_pooled(smiles))
+    heads = auxiliary_heads(model, test)
+    if heads is not None:
+        heads.insert(1, "fold", fold)
+        frames["auxiliary"] = heads
+    return frames
+
+
 def save_run_bundle(
     bundle_path: Path,
     config: ExperimentConfig,
@@ -930,13 +958,16 @@ def save_run_bundle(
     pooled: pd.DataFrame | None = None,
     auxiliary: pd.DataFrame | None = None,
     embedding: pd.DataFrame | None = None,
+    test: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     """Write one run's per-compound out-of-fold predictions, truth, resolved config and scores.
     ``pooled``, the predictions of the pooled members before any per-target fine-tune, goes to
     ``out_of_fold_pooled.parquet`` beside them; ``auxiliary``, the other heads of the model
     (``<endpoint>__<assay>`` columns, see :func:`auxiliary_heads`), to
     ``out_of_fold_auxiliary.parquet``; ``embedding``, ``Molecule_Name`` and one column per encoding
-    width, to ``out_of_fold_embedding.parquet``.
+    width, to ``out_of_fold_embedding.parquet``; ``test``, the folds' models' predictions of the
+    blinded compounds (see :func:`fold_test_predictions`), to ``test_by_fold.parquet`` and
+    ``test_by_fold_<kind>.parquet``.
 
     This is what later pairing, blending and calibration need -- the predictions per compound
     on a shared holdout, not just the aggregate score. The files are written in place into
@@ -963,6 +994,9 @@ def save_run_bundle(
         ).to_parquet(bundle_path / "out_of_fold_pooled.parquet", index=False)
     if auxiliary is not None:
         auxiliary.to_parquet(bundle_path / "out_of_fold_auxiliary.parquet", index=False)
+    for kind, frame in (test or {}).items():
+        name = "test_by_fold" if kind == "predictions" else f"test_by_fold_{kind}"
+        frame.to_parquet(bundle_path / f"{name}.parquet", index=False)
     meta = {
         "config": config.to_dict(),
         "scores": scores.round(4).reset_index().to_dict("records"),
@@ -1090,6 +1124,7 @@ def run_cv(
     pooled_out_of_fold = []
     embedding_out_of_fold = []
     auxiliary_out_of_fold = []
+    test_by_fold: dict[str, list[pd.DataFrame]] = {}
     tdi_out_of_fold = []
     curves: dict[int, list[dict]] = {}
     for fold in range(n_folds):
@@ -1147,6 +1182,18 @@ def run_cv(
         fold_auxiliary = auxiliary_heads(model, evaluation)
         if fold_auxiliary is not None:
             auxiliary_out_of_fold.append(fold_auxiliary)
+        if config.model.kind == "graph":
+            # The fold's own model on the blinded compounds, so the five fold models can be
+            # averaged afterwards. An extra output: a failure here must not lose the fit.
+            try:
+                frames = fold_test_predictions(
+                    model, test, fold, bool(graph.finetune_per_target_epochs)
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("fold %d: the blinded compounds' predictions were not saved", fold)
+            else:
+                for kind, frame in frames.items():
+                    test_by_fold.setdefault(kind, []).append(frame)
 
         # The TDI assay_condition, out of fold too, but only when the preincubated assay_condition
         # was actually
@@ -1181,8 +1228,19 @@ def run_cv(
         embedding = (
             pd.concat(embedding_out_of_fold, ignore_index=True) if embedding_out_of_fold else None
         )
+        test_predictions = {
+            kind: pd.concat(frames, ignore_index=True) for kind, frames in test_by_fold.items()
+        }
         save_run_bundle(
-            bundle_path, config, train, submission, scores, pooled, auxiliary, embedding
+            bundle_path,
+            config,
+            train,
+            submission,
+            scores,
+            pooled,
+            auxiliary,
+            embedding,
+            test_predictions or None,
         )
         if curves:
             write_curves(bundle_path, curves)

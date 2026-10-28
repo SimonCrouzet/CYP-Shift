@@ -483,6 +483,9 @@ class GraphConfig:
     #: Peak learning rate of that stage, with the initial and final rates a tenth of it; ``0``
     #: keeps the model's own schedule. Ignored without ``finetune_per_target_epochs``.
     finetune_per_target_lr: float = 0.0
+    #: Assays whose rows the per-target copies train on; empty trains each copy on all of its
+    #: isoform's rows, auxiliary assays included. Needs ``finetune_per_target_epochs``.
+    finetune_per_target_assays: tuple[str, ...] = ()
     #: ``torch.set_float32_matmul_precision`` while the graph trains and predicts: ``highest`` is
     #: plain float32; ``high`` and ``medium`` let the GPU's tensor cores run the matrix products
     #: in TensorFloat-32 and bfloat16 passes, which is faster for wide layers and changes the
@@ -784,6 +787,17 @@ class ExperimentConfig:
                 "model.graph.finetune_per_target_epochs needs model.kind='graph' with one shared "
                 "trunk (model.graph.separate_trunks off)"
             )
+        if graph.finetune_per_target_assays:
+            if not graph.finetune_per_target_epochs:
+                raise ValueError(
+                    "model.graph.finetune_per_target_assays is ignored without "
+                    "model.graph.finetune_per_target_epochs"
+                )
+            unknown = set(graph.finetune_per_target_assays) - {*ASSAYS, RESPONSE_ASSAY}
+            if unknown:
+                raise ValueError(
+                    f"model.graph.finetune_per_target_assays has unknown {sorted(unknown)}"
+                )
         if (graph.monitor_fold or graph.prune_reference) and (
             self.model.kind != "graph" or graph.separate_trunks
         ):

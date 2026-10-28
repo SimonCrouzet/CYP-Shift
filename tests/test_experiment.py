@@ -519,3 +519,28 @@ class TestSharedHiddenReadoutOptions:
         loaded = ExperimentConfig.from_dict(saved)
         assert not loaded.model.graph.hard_parameter_sharing
         assert not loaded.model.graph.per_task_scaling
+
+
+class TestPerTargetFineTuneAssays:
+    def _config(self, **graph):
+        config = ExperimentConfig.load()
+        config.override("model.kind", "graph")
+        for key, value in graph.items():
+            config.override(f"model.graph.{key}", value)
+        return config
+
+    def test_the_assays_need_a_fine_tune_and_known_names(self):
+        with pytest.raises(ValueError, match="ignored without"):
+            self._config(finetune_per_target_assays=("direct_inhibition_drc",)).validate()
+        with pytest.raises(ValueError, match="unknown"):
+            self._config(
+                finetune_per_target_epochs=10, finetune_per_target_assays=("not_an_assay",)
+            ).validate()
+        self._config(
+            finetune_per_target_epochs=10, finetune_per_target_assays=("direct_inhibition_drc",)
+        ).validate()
+
+    def test_a_config_saved_before_the_field_existed_loads_with_all_assays(self):
+        saved = ExperimentConfig.load().to_dict()
+        del saved["model"]["graph"]["finetune_per_target_assays"]
+        assert not ExperimentConfig.from_dict(saved).model.graph.finetune_per_target_assays

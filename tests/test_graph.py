@@ -1092,3 +1092,44 @@ def test_embed_returns_one_encoder_width_vector_per_compound():
     encodings = net.embed(["CCO", "CCN", "CCC"])
     assert encodings.shape == (3, net.hidden) and np.isfinite(encodings).all()
     assert not np.allclose(encodings[0], encodings[1])
+
+
+def _tail_sizes(monkeypatch, **kwargs) -> list[int]:
+    """Row counts of the loaders a fit builds: the pooled stage, then each target's copy."""
+    sizes = _recorded_loaders(monkeypatch)
+    net = _finetuned(
+        response_assays=("luminescent_max_response",),
+        finetune_per_target_epochs=1,
+        finetune_per_target_lr=1e-4,
+        **kwargs,
+    )
+    net.fit(_heads_rows())
+    assert sorted(net._branches[0]) == [
+        "CYP2D6_pIC50_direct_inhibition",
+        "CYP3A4_pIC50_direct_inhibition",
+    ]
+    return sizes
+
+
+def test_a_copy_trains_on_all_its_targets_assays_unless_told_otherwise(monkeypatch):
+    # 8 compounds x (CYP2D6 direct, CYP3A4 direct, CYP3A4 fluorogenic, CYP2D6 response) = 32 rows;
+    # each copy sees its target's 16
+    assert _tail_sizes(monkeypatch) == [32, 16, 16]
+
+
+def test_a_copy_can_train_on_the_scored_assay_alone(monkeypatch):
+    sizes = _tail_sizes(monkeypatch, finetune_per_target_assays=("direct_inhibition_drc",))
+    assert sizes == [32, 8, 8]
+
+
+def test_the_pooled_stage_is_unchanged_by_the_assays_the_copies_train_on():
+    kwargs = {"response_assays": ("luminescent_max_response",), "finetune_per_target_epochs": 1}
+    plain, direct = (
+        _finetuned(**kwargs),
+        _finetuned(finetune_per_target_assays=("direct_inhibition_drc",), **kwargs),
+    )
+    plain.fit(_heads_rows())
+    direct.fit(_heads_rows())
+    smiles = ["CCO", "CCN", "CCC"]
+    assert np.allclose(plain.predict_pooled(smiles).mean, direct.predict_pooled(smiles).mean)
+    assert not np.allclose(plain.predict(smiles).mean, direct.predict(smiles).mean)

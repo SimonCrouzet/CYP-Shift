@@ -686,6 +686,7 @@ class GraphNetwork:
         stages: tuple[ResolvedStage, ...] = (),
         finetune_per_target_epochs: int = 0,
         finetune_per_target_lr: float = 0.0,
+        finetune_per_target_assays: tuple[str, ...] = (),
         response_assays: tuple[str, ...] = (),
         tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
         tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
@@ -787,6 +788,9 @@ class GraphNetwork:
         #: curves and the log, in the order of ``endpoints``.
         self.finetune_per_target_epochs = finetune_per_target_epochs
         self.finetune_per_target_lr = finetune_per_target_lr
+        #: The assays whose rows the copies train on; empty trains each copy on all of its
+        #: target's rows (auxiliary assays included).
+        self.finetune_per_target_assays = tuple(finetune_per_target_assays)
         #: How ensemble members differ ("reseed" or "bagging") and which pretrained encoder
         #: to initialise from ("none"/"chemeleon"/"mammal").
         self.ensemble = ensemble
@@ -1219,7 +1223,7 @@ class GraphNetwork:
             if self.finetune_per_target_epochs:
                 tail = ResolvedStage(
                     DATA_SPACES,
-                    None,
+                    self.finetune_per_target_assays or None,
                     self.finetune_per_target_epochs,
                     self.finetune_per_target_lr,
                     False,
@@ -1227,6 +1231,8 @@ class GraphNetwork:
                 for offset, endpoint in enumerate(self.endpoints):
                     target = endpoint.split("_")[0]
                     on_target = (usable["target"] == target).to_numpy()
+                    if tail.assays is not None:
+                        on_target = on_target & usable["assay"].isin(tail.assays).to_numpy()
                     rows = member_rows[on_target[member_rows]]
                     if rows.size == 0:
                         continue
