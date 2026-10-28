@@ -833,6 +833,14 @@ def test_a_recipe_keeps_its_name_while_fold_monitoring_is_off():
     assert "early_stopping_patience" not in plain and "early_stopping_patience" in monitored
 
 
+def test_a_recipe_keeps_its_name_while_the_tdi_folds_are_off():
+    plain = night_run._resolved_key({"model.kind": "graph", "sources.tdi_label": True})
+    folded = night_run._resolved_key(
+        {"model.kind": "graph", "sources.tdi_label": True, "data.tdi_folds": True}
+    )
+    assert "tdi_folds" not in plain and "tdi_folds" in folded
+
+
 def test_a_recipe_has_one_name_under_every_matmul_precision():
     keys = {
         night_run._resolved_key({"model.kind": "graph", "model.graph.matmul_precision": value})

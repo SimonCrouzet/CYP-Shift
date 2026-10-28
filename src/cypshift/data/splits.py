@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 from rdkit import Chem, DataStructs, RDLogger
 from rdkit.Chem import rdFingerprintGenerator
@@ -92,6 +93,31 @@ def stratified_scaffold_folds(
     for fold, (_, held_out) in enumerate(splitter.split(placeholder, strata, scaffolds)):
         folds[held_out] = fold
     return folds
+
+
+def tdi_scaffold_folds(tdi: pd.DataFrame, n_folds: int = 5, seed: int = 0) -> pd.Series:
+    """Cross-validation folds of the TDI training table, by compound.
+
+    Scaffold-grouped like :func:`stratified_scaffold_folds`, stratified on whether a compound is a
+    CYP2D6 TDI positive and whether it is a CYP3A4 one, so each fold holds about the same number of
+    positives of each enzyme. The assignment is a function of the TDI table alone, so every TDI
+    model (classifier or graph) that looks a compound up here is scored on the same folds.
+
+    Args:
+        tdi: The TDI table: ``Molecule_Name``, ``SMILES`` and ``CYP2D6_is_TDI``, ``CYP3A4_is_TDI``
+            (NaN where a compound has no label for that enzyme, which counts as not positive).
+        n_folds: Number of folds.
+        seed: Fixes the assignment.
+
+    Returns:
+        Fold index in ``[0, n_folds)``, indexed by ``Molecule_Name``.
+    """
+    strata = sum(
+        (tdi[f"{enzyme}_is_TDI"].astype(float).to_numpy() == 1.0).astype(int) << bit
+        for bit, enzyme in enumerate(("CYP2D6", "CYP3A4"))
+    )
+    folds = stratified_scaffold_folds(tdi["SMILES"].tolist(), strata, n_folds, seed)
+    return pd.Series(folds, index=tdi["Molecule_Name"].to_numpy(), name="fold")
 
 
 def morgan_fingerprints(

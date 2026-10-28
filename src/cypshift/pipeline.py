@@ -31,7 +31,11 @@ from cypshift.data.screen_model import (
     stack_helper_models,
 )
 from cypshift.data.sources import supplying
-from cypshift.data.splits import similarity_matched_holdout, stratified_scaffold_folds
+from cypshift.data.splits import (
+    similarity_matched_holdout,
+    stratified_scaffold_folds,
+    tdi_scaffold_folds,
+)
 from cypshift.eval.calibration import r2_decomposition
 from cypshift.eval.classification import score_classification
 from cypshift.eval.scoring import score_submission
@@ -1117,10 +1121,15 @@ def run_cv(
     train = load("inhibition", directory)
     test = load("test", directory)
 
-    strata = train[list(REGRESSION_ENDPOINTS)].notna().sum(axis=1).to_numpy()
-    folds = stratified_scaffold_folds(
-        train["SMILES"].tolist(), strata, n_folds=n_folds, seed=config.data.seed
-    )
+    tdi_fold_of = None
+    if config.data.tdi_folds:
+        tdi_fold_of = tdi_scaffold_folds(load("tdi", directory), n_folds, config.data.seed)
+        folds = tdi_fold_of.reindex(train["Molecule_Name"]).to_numpy()
+    else:
+        strata = train[list(REGRESSION_ENDPOINTS)].notna().sum(axis=1).to_numpy()
+        folds = stratified_scaffold_folds(
+            train["SMILES"].tolist(), strata, n_folds=n_folds, seed=config.data.seed
+        )
 
     out_of_fold = []
     pooled_out_of_fold = []
@@ -1135,6 +1144,9 @@ def run_cv(
         # Keep this fold's compounds and the blinded test out of the TDI assay_condition, so a
         # preincubated measurement of a validation compound cannot leak into training.
         exclude = set(evaluation["Molecule_Name"]) | set(test["Molecule_Name"])
+        if tdi_fold_of is not None:
+            # The TDI compounds with no direct curve are held out with their fold too.
+            exclude |= set(tdi_fold_of.index[tdi_fold_of.to_numpy() == fold])
         observations, screen_model = assemble_training_data(config, retained, exclude_names=exclude)
         scored = list(ISOFORMS)
         extra = [t for t in dict.fromkeys(observations["target"]) if t not in scored]

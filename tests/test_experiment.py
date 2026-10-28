@@ -220,6 +220,7 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "model.graph.save_embedding": True},
             {"model.kind": "graph", "model.graph.tdi_label_loss": "bce"},  # no tdi_label source
             {"model.kind": "graph", "model.graph.tdi_label_loss": "hinge"},
+            {"model.kind": "graph", "data.tdi_folds": True},  # no TDI source
             {
                 "model.kind": "graph",
                 "sources.tdi_label": True,

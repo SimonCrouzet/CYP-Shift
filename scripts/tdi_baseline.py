@@ -14,7 +14,8 @@ environment (``MITRA_PYTHON``).
 The models in the repo call ``is_TDI`` from the gap between two predicted potencies. This trains a
 classifier on the ``is_TDI`` labels directly, one per enzyme (CYP2D6, CYP3A4), on the same
 fingerprint, physicochemical and mechanistic features as the boosted regression model, in
-scaffold-grouped folds of the TDI training table. It prints, per enzyme and as the macro mean the
+the scaffold-grouped folds of the TDI training table (``tdi_scaffold_folds``, the folds a graph
+run gets with ``data.tdi_folds``). It prints, per enzyme and as the macro mean the
 leaderboard ranks by, the MCC at a fixed 0.5 probability, at the threshold that predicts as many
 positives as the training prevalence (no fitting on the held-out scores), and at the best threshold
 on the out-of-fold scores (optimistic), with ROC AUC and average precision for the ranking alone.
@@ -36,7 +37,7 @@ from sklearn.metrics import average_precision_score, matthews_corrcoef, roc_auc_
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cypshift.data.splits import stratified_scaffold_folds  # noqa: E402 -- after the src path
+from cypshift.data.splits import tdi_scaffold_folds  # noqa: E402 -- after the src path
 from cypshift.features.assembly import molecular_feature_matrix  # noqa: E402
 
 logger = logging.getLogger("tdi_baseline")
@@ -344,10 +345,7 @@ def main() -> None:
     if args.covered_only:
         labels = {e: label.where(covered) for e, label in labels.items()}
         logger.info("scoring the %d compounds the bundles cover", int(covered.sum()))
-    strata = sum(
-        (labels[e].fillna(0).to_numpy() * (2**i)).astype(int) for i, e in enumerate(ENZYMES)
-    )
-    folds = stratified_scaffold_folds(smiles, strata, args.folds, args.seed)
+    folds = tdi_scaffold_folds(table, args.folds, args.seed).to_numpy()
 
     out = table[["Molecule_Name", "SMILES"]].copy()
     out["fold"] = folds

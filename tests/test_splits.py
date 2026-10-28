@@ -1,6 +1,7 @@
 """Similarity computations and the matched-holdout selection."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from cypshift.data.splits import (
@@ -15,6 +16,7 @@ from cypshift.data.splits import (
     similarity_matched_holdout,
     similarity_profile_gap,
     stratified_scaffold_folds,
+    tdi_scaffold_folds,
 )
 
 # A short congeneric series plus unrelated scaffolds, so similarities are not degenerate.
@@ -132,6 +134,62 @@ def test_scaffold_folds_are_reproducible():
     one = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
     two = stratified_scaffold_folds(SMILES, [0] * len(SMILES), n_folds=3, seed=0)
     assert np.array_equal(one, two)
+
+
+def _tdi_table(n_series: int = 30) -> pd.DataFrame:
+    """Small TDI table: ``n_series`` two-ring scaffold series of three members each."""
+    rng = np.random.default_rng(0)
+    rings = [
+        "c1ccccc1",
+        "c1ccncc1",
+        "c1ccsc1",
+        "c1ccoc1",
+        "c1cncnc1",
+        "C1CCCCC1",
+        "C1CCCC1",
+        "C1CC1",
+        "C1CCOC1",
+        "C1CCNCC1",
+    ]
+    rows = []
+    for series in range(n_series):
+        left, right = (
+            rings[series % len(rings)],
+            rings[(series // len(rings) + series + 1) % len(rings)],
+        )
+        for j, substituent in enumerate(["C", "Cl", "Br"]):
+            rows.append(
+                {
+                    "Molecule_Name": f"m{series}_{j}",
+                    "SMILES": f"{left}C{right}{substituent}",
+                    "CYP2D6_is_TDI": rng.choice([True, False, np.nan], p=[0.3, 0.5, 0.2]),
+                    "CYP3A4_is_TDI": rng.choice([True, False], p=[0.4, 0.6]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_tdi_folds_are_a_per_compound_scaffold_grouped_partition():
+    table = _tdi_table()
+    folds = tdi_scaffold_folds(table, n_folds=5)
+    assert folds.index.tolist() == table["Molecule_Name"].tolist()
+    assert set(folds) == set(range(5))
+    scaffolds = table["SMILES"].map(murcko_scaffold)
+    assert (folds.groupby(scaffolds.to_numpy()).nunique() == 1).all()
+
+
+def test_tdi_folds_balance_the_positives_of_each_enzyme():
+    table = _tdi_table(n_series=60)
+    folds = tdi_scaffold_folds(table, n_folds=3).to_numpy()
+    for enzyme in ("CYP2D6", "CYP3A4"):
+        positive = (table[f"{enzyme}_is_TDI"].astype(float) == 1.0).to_numpy()
+        counts = [int((positive & (folds == fold)).sum()) for fold in range(3)]
+        assert max(counts) - min(counts) <= 0.25 * sum(counts) / 3 + 3
+
+
+def test_tdi_folds_are_reproducible():
+    table = _tdi_table()
+    assert tdi_scaffold_folds(table).equals(tdi_scaffold_folds(table))
 
 
 def test_acyclic_compound_is_its_own_scaffold_group():

@@ -141,6 +141,9 @@ class DataConfig:
     #: ``canonical_smiles`` (default) or the coarser ``inchikey_block`` (InChIKey connectivity
     #: block, collapsing salts/stereoisomers). See cypshift.data.chembl.dedup_key. Swept.
     dedup_mode: str = "canonical_smiles"
+    #: Use the TDI folds (``splits.tdi_scaffold_folds``) in ``run_cv`` instead of the regression
+    #: folds, so a graph run is scored on the folds the TDI classifiers use. Needs a TDI source.
+    tdi_folds: bool = False
 
 
 @dataclass
@@ -775,6 +778,11 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
                 "and model.graph.prune_tolerance must be non-negative"
+            )
+        if self.data.tdi_folds and not (self.sources.tdi_label or self.sources.tdi_assay_condition):
+            raise ValueError(
+                "data.tdi_folds is for runs that score TDI (sources.tdi_label or "
+                "sources.tdi_assay_condition); the regression folds stay the default"
             )
         if graph.tdi_label_loss not in ("squared", "bce") or graph.tdi_label_pos_weight <= 0:
             raise ValueError(
