@@ -96,8 +96,10 @@ def fold_scores(
     threads: int,
     seed: int,
     pca: int = PCA_COMPONENTS,
+    n_extra: int = 0,
 ) -> np.ndarray:
-    """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold."""
+    """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold. The
+    last ``n_extra`` columns (stacked potencies) skip the PCA of the foundation models."""
     if model == "lightgbm":
         classifier = lgb.LGBMClassifier(
             n_estimators=400,
@@ -121,14 +123,22 @@ def fold_scores(
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
 
-    steps = [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
-    if train_x.shape[1] > pca:
-        steps.append(("pca", PCA(n_components=pca, random_state=seed)))
-    reducer = Pipeline(steps).fit(train_x)
-    fill = (
-        reducer.transform(train_x).astype(np.float32),
-        reducer.transform(test_x).astype(np.float32),
-    )
+    def prepared(width: int) -> Pipeline:
+        steps = [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+        if width > pca:
+            steps.append(("pca", PCA(n_components=pca, random_state=seed)))
+        return Pipeline(steps)
+
+    split = train_x.shape[1] - n_extra
+    reducer = prepared(split).fit(train_x[:, :split])
+    blocks = [[reducer.transform(x[:, :split]).astype(np.float32)] for x in (train_x, test_x)]
+    if n_extra:
+        extra = Pipeline(
+            [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+        ).fit(train_x[:, split:])
+        for block, x in zip(blocks, (train_x, test_x), strict=True):
+            block.append(extra.transform(x[:, split:]).astype(np.float32))
+    fill = np.hstack(blocks[0]), np.hstack(blocks[1])
     if model == "tabpfn":
         import torch
         from tabpfn import TabPFNClassifier
@@ -173,6 +183,7 @@ def out_of_fold_scores(
     seed: int,
     model: str = "lightgbm",
     pca: int = PCA_COMPONENTS,
+    n_extra: int = 0,
 ) -> np.ndarray:
     """Out-of-fold positive-class probabilities of a classifier; NaN where unlabelled."""
     scores = np.full(len(labels), np.nan)
@@ -188,6 +199,7 @@ def out_of_fold_scores(
             threads,
             seed,
             pca,
+            n_extra,
         )
         logger.info("fold %d: %d train, %d held out", fold + 1, train.sum(), test.sum())
     return scores
@@ -248,6 +260,7 @@ def main() -> None:
     logger.info("%s features: %d columns", args.features, features.shape[1])
     if args.predicted_potency:
         features = np.hstack([features, predicted_potency(table, args.predicted_potency)])
+    n_extra = (4 if args.predicted_potency else 0) + (1 if args.direct_potency else 0)
     labels = {e: table[f"{e}_is_TDI"].astype(float) for e in ENZYMES}
     strata = sum(
         (labels[e].fillna(0).to_numpy() * (2**i)).astype(int) for i, e in enumerate(ENZYMES)
@@ -264,7 +277,7 @@ def main() -> None:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
         scores = out_of_fold_scores(
-            columns, truth, folds, args.threads, args.seed, args.model, args.pca
+            columns, truth, folds, args.threads, args.seed, args.model, args.pca, n_extra
         )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
