@@ -1089,6 +1089,7 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
         *night_run.CAPACITY_CELLS,
         *night_run.EPOCHS_CELLS,
         *night_run.FINETUNE_30_CELLS,
+        *night_run.READOUT_CELLS,
         *night_run.TDI_GRAPH_CELLS,
     )
     sets = {cell.tag: dict(cell.sets) for cell in cells}
@@ -1168,6 +1169,8 @@ def test_the_questions_plan_cells_change_one_factor_of_the_novartis_recipe():
             "model.graph.finetune_per_target_lr",
         },
         "chemeleon_features": {"features.molecular_embedding"},
+        "graph_b_reg_per_target_10_lr1e5_hard_sharing": {"model.graph.hard_parameter_sharing"},
+        "graph_b_reg_per_target_10_lr1e5_task_scaling": {"model.graph.per_task_scaling"},
         "mammal_features": {"features.molecular_embedding"},
         **{
             tag: capacity | extra
@@ -1226,7 +1229,7 @@ def test_the_questions_queue_alternates_graph_and_cpu_fits_and_ends_with_tabpfn(
     )
     night_run.run_questions()
     kinds = [overrides.get("model.kind", "boosted") for overrides in queue.values()]
-    assert len(queue) == 55
+    assert len(queue) == 57
     assert kinds[-4:] == ["tfm"] * 4 and "tfm" not in kinds[:-4]
     assert kinds[0:6:2] == ["graph"] * 3 and "graph" not in kinds[1:6:2]
     first = list(queue.values())[0]
@@ -1274,9 +1277,9 @@ def test_the_queue_switch_splits_the_questions_plan_into_graph_and_other_cells(m
 
     graph, other = queue("graph"), queue("other")
     kinds = {c.get("model.kind", "boosted") for c in graph.values()}
-    assert kinds == {"graph"} and len(graph) == 34
+    assert kinds == {"graph"} and len(graph) == 36
     assert "graph" not in {c.get("model.kind", "boosted") for c in other.values()}
-    assert len(graph) + len(other) == 55
+    assert len(graph) + len(other) == 57
     monkeypatch.setenv("CYP_QUEUE", "none")
     with pytest.raises(ValueError):
         night_run.run_questions()
@@ -1293,11 +1296,11 @@ def test_the_chemeleon_and_plain_queues_split_the_graph_cells(monkeypatch):
         return seen
 
     chemeleon, plain, graph = queue("chemeleon"), queue("plain"), queue("graph")
-    assert len(chemeleon) == 4 and len(plain) == 14 and len(graph) == 34
+    assert len(chemeleon) == 4 and len(plain) == 14 and len(graph) == 36
     assert not set(chemeleon) & set(plain)
     rest = set(queue("embedding")) | set(queue("capacity"))
     assert set(chemeleon) | set(plain) | rest == set(graph)
-    assert len(queue("embedding")) == 2 and len(queue("capacity")) == 14
+    assert len(queue("embedding")) == 2 and len(queue("capacity")) == 16
     assert all(o.get("model.graph.pretraining") == "chemeleon" for o in chemeleon.values())
     assert not any(o.get("model.graph.pretraining") == "chemeleon" for o in plain.values())
 
@@ -1367,3 +1370,28 @@ def test_the_readout_options_leave_the_recorded_recipe_keys_unchanged_until_they
     on = night_run._resolved_key({**base, "model.graph.hard_parameter_sharing": True})
     scaled = night_run._resolved_key({**base, "model.graph.per_task_scaling": True})
     assert len({key, on, scaled}) == 3
+
+
+def test_the_readout_cells_change_one_factor_of_the_regularised_b_with_its_fine_tune():
+    reference = next(
+        cell
+        for cell in night_run.FINETUNE_30_CELLS
+        if cell.tag == "graph_b_reg_per_target_10_lr1e5"
+    )
+    recipe = night_run._apply(
+        dict(night_run.REGRESSION[night_run.FOCUS_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    base = night_run._apply(recipe, reference.sets)
+    changes = {
+        "graph_b_reg_per_target_10_lr1e5_hard_sharing": "model.graph.hard_parameter_sharing",
+        "graph_b_reg_per_target_10_lr1e5_task_scaling": "model.graph.per_task_scaling",
+    }
+    assert {cell.tag for cell in night_run.READOUT_CELLS} == set(changes)
+    keys = {night_run._resolved_key(base)}
+    for cell in night_run.READOUT_CELLS:
+        assert cell.control == reference.tag and cell.group == "readout"
+        overrides = night_run._apply(recipe, cell.sets)
+        assert night_run._is_valid(overrides)
+        assert {k: v for k, v in overrides.items() if base.get(k) != v} == {changes[cell.tag]: True}
+        keys.add(night_run._resolved_key(overrides))
+    assert len(keys) == 3

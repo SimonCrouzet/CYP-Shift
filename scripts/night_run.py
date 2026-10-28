@@ -2573,6 +2573,38 @@ FINETUNE_30_CELLS = (
         "heads",
     ),
 )
+#: The regularised B with its 10-epoch per-isoform fine-tune, with one factor changed in the
+#: readout: hidden layers shared by every task that do not see the target and assay one-hots and one
+#: output unit per task (hard parameter sharing), or the labels of each (target, assay) pair
+#: standardised with the pair's own centre and spread.
+READOUT_CELLS = (
+    Cell(
+        "graph_b_reg_per_target_10_lr1e5_hard_sharing",
+        (
+            *next(
+                cell.sets
+                for cell in FINETUNE_30_CELLS
+                if cell.tag == "graph_b_reg_per_target_10_lr1e5"
+            ),
+            ("model.graph.hard_parameter_sharing", True),
+        ),
+        "readout",
+        "graph_b_reg_per_target_10_lr1e5",
+    ),
+    Cell(
+        "graph_b_reg_per_target_10_lr1e5_task_scaling",
+        (
+            *next(
+                cell.sets
+                for cell in FINETUNE_30_CELLS
+                if cell.tag == "graph_b_reg_per_target_10_lr1e5"
+            ),
+            ("model.graph.per_task_scaling", True),
+        ),
+        "readout",
+        "graph_b_reg_per_target_10_lr1e5",
+    ),
+)
 #: The regression recipe with the preincubated (TDI) assay_condition trained, so the one graph also
 #: calls ``is_TDI`` from the gap between its two predicted conditions: the base, and the regularised
 #: B at 100 epochs.
@@ -2684,6 +2716,7 @@ def run_questions() -> None:
         *CAPACITY_CELLS,
         *EPOCHS_CELLS,
         *FINETUNE_30_CELLS,
+        *READOUT_CELLS,
         *TDI_GRAPH_CELLS,
     )
     names, graph = {"base": base}, {base: recipe}
