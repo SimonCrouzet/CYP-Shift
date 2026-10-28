@@ -733,6 +733,9 @@ def _resolved_key(overrides: dict) -> str:
     if tfm["backend"] != "mitra":
         # Mitra's settings; recorded names predate them
         del tfm["fine_tune"], tfm["fine_tune_steps"]
+    for field in ("hard_parameter_sharing", "per_task_scaling"):
+        if not graph[field]:
+            del graph[field]  # recorded names predate them
     if not graph["finetune_per_target_epochs"]:
         del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:

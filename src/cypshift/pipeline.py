@@ -153,6 +153,8 @@ def build_model(
             adapt_hidden=config.model.graph.adapt_hidden,
             per_target_heads=config.model.graph.per_target_heads,
             per_measurement_heads=config.model.graph.per_measurement_heads,
+            hard_parameter_sharing=config.model.graph.hard_parameter_sharing,
+            per_task_scaling=config.model.graph.per_task_scaling,
             ffn_hidden=config.model.graph.ffn_hidden,
             ffn_layers=config.model.graph.ffn_layers,
             batch_norm=config.model.graph.batch_norm,
@@ -905,6 +907,20 @@ def auxiliary_frames(
     return out, response
 
 
+def auxiliary_heads(model: object, evaluation: pd.DataFrame) -> pd.DataFrame | None:
+    """The other heads of a model for the compounds of ``evaluation``: one ``Molecule_Name``
+    column and a ``<endpoint>__<assay>`` column per scored endpoint and trained assay, or None for
+    a model with no such heads."""
+    if not hasattr(model, "predict_auxiliary"):
+        return None
+    heads = model.predict_auxiliary(evaluation["SMILES"].tolist())
+    frame = evaluation[["Molecule_Name"]].copy()
+    for assay, values in heads.items():
+        for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+            frame[f"{endpoint}__{assay}"] = values[:, column]
+    return frame
+
+
 def save_run_bundle(
     bundle_path: Path,
     config: ExperimentConfig,
@@ -912,10 +928,13 @@ def save_run_bundle(
     submission: pd.DataFrame,
     scores: pd.DataFrame,
     pooled: pd.DataFrame | None = None,
+    auxiliary: pd.DataFrame | None = None,
 ) -> None:
     """Write one run's per-compound out-of-fold predictions, truth, resolved config and scores.
     ``pooled``, the predictions of the pooled members before any per-target fine-tune, goes to
-    ``out_of_fold_pooled.parquet`` beside them.
+    ``out_of_fold_pooled.parquet`` beside them; ``auxiliary``, the other heads of the model
+    (``<endpoint>__<assay>`` columns, see :func:`auxiliary_heads`), to
+    ``out_of_fold_auxiliary.parquet``.
 
     This is what later pairing, blending and calibration need -- the predictions per compound
     on a shared holdout, not just the aggregate score. The files are written in place into
@@ -938,6 +957,8 @@ def save_run_bundle(
         evaluation[truth_columns].merge(
             pooled_predictions, on="Molecule_Name", validate="1:1"
         ).to_parquet(bundle_path / "out_of_fold_pooled.parquet", index=False)
+    if auxiliary is not None:
+        auxiliary.to_parquet(bundle_path / "out_of_fold_auxiliary.parquet", index=False)
     meta = {
         "config": config.to_dict(),
         "scores": scores.round(4).reset_index().to_dict("records"),
@@ -1063,6 +1084,7 @@ def run_cv(
 
     out_of_fold = []
     pooled_out_of_fold = []
+    auxiliary_out_of_fold = []
     tdi_out_of_fold = []
     curves: dict[int, list[dict]] = {}
     for fold in range(n_folds):
@@ -1110,6 +1132,9 @@ def run_cv(
             for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
                 fold_pooled[endpoint] = pooled_prediction.mean[:, column]
             pooled_out_of_fold.append(fold_pooled)
+        fold_auxiliary = auxiliary_heads(model, evaluation)
+        if fold_auxiliary is not None:
+            auxiliary_out_of_fold.append(fold_auxiliary)
 
         # The TDI assay_condition, out of fold too, but only when the preincubated assay_condition
         # was actually
@@ -1138,7 +1163,10 @@ def run_cv(
             )
     if bundle_path is not None:
         pooled = pd.concat(pooled_out_of_fold, ignore_index=True) if pooled_out_of_fold else None
-        save_run_bundle(bundle_path, config, train, submission, scores, pooled)
+        auxiliary = (
+            pd.concat(auxiliary_out_of_fold, ignore_index=True) if auxiliary_out_of_fold else None
+        )
+        save_run_bundle(bundle_path, config, train, submission, scores, pooled, auxiliary)
         if curves:
             write_curves(bundle_path, curves)
     return scores, submission, tdi_scores

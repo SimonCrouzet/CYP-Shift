@@ -443,6 +443,17 @@ class GraphConfig:
     #: the encoder. Needs ``conditioning.strategy='factorised'`` and the shared trunk; rejected
     #: with the other readout variants. Swept.
     per_measurement_heads: bool = False
+    #: Hard parameter sharing in the readout: hidden layers shared by every task that do not see
+    #: the target and assay one-hots, then one output unit per ``(target, assay)`` pair for
+    #: potency and one per target for each response task. Differs from ``per_measurement_heads``
+    #: (a hidden MLP per output) and from the default readout (hidden layers conditioned on the
+    #: task). Needs ``conditioning.strategy='factorised'`` and the shared trunk; rejected with the
+    #: other readout variants. See :class:`cypshift.models.graph._HardSharingRegressionFFN`.
+    hard_parameter_sharing: bool = False
+    #: Standardise the labels of each ``(target, assay)`` pair with that pair's own centre and
+    #: spread, rather than one centre and spread for all pIC50 rows (and one per response task).
+    #: A pair with fewer than two rows, or no spread, keeps the shared scale. Any graph readout.
+    per_task_scaling: bool = False
     #: Hidden width of the readout FFN, set independently of the message-passing width
     #: (``hidden``). ``0`` keeps chemprop's default (300). The reference recipes use a wide FFN
     #: (e.g. 1024) over a narrower encoder, which ``hidden`` alone cannot express. Swept.
@@ -850,6 +861,12 @@ class ExperimentConfig:
                     "model.graph.per_measurement_heads is wired only into the graph model, not "
                     f"{self.model.kind!r}"
                 )
+            for name in ("hard_parameter_sharing", "per_task_scaling"):
+                if getattr(self.model.graph, name):
+                    raise ValueError(
+                        f"model.graph.{name} is wired only into the graph model, not "
+                        f"{self.model.kind!r}"
+                    )
         if self.model.kind == "graph":
             if (
                 self.model.graph.pretraining == "mammal"
@@ -905,6 +922,30 @@ class ExperimentConfig:
                 if self.conditioning.strategy != "factorised":
                     raise ValueError(
                         "model.graph.per_measurement_heads needs conditioning.strategy="
+                        f"'factorised' (separable target/assay one-hots), not "
+                        f"{self.conditioning.strategy!r}"
+                    )
+            if self.model.graph.hard_parameter_sharing:
+                # One more alternative readout on the shared trunk; its output units are picked by
+                # the factorised one-hot layout.
+                rivals = [
+                    name
+                    for name, on in (
+                        ("separate_trunks", self.model.graph.separate_trunks),
+                        ("adapt_target", self.model.graph.adapt_target != "none"),
+                        ("per_target_heads", self.model.graph.per_target_heads),
+                        ("per_measurement_heads", self.model.graph.per_measurement_heads),
+                    )
+                    if on
+                ]
+                if rivals:
+                    raise ValueError(
+                        "model.graph.hard_parameter_sharing is an alternative to "
+                        f"{', '.join('model.graph.' + r for r in rivals)}; enable only one"
+                    )
+                if self.conditioning.strategy != "factorised":
+                    raise ValueError(
+                        "model.graph.hard_parameter_sharing needs conditioning.strategy="
                         f"'factorised' (separable target/assay one-hots), not "
                         f"{self.conditioning.strategy!r}"
                     )

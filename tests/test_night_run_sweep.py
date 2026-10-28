@@ -1338,3 +1338,12 @@ def test_a_curve_cell_can_be_selected_alone_by_its_tag(monkeypatch):
     (overrides,) = seen.values()
     assert overrides["model.kind"] == "curve"
     assert overrides["sources.qhts_representation"] == "both"
+
+
+def test_the_readout_options_leave_the_recorded_recipe_keys_unchanged_until_they_are_on():
+    base = {"model.kind": "graph"}
+    key = night_run._resolved_key(base)
+    assert "hard_parameter_sharing" not in key and "per_task_scaling" not in key
+    on = night_run._resolved_key({**base, "model.graph.hard_parameter_sharing": True})
+    scaled = night_run._resolved_key({**base, "model.graph.per_task_scaling": True})
+    assert len({key, on, scaled}) == 3

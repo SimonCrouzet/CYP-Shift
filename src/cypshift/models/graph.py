@@ -42,6 +42,7 @@ import torch
 from chemprop import data as cpdata
 from chemprop import models as cpmodels
 from chemprop import nn as cpnn
+from chemprop.nn.ffn import MLP
 from chemprop.nn.metrics import ChempropMetric
 from lightning import pytorch as pl
 from numpy.typing import NDArray
@@ -484,21 +485,89 @@ class _MeasurementTableRegressionFFN(cpnn.RegressionFFN):
     train_step = forward
 
 
+class _HardSharingRegressionFFN(cpnn.RegressionFFN):
+    """RegressionFFN whose hidden layers are shared by every task and whose output layer has one
+    unit per task.
+
+    The hidden stack reads the encoder output and the conditioning that does not name the task
+    (source, descriptors, embedding, structure); the target and assay one-hot columns are zeroed on
+    the way in, so a row's hidden representation does not depend on which measurement it carries.
+    One linear layer then gives a unit per ``(target, assay)`` pair for potency and a unit per
+    target for each response task, and the row's one-hots pick its unit. Hard parameter sharing in
+    the multi-task sense: unlike :class:`_MeasurementTableRegressionFFN` the hidden layers are not
+    per output, and unlike the plain readout they are not conditioned on the task. The target and
+    assay one-hots are the first two conditioning blocks, so they sit at ``target_offset`` and
+    ``target_offset + n_targets`` in ``Z``; that layout only exists for ``factorised``
+    conditioning.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_offset: int,
+        n_targets: int,
+        n_assays: int,
+        n_response: int,
+        hidden_dim: int = 300,
+        n_layers: int = 1,
+        value_index: int = VALUE,
+        response_index: int = RESPONSE,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(hidden_dim=hidden_dim, n_layers=n_layers, **kwargs)
+        self.target_offset, self.n_targets, self.n_assays = target_offset, n_targets, n_assays
+        self.value_index, self.response_index = value_index, response_index
+        self.n_response = n_response
+        keep = torch.ones(self.input_dim)
+        keep[target_offset : target_offset + n_targets + n_assays] = 0.0
+        self.register_buffer("keep", keep, persistent=False)
+        self.table = MLP.build(
+            self.input_dim,
+            n_targets * n_assays + n_response * n_targets,
+            hidden_dim,
+            n_layers,
+            kwargs.get("dropout", 0.0),
+        )
+
+    def forward(self, Z: torch.Tensor) -> torch.Tensor:  # noqa: N803 -- chemprop's Predictor API
+        base = self.ffn(Z)
+        units = self.table(Z * self.keep)
+        targets = Z[:, self.target_offset : self.target_offset + self.n_targets]
+        assays = Z[:, self.target_offset + self.n_targets :][:, : self.n_assays]
+        pair = (targets.unsqueeze(2) * assays.unsqueeze(1)).reshape(len(Z), -1)
+        n_pairs = self.n_targets * self.n_assays
+        replaced = base.clone()
+        replaced[:, self.value_index] = (pair * units[:, :n_pairs]).sum(dim=1)
+        for task in range(self.n_response):
+            start = n_pairs + task * self.n_targets
+            replaced[:, self.response_index + task] = (
+                targets * units[:, start : start + self.n_targets]
+            ).sum(dim=1)
+        return self.output_transform(replaced)
+
+    train_step = forward
+
+
 class _FoldMonitor(pl.Callback):
     """After every epoch, measure the mean absolute error of the predicted value on the monitor
     rows (pIC50 units). Stops the stage after ``patience`` epochs without a new lowest error and,
-    at ``prune_at``, when the error is above ``prune_above``."""
+    at ``prune_at``, when the error is above ``prune_above``. ``spread`` is the label spread the
+    error is rescaled by: one number, or one per target when the labels are standardised per task
+    (the target one-hot is the first block of the rows' conditioning)."""
 
     def __init__(
         self,
         loader: object,
-        spread: float,
+        spread: float | NDArray[np.float64],
         patience: int,
         prune_at: int | None,
         prune_above: float | None,
     ) -> None:
         self.loader = loader
         self.spread = spread
+        self.per_target_spread = (
+            None if np.isscalar(spread) else torch.as_tensor(spread, dtype=torch.float32)
+        )
         self.patience = patience
         self.prune_at = prune_at
         self.prune_above = prune_above
@@ -516,10 +585,16 @@ class _FoldMonitor(pl.Callback):
                     predicted = module(batch.bmg, batch.V_d, batch.X_d)[:, VALUE]
                     truth = batch.Y[:, VALUE]
                     seen = torch.isfinite(truth)
-                    total += float((predicted[seen] - truth[seen]).abs().sum())
+                    error = (predicted[seen] - truth[seen]).abs()
+                    if self.per_target_spread is not None:
+                        spreads = self.per_target_spread.to(batch.X_d.device, batch.X_d.dtype)
+                        error = error * (batch.X_d[:, : len(spreads)] @ spreads)[seen]
+                    total += float(error.sum())
                     count += int(seen.sum())
         finally:
             module.train(was_training)  # the next epoch trains with dropout on, as unmonitored
+        if self.per_target_spread is not None:
+            return total / count
         return total / count * self.spread
 
     def on_train_epoch_end(self, trainer: pl.Trainer, module: pl.LightningModule) -> None:
@@ -598,6 +673,8 @@ class GraphNetwork:
         adapt_hidden: int = 64,
         per_target_heads: bool = False,
         per_measurement_heads: bool = False,
+        hard_parameter_sharing: bool = False,
+        per_task_scaling: bool = False,
         ffn_hidden: int = 0,
         ffn_layers: int = 1,
         batch_norm: bool = False,
@@ -668,6 +745,19 @@ class GraphNetwork:
                 "per_measurement_heads reads the target and assay one-hots, which only "
                 f"conditioning='factorised' lays out; got {conditioning!r}"
             )
+        #: Shared hidden layers that do not see the task one-hots, then one output unit per task
+        #: (see :class:`_HardSharingRegressionFFN`). Same layout requirement and exclusions as
+        #: ``per_measurement_heads``.
+        self.hard_parameter_sharing = hard_parameter_sharing
+        if hard_parameter_sharing and conditioning != "factorised":
+            raise ValueError(
+                "hard_parameter_sharing reads the target and assay one-hots, which only "
+                f"conditioning='factorised' lays out; got {conditioning!r}"
+            )
+        #: Standardise the labels of each ``(target, assay)`` pair with that pair's own centre and
+        #: spread, instead of one centre and spread for all pIC50 rows and one per response task.
+        #: A pair with fewer than two rows, or no spread, keeps the shared scale.
+        self.per_task_scaling = per_task_scaling
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
         #: Hidden layers of the readout FFN, and the pooling of atom vectors into the molecule
@@ -760,6 +850,12 @@ class GraphNetwork:
             self._n_conditioning += descriptor_block(["CCO"]).shape[1]
         self._centre = 0.0
         self._spread = 1.0
+        #: ``(target, assay) -> (centre, spread)`` of the pairs standardised on their own, set by
+        #: ``fit`` under ``per_task_scaling``.
+        self._task_scale: dict[tuple[str, str], tuple[float, float]] = {}
+        #: The ``(target, assay)`` pairs with at least one training row, set by ``fit``; the
+        #: output of any other pair was never trained.
+        self._pairs_fitted: frozenset[tuple[str, str]] = frozenset()
         #: Per-response-task standardisation (one entry per self.response_assays), so each task's
         #: own 0-1 scale is not forced onto the pIC50 centre/spread or onto another task's.
         self._resp_centre = np.zeros(len(self.response_assays))
@@ -768,6 +864,16 @@ class GraphNetwork:
         #: fitted on retained training; the one-hot conditioning is left raw.
         self._xd_centre: np.ndarray | None = None
         self._xd_scale: np.ndarray | None = None
+
+    def _scale_for(self, target: str, assay: str) -> tuple[float, float]:
+        """The ``(centre, spread)`` that labels of this target and assay are standardised with."""
+        own = self._task_scale.get((target, assay)) if self.per_task_scaling else None
+        if own is not None:
+            return own
+        if assay in self.response_assays:
+            task = self.response_assays.index(assay)
+            return self._resp_centre[task], self._resp_spread[task]
+        return self._centre, self._spread
 
     def _continuous_blocks(self, smiles: list[str]) -> np.ndarray:
         """The appended continuous x_d blocks (embedding, computed descriptors), or empty.
@@ -809,6 +915,7 @@ class GraphNetwork:
         }
         if labelled:
             assays = frame["assay"].tolist()
+            row_targets = frame["target"].tolist()
             values = frame["value"].to_numpy(float)
             lowers = frame["conf_low"].to_numpy(float)
             uppers = frame["conf_high"].to_numpy(float)
@@ -826,9 +933,8 @@ class GraphNetwork:
                     # A response row: fill only its own response column, leave the pIC50 tasks and
                     # the other response columns NaN, each on its own standardisation.
                     task = self.response_assays.index(assays[row])
-                    y[RESPONSE + task] = (
-                        values[row] - self._resp_centre[task]
-                    ) / self._resp_spread[task]
+                    centre, spread = self._scale_for(row_targets[row], assays[row])
+                    y[RESPONSE + task] = (values[row] - centre) / spread
                 else:
                     value = values[row]
                     lower = lowers[row] if np.isfinite(lowers[row]) else value
@@ -836,9 +942,10 @@ class GraphNetwork:
                     censored = bool(censored_rows[row])
                     if censored:
                         lower = -1e4
+                    centre, spread = self._scale_for(row_targets[row], assays[row])
                     y[VALUE : UPPER + 1] = (
-                        np.array([value, lower, upper], dtype=float) - self._centre
-                    ) / self._spread
+                        np.array([value, lower, upper], dtype=float) - centre
+                    ) / spread
                     if censored and self.loss in POINT_OBJECTIVES:
                         # A two-sided point objective has no value to train a censored row
                         # toward; NaN masks its value task so it is dropped rather than pulled
@@ -957,6 +1064,21 @@ class GraphNetwork:
                 dropout=self.dropout,
                 **ffn_kwargs,
             )
+        elif self.hard_parameter_sharing:
+            # Hidden layers shared by every task and blind to the task one-hots (the first two
+            # conditioning blocks, placed right after the encoder output), one output unit per
+            # task. Width and depth follow the shared readout's ffn_hidden / ffn_layers.
+            predictor = _HardSharingRegressionFFN(
+                target_offset=message_passing.output_dim,
+                n_targets=len(self.targets),
+                n_assays=len(self.assays),
+                n_response=len(self.response_assays),
+                n_tasks=self._n_label,
+                input_dim=input_dim,
+                criterion=criterion,
+                dropout=self.dropout,
+                **ffn_kwargs,
+            )
         else:
             predictor = cpnn.RegressionFFN(
                 n_tasks=self._n_label,
@@ -1025,6 +1147,15 @@ class GraphNetwork:
             if rows.size:
                 self._resp_centre[task] = float(rows.mean())
                 self._resp_spread[task] = float(rows.std()) or 1.0
+        self._task_scale = {}
+        if self.per_task_scaling:
+            for pair, rows in usable.groupby(["target", "assay"]):
+                values = rows["value"].to_numpy(float)
+                if values.size >= 2 and values.std() > 0:
+                    self._task_scale[pair] = (float(values.mean()), float(values.std()))
+        self._pairs_fitted = frozenset(
+            map(tuple, usable[["target", "assay"]].drop_duplicates().to_numpy().tolist())
+        )
         self._tdi_prevalence = {}
         if TDI_LABEL_ASSAY in self.response_assays:
             labelled = usable[usable["assay"] == TDI_LABEL_ASSAY]
@@ -1158,7 +1289,7 @@ class GraphNetwork:
                     shuffle=False,
                     num_workers=self.num_workers,
                 ),
-                self._spread,
+                self._monitor_spread(),
                 patience_epochs(self.early_stopping_patience, stage.epochs),
                 prune_epoch(stage.epochs) if position == 0 else None,
                 prune_above,
@@ -1203,6 +1334,13 @@ class GraphNetwork:
                     f"{len(fold_monitor.error)} is above the limit {prune_above:.4f}"
                 )
 
+    def _monitor_spread(self) -> float | NDArray[np.float64]:
+        """The label spread the monitor rescales its error by: the shared one, or under
+        ``per_task_scaling`` one per target for the scored assay the monitor rows carry."""
+        if not self.per_task_scaling:
+            return self._spread
+        return np.array([self._scale_for(target, SCORED_ASSAY)[1] for target in self.targets])
+
     def _configure_stage(self, model: cpmodels.MPNN, stage: ResolvedStage, position: int) -> None:
         """Set the optimiser schedule and the encoder's trainability for one stage.
 
@@ -1231,6 +1369,7 @@ class GraphNetwork:
         n = len(smiles)
         samples = np.empty((self.n_members, n, len(self.endpoints)))
         for column, endpoint in enumerate(self.endpoints):
+            centre, spread = self._scale_for(endpoint.split("_")[0], assay)
             frame = pd.DataFrame(
                 {
                     "SMILES": smiles,
@@ -1256,9 +1395,7 @@ class GraphNetwork:
                     predicted = torch.cat(
                         [model(batch.bmg, batch.V_d, batch.X_d) for batch in loader]
                     )
-                samples[index, :, column] = (
-                    predicted[:, VALUE].numpy() * self._spread + self._centre
-                )
+                samples[index, :, column] = predicted[:, VALUE].numpy() * spread + centre
         return samples
 
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
@@ -1270,6 +1407,65 @@ class GraphNetwork:
         return PredictiveDistribution(
             self._samples_at_assay(smiles, SCORED_ASSAY, per_target=False), self.endpoints
         )
+
+    def _response_at_assay(self, smiles: list[str], assay: str) -> NDArray[np.float64]:
+        """The pooled members' mean output of one response task for every scored endpoint's
+        target, on the task's own scale: ``(n, endpoints)``."""
+        torch.set_float32_matmul_precision(self.matmul_precision)
+        task = self.response_assays.index(assay)
+        n = len(smiles)
+        scores = np.empty((n, len(self.endpoints)))
+        for column, endpoint in enumerate(self.endpoints):
+            isoform = endpoint.split("_")[0]
+            frame = pd.DataFrame(
+                {
+                    "SMILES": smiles,
+                    "target": [isoform] * n,
+                    "assay": [assay] * n,
+                    "source": ["challenge"] * n,
+                }
+            )
+            dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
+            loader = cpdata.build_dataloader(
+                dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
+            )
+            centre, spread = self._scale_for(isoform, assay)
+            members = []
+            for model in self._members:
+                model.eval()
+                with torch.no_grad():
+                    predicted = torch.cat(
+                        [model(batch.bmg, batch.V_d, batch.X_d) for batch in loader]
+                    )
+                members.append(predicted[:, RESPONSE + task].numpy() * spread + centre)
+            scores[:, column] = np.mean(members, axis=0)
+        return scores
+
+    def predict_auxiliary(self, smiles: list[str]) -> dict[str, NDArray[np.float64]]:
+        """Every head the pooled members trained, read for each scored endpoint's target:
+        ``{assay: (n, endpoints)}`` in the vocabulary's order, the mean over the members.
+
+        A potency assay (the scored one included) is in pIC50 units and a response assay on its
+        own scale. An endpoint whose target had no training row of an assay is NaN there, since
+        that output was never trained. The per-target copies are not read; their rows are the
+        scored target's alone and the pooled heads are the same whichever copy follows.
+        """
+        if not self._members:
+            raise RuntimeError("model is not fitted")
+        heads = {}
+        for assay in self.assays:
+            trained = [
+                (endpoint.split("_")[0], assay) in self._pairs_fitted for endpoint in self.endpoints
+            ]
+            if not any(trained):
+                continue
+            if assay in self.response_assays:
+                values = self._response_at_assay(smiles, assay)
+            else:
+                values = self._samples_at_assay(smiles, assay, per_target=False).mean(axis=0)
+            values[:, ~np.array(trained)] = np.nan
+            heads[assay] = values
+        return heads
 
     def _tdi_label_scores(self, smiles: list[str]) -> NDArray[np.float64]:
         """The trained ``is_TDI`` response of every member, averaged: ``(n, endpoints)``, NaN for an
@@ -1297,16 +1493,14 @@ class GraphNetwork:
                 dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
             )
             members = []
+            centre, spread = self._scale_for(isoform, TDI_LABEL_ASSAY)
             for model in self._members:
                 model.eval()
                 with torch.no_grad():
                     predicted = torch.cat(
                         [model(batch.bmg, batch.V_d, batch.X_d) for batch in loader]
                     )
-                members.append(
-                    predicted[:, RESPONSE + task].numpy() * self._resp_spread[task]
-                    + self._resp_centre[task]
-                )
+                members.append(predicted[:, RESPONSE + task].numpy() * spread + centre)
             scores[:, column] = np.mean(members, axis=0)
         return scores
 

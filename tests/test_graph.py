@@ -802,3 +802,285 @@ def test_the_pooled_prediction_ignores_the_per_target_copies():
         parameter.data.add_(1.0)
     assert np.allclose(net.predict_pooled(smiles).mean, pooled)
     assert not np.allclose(net.predict(smiles).mean[:, 3], pooled[:, 3])
+
+
+def _sharing_predictor(**kwargs):
+    """A hard-sharing graph and its predictor, with the output layer zeroed to distinct constants
+    (the potency unit of pair ``p`` outputs ``p + 1``; response task ``k``'s unit for target ``i``
+    outputs ``100 * (k + 1) + i``) so which unit a row selects can be read off the output."""
+    from cypshift.models.graph import _HardSharingRegressionFFN
+
+    net = GraphNetwork(hard_parameter_sharing=True, **kwargs)
+    mpnn = net._build()
+    predictor = mpnn.predictor
+    assert isinstance(predictor, _HardSharingRegressionFFN)
+    n_pairs = len(net.targets) * len(net.assays)
+    bias = torch.arange(n_pairs, dtype=torch.float32) + 1.0
+    for task in range(len(net.response_assays)):
+        bias = torch.cat([bias, torch.arange(len(net.targets)) + 100.0 * (task + 1)])
+    final = predictor.table[-1][-1]
+    with torch.no_grad():
+        final.weight.zero_()
+        final.bias.copy_(bias)
+    predictor.eval()
+    return net, mpnn.message_passing.output_dim, predictor
+
+
+def test_hard_parameter_sharing_has_one_output_unit_per_task_after_shared_hidden_layers():
+    net = GraphNetwork(hard_parameter_sharing=True, response_assays=("luminescent_max_response",))
+    predictor = net._build().predictor
+    n_targets, n_assays = len(net.targets), len(net.assays)
+    assert predictor.table[-1][-1].out_features == n_targets * n_assays + 1 * n_targets
+    assert predictor.table[0][0].in_features == predictor.input_dim  # one stack for every task
+    assert (
+        GraphNetwork(ffn_hidden=96, hard_parameter_sharing=True)
+        ._build()
+        .predictor.table[0][0]
+        .out_features
+        == 96
+    )
+
+
+def test_hard_parameter_sharing_selects_the_rows_own_target_assay_unit():
+    from cypshift.data.assembly import encode_conditions
+
+    net, offset, predictor = _sharing_predictor(response_assays=("luminescent_max_response",))
+    frame = pd.DataFrame(
+        {
+            "target": ["CYP1A2", "CYP2D6", "CYP2D6", "CYP3A4"],
+            "assay": [
+                "direct_inhibition_drc",
+                "direct_inhibition_drc",
+                "tdi_drc",
+                "luminescent_ac50",
+            ],
+        }
+    )
+    conditioning = torch.tensor(encode_conditions(frame, "factorised", net.targets, net.assays))
+    out = predictor(torch.cat([torch.zeros(len(frame), offset), conditioning], dim=1))
+    for row, (target, assay) in enumerate(zip(frame["target"], frame["assay"], strict=True)):
+        expected = net.targets.index(target) * len(net.assays) + net.assays.index(assay) + 1
+        assert out[row, VALUE].item() == pytest.approx(expected)
+        assert out[row, 3].item() == pytest.approx(100 + net.targets.index(target))
+
+
+def test_the_shared_hidden_layers_do_not_see_which_task_a_row_carries():
+    from cypshift.data.assembly import encode_conditions
+
+    net = GraphNetwork(hard_parameter_sharing=True, physchem=True)
+    mpnn = net._build()
+    predictor, offset = mpnn.predictor, mpnn.message_passing.output_dim
+    predictor.eval()
+    frame = pd.DataFrame(
+        {
+            "target": ["CYP1A2", "CYP3A4"],
+            "assay": ["direct_inhibition_drc", "fluorogenic_pic50"],
+        }
+    )
+    one_hots = torch.tensor(encode_conditions(frame, "factorised", net.targets, net.assays))
+    width = predictor.input_dim - offset - one_hots.shape[1]
+    rest = torch.randn(1, offset + width).repeat(2, 1)  # the same molecule and descriptors
+    z = torch.cat([rest[:, :offset], one_hots, rest[:, offset:]], dim=1)
+    units = predictor.table(z * predictor.keep)
+    assert torch.allclose(units[0], units[1])
+    other = z.clone()
+    other[:, 0] += 1.0  # a different encoder output does change the units
+    assert not torch.allclose(predictor.table(other * predictor.keep)[0], units[0])
+
+
+def test_hard_parameter_sharing_needs_the_factorised_one_hot_layout():
+    with pytest.raises(ValueError, match="factorised"):
+        GraphNetwork(hard_parameter_sharing=True, conditioning="metadata")
+
+
+def _heads_rows(n_compounds: int = 8) -> pd.DataFrame:
+    """CYP2D6 and CYP3A4 direct rows, CYP3A4 fluorogenic rows, CYP2D6 max-response rows."""
+    rng = np.random.default_rng(0)
+    smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "CCC", "c1ccncc1", "CCOCC", "CC(C)O"]
+    response = "luminescent_max_response"
+    rows = []
+    for smi in smiles[:n_compounds]:
+        for target, assay in (
+            ("CYP2D6", "direct_inhibition_drc"),
+            ("CYP3A4", "direct_inhibition_drc"),
+            ("CYP3A4", "fluorogenic_pic50"),
+            ("CYP2D6", response),
+        ):
+            value = float(rng.uniform(0, 1) if assay == response else rng.uniform(4, 7))
+            spread = 0.0 if assay == response else 0.3
+            rows.append(
+                {
+                    "SMILES": smi,
+                    "target": target,
+                    "assay": assay,
+                    "source": "challenge",
+                    "value": value,
+                    "conf_low": value - spread,
+                    "conf_high": value + spread,
+                    "is_censored": False,
+                    "weight": 1.0,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+_SMALL = {
+    "hidden": 16,
+    "depth": 2,
+    "ffn_hidden": 16,
+    "epochs": 2,
+    "batch_size": 16,
+    "response_assays": ("luminescent_max_response",),
+}
+
+
+def test_hard_parameter_sharing_trains_only_the_units_of_the_pairs_it_sees():
+    import lightning.pytorch as pl
+
+    settings = {**_SMALL, "hard_parameter_sharing": True}
+    net = GraphNetwork(n_members=1, **settings)
+    net.fit(_heads_rows())
+    trained = net._members[0].predictor.table[-1][-1]
+    pl.seed_everything(0, workers=True)  # the fit's member-0 seed, so this rebuild is its init
+    initial = GraphNetwork(**settings)._build().predictor.table[-1][-1]
+    n_assays = len(net.assays)
+
+    def pair(target: str, assay: str) -> int:
+        return net.targets.index(target) * n_assays + net.assays.index(assay)
+
+    def moved(index: int) -> float:
+        return float((trained.weight[index] - initial.weight[index]).detach().abs().max())
+
+    for seen in (
+        pair("CYP2D6", "direct_inhibition_drc"),
+        pair("CYP3A4", "direct_inhibition_drc"),
+        pair("CYP3A4", "fluorogenic_pic50"),
+    ):
+        assert moved(seen) > 1e-4
+    for unseen in (pair("CYP1A2", "direct_inhibition_drc"), pair("CYP2C9", "fluorogenic_pic50")):
+        assert moved(unseen) == 0.0
+    response_unit = len(net.targets) * n_assays + net.targets.index("CYP2D6")
+    assert moved(response_unit) > 1e-4
+
+
+def test_labels_are_standardised_per_target_and_assay_under_per_task_scaling():
+    rows = _heads_rows()
+    rows.loc[rows["assay"] == "fluorogenic_pic50", "value"] += 3.0  # a pair on its own level
+    plain = GraphNetwork(**_SMALL)
+    plain.fit(rows)
+    assert plain._task_scale == {}
+    assert plain._scale_for("CYP3A4", "fluorogenic_pic50") == (plain._centre, plain._spread)
+
+    net = GraphNetwork(per_task_scaling=True, **_SMALL)
+    net.fit(rows)
+    direct = rows[(rows["target"] == "CYP3A4") & (rows["assay"] == "direct_inhibition_drc")]
+    centre, spread = net._scale_for("CYP3A4", "direct_inhibition_drc")
+    assert centre == pytest.approx(direct["value"].mean())
+    assert spread == pytest.approx(direct["value"].std(ddof=0))
+    points = net._datapoints(rows, labelled=True)
+    for pair, group in rows.groupby(["target", "assay"]):
+        column = 3 if pair[1] == "luminescent_max_response" else VALUE  # 3: the response column
+        standardised = np.array([points[i].y[column] for i in group.index])
+        assert standardised.mean() == pytest.approx(0.0, abs=1e-9)
+        assert standardised.std() == pytest.approx(1.0)
+
+
+def test_a_pair_with_one_row_keeps_the_shared_scale_under_per_task_scaling():
+    rows = _heads_rows()
+    one = rows[(rows["target"] == "CYP3A4") & (rows["assay"] == "fluorogenic_pic50")].index[1:]
+    net = GraphNetwork(per_task_scaling=True, **_SMALL)
+    net.fit(rows.drop(index=one))
+    assert ("CYP3A4", "fluorogenic_pic50") not in net._task_scale
+    assert net._scale_for("CYP3A4", "fluorogenic_pic50") == (net._centre, net._spread)
+
+
+def test_predictions_are_unstandardised_with_the_pair_s_own_scale():
+    net = GraphNetwork(per_task_scaling=True, **_SMALL)
+    net.fit(_heads_rows())
+    smiles = ["CCO", "CCN", "CCC"]
+    net._task_scale[("CYP3A4", "direct_inhibition_drc")] = (0.0, 1.0)
+    base = net._samples_at_assay(smiles, "direct_inhibition_drc")
+    net._task_scale[("CYP3A4", "direct_inhibition_drc")] = (10.0, 2.0)
+    scaled = net._samples_at_assay(smiles, "direct_inhibition_drc")
+    assert np.allclose(scaled[:, :, 3], base[:, :, 3] * 2.0 + 10.0)
+    assert np.allclose(scaled[:, :, 2], base[:, :, 2])  # another target's scale is unchanged
+
+
+def test_the_fold_monitor_rescales_each_row_by_its_target_s_spread():
+    from cypshift.models.graph import _FoldMonitor
+
+    class Batch:
+        bmg = V_d = None
+        X_d = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        Y = torch.tensor([[1.0, 0.0], [2.0, 0.0]])
+
+    class Module(torch.nn.Module):
+        device = "cpu"
+
+        def transfer_batch_to_device(self, batch, device, dataloader_idx):
+            return batch
+
+        def forward(self, bmg, v_d, x_d):
+            return torch.tensor([[1.5, 0.0], [1.5, 0.0]])
+
+    monitor = _FoldMonitor(
+        [Batch()], spread=np.array([2.0, 4.0]), patience=0, prune_at=None, prune_above=None
+    )
+    monitor.on_train_epoch_end(None, Module())
+    assert monitor.error == [pytest.approx((0.5 * 2.0 + 0.5 * 4.0) / 2)]
+
+
+def test_a_monitored_fit_under_per_task_scaling_records_finite_errors():
+    net = GraphNetwork(per_task_scaling=True, early_stopping_patience=0, **{**_SMALL, "epochs": 3})
+    net.fit(_monitored_rows(40), monitor=_monitored_rows(12))
+    (curve,) = net.curves
+    assert len(curve["error"]) == 3 and np.isfinite(curve["error"]).all()
+
+
+def test_the_auxiliary_heads_cover_the_trained_pairs_and_leave_the_others_empty():
+    net = GraphNetwork(n_members=2, **_SMALL)
+    net.fit(_heads_rows())
+    smiles = ["CCO", "CCN", "CCC"]
+    heads = net.predict_auxiliary(smiles)
+    assert list(heads) == [
+        "direct_inhibition_drc",
+        "fluorogenic_pic50",
+        "luminescent_max_response",
+    ]
+    # endpoints are CYP1A2, CYP2C9, CYP2D6, CYP3A4
+    for assay, trained in (
+        ("direct_inhibition_drc", [False, False, True, True]),
+        ("fluorogenic_pic50", [False, False, False, True]),
+        ("luminescent_max_response", [False, False, True, False]),
+    ):
+        assert heads[assay].shape == (3, 4)
+        assert np.isfinite(heads[assay]).all(axis=0).tolist() == trained
+        assert np.isnan(heads[assay]).all(axis=0).tolist() == [not t for t in trained]
+    assert np.allclose(heads["direct_inhibition_drc"][:, 3], net.predict_pooled(smiles).mean[:, 3])
+    assert np.allclose(heads["direct_inhibition_drc"][:, 2], net.predict_pooled(smiles).mean[:, 2])
+
+
+def test_the_auxiliary_heads_read_the_pooled_members_not_the_copies():
+    net = _finetuned(finetune_per_target_epochs=1)
+    net.fit(_two_target_rows(24))
+    smiles = ["CCO", "CCN", "CCC"]
+    before = net.predict_auxiliary(smiles)["direct_inhibition_drc"]
+    for parameter in net._branches[0]["CYP3A4_pIC50_direct_inhibition"].parameters():
+        parameter.data.add_(1.0)
+    assert np.allclose(
+        net.predict_auxiliary(smiles)["direct_inhibition_drc"], before, equal_nan=True
+    )
+
+
+def test_the_new_options_change_nothing_at_their_defaults():
+    """The recorded runs were trained without them: the default readout is the plain RegressionFFN
+    and labels are standardised with the shared scale."""
+    net = GraphNetwork(response_assays=("luminescent_max_response",))
+    assert type(net._build().predictor) is cpnn_regression_ffn()
+    assert net.hard_parameter_sharing is False and net.per_task_scaling is False
+
+
+def cpnn_regression_ffn():
+    from chemprop import nn as cpnn
+
+    return cpnn.RegressionFFN

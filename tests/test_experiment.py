@@ -440,3 +440,76 @@ def test_the_graph_accepts_a_frozen_embedding_as_a_feature_block():
     for key, value in {"model.kind": "graph", "features.molecular_embedding": "chemeleon"}.items():
         config.override(key, value)
     config.validate()
+
+
+class TestSharedHiddenReadoutOptions:
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"model.kind": "boosted", "model.graph.hard_parameter_sharing": True},
+            {"model.kind": "boosted", "model.graph.per_task_scaling": True},
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "model.graph.per_measurement_heads": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "model.graph.per_target_heads": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "model.graph.adapt_target": "CYP2D6",
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "model.graph.separate_trunks": True,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "conditioning.strategy": "metadata",
+            },
+        ],
+    )
+    def test_combinations_that_would_be_ignored_are_rejected(self, overrides):
+        config = ExperimentConfig.load()
+        for key, value in overrides.items():
+            config.override(key, value)
+        with pytest.raises(ValueError):
+            config.validate()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"model.kind": "graph", "model.graph.hard_parameter_sharing": True},
+            {"model.kind": "graph", "model.graph.per_task_scaling": True},
+            {
+                "model.kind": "graph",
+                "model.graph.hard_parameter_sharing": True,
+                "model.graph.per_task_scaling": True,
+                "model.graph.finetune_per_target_epochs": 10,
+            },
+            {
+                "model.kind": "graph",
+                "model.graph.per_task_scaling": True,
+                "model.graph.per_measurement_heads": True,
+            },
+        ],
+    )
+    def test_the_options_validate_on_the_graph(self, overrides):
+        config = ExperimentConfig.load()
+        for key, value in overrides.items():
+            config.override(key, value)
+        config.validate()
+
+    def test_a_config_saved_before_the_options_existed_loads_with_them_off(self):
+        saved = ExperimentConfig.load().to_dict()
+        del saved["model"]["graph"]["hard_parameter_sharing"]
+        del saved["model"]["graph"]["per_task_scaling"]
+        loaded = ExperimentConfig.from_dict(saved)
+        assert not loaded.model.graph.hard_parameter_sharing
+        assert not loaded.model.graph.per_task_scaling

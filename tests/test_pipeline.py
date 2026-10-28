@@ -703,3 +703,52 @@ def test_r2_decomposition_joins_predictions_by_molecule_not_position():
     table = _log_r2_decomposition(submission, evaluation)
     for endpoint in REGRESSION_ENDPOINTS:
         assert table.loc[endpoint.split("_")[0], "r2"] == pytest.approx(1.0)
+
+
+def test_auxiliary_heads_are_columns_per_endpoint_and_assay_and_a_model_without_them_has_none():
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.pipeline import auxiliary_heads
+
+    class WithHeads:
+        def predict_auxiliary(self, smiles):
+            return {"luminescent_ac50": np.arange(2 * 4, dtype=float).reshape(2, 4)}
+
+    evaluation = pd.DataFrame({"Molecule_Name": ["A", "B"], "SMILES": ["CCO", "CCN"]})
+    frame = auxiliary_heads(WithHeads(), evaluation)
+    assert list(frame.columns) == [
+        "Molecule_Name",
+        *(f"{endpoint}__luminescent_ac50" for endpoint in REGRESSION_ENDPOINTS),
+    ]
+    assert frame[f"{REGRESSION_ENDPOINTS[1]}__luminescent_ac50"].tolist() == [1.0, 5.0]
+    assert auxiliary_heads(object(), evaluation) is None
+
+
+def test_save_run_bundle_writes_the_auxiliary_heads_beside_the_predictions_when_given(tmp_path):
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import save_run_bundle
+
+    names = ["A", "B"]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = [5.0, 6.0]
+        evaluation[f"{endpoint}_conf_low"] = evaluation[endpoint] - 0.2
+        evaluation[f"{endpoint}_conf_high"] = evaluation[endpoint] + 0.2
+    submission = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        submission[endpoint] = [4.9, 6.1]
+    auxiliary = pd.DataFrame({"Molecule_Name": names, "x__y": [1.0, 2.0]})
+    scores = pd.DataFrame({"ST-RAE_mean": [0.6]}, index=["MA"])
+    scores.index.name = "endpoint"
+    config = ExperimentConfig.load()
+    save_run_bundle(tmp_path / "a", config, evaluation, submission, scores, None, auxiliary)
+    save_run_bundle(tmp_path / "b", config, evaluation, submission, scores)
+    assert pd.read_parquet(tmp_path / "a" / "out_of_fold_auxiliary.parquet")["x__y"].tolist() == [
+        1.0,
+        2.0,
+    ]
+    assert not (tmp_path / "b" / "out_of_fold_auxiliary.parquet").exists()
+    # the predictions file is the same with or without the auxiliary heads
+    assert pd.read_parquet(tmp_path / "a" / "out_of_fold.parquet").equals(
+        pd.read_parquet(tmp_path / "b" / "out_of_fold.parquet")
+    )
