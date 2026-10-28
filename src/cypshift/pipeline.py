@@ -161,6 +161,8 @@ def build_model(
             aggregation=config.model.graph.aggregation,
             learning_rate=config.model.graph.learning_rate,
             warmup_epochs=config.model.graph.warmup_epochs,
+            tdi_label_loss=config.model.graph.tdi_label_loss,
+            tdi_label_pos_weight=config.model.graph.tdi_label_pos_weight,
             finetune_per_target_epochs=config.model.graph.finetune_per_target_epochs,
             finetune_per_target_lr=config.model.graph.finetune_per_target_lr,
             finetune_per_target_assays=config.model.graph.finetune_per_target_assays,

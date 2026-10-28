@@ -218,6 +218,14 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "model.graph.per_target_heads": True},
             {"model.kind": "boosted", "model.graph.finetune_per_target_epochs": 5},
             {"model.kind": "boosted", "model.graph.save_embedding": True},
+            {"model.kind": "graph", "model.graph.tdi_label_loss": "bce"},  # no tdi_label source
+            {"model.kind": "graph", "model.graph.tdi_label_loss": "hinge"},
+            {
+                "model.kind": "graph",
+                "sources.tdi_label": True,
+                "model.graph.tdi_label_loss": "bce",
+                "model.graph.tdi_label_pos_weight": 0.0,
+            },
             {
                 "model.kind": "graph",
                 "model.graph.save_embedding": True,

@@ -142,9 +142,19 @@ class SoftThresholdLoss(ChempropMetric):
     at the ``_CENSORED_LOWER_SENTINEL`` floor) are excluded from the point term.
     """
 
-    def __init__(self, point_weight: float = 0.0, **kwargs: object) -> None:
+    def __init__(
+        self,
+        point_weight: float = 0.0,
+        bce_column: int | None = None,
+        bce_pos_weight: float = 1.0,
+        **kwargs: object,
+    ) -> None:
         super().__init__(**kwargs)
         self.point_weight = point_weight
+        #: A response column trained with the logistic loss on its 0/1 label (the output is a logit)
+        #: instead of the squared error, with positives weighted by ``bce_pos_weight``.
+        self.bce_column = bce_column
+        self.bce_pos_weight = bce_pos_weight
 
     def _calc_unreduced_loss(
         self,
@@ -169,6 +179,14 @@ class SoftThresholdLoss(ChempropMetric):
             # Every response task (columns RESPONSE onward) keeps a plain squared error; chemprop's
             # finiteness mask zeroes the columns a given row does not carry.
             loss[:, RESPONSE:] = (preds[:, RESPONSE:] - targets[:, RESPONSE:]) ** 2
+            if self.bce_column is not None:
+                column = self.bce_column
+                loss[:, column] = torch.nn.functional.binary_cross_entropy_with_logits(
+                    preds[:, column],
+                    targets[:, column],
+                    pos_weight=torch.tensor(self.bce_pos_weight, device=preds.device),
+                    reduction="none",
+                )
         return loss
 
 
@@ -675,6 +693,8 @@ class GraphNetwork:
         per_measurement_heads: bool = False,
         hard_parameter_sharing: bool = False,
         per_task_scaling: bool = False,
+        tdi_label_loss: str = "squared",
+        tdi_label_pos_weight: float = 1.0,
         ffn_hidden: int = 0,
         ffn_layers: int = 1,
         batch_norm: bool = False,
@@ -759,6 +779,11 @@ class GraphNetwork:
         #: spread, instead of one centre and spread for all pIC50 rows and one per response task.
         #: A pair with fewer than two rows, or no spread, keeps the shared scale.
         self.per_task_scaling = per_task_scaling
+        #: Loss of the ``is_TDI`` label task: ``squared`` (a squared error on the standardised 0/1
+        #: label) or ``bce`` (the logistic loss on the raw 0/1 label, the output a logit, positives
+        #: weighted by ``tdi_label_pos_weight``). Only the label task reads these.
+        self.tdi_label_loss = tdi_label_loss
+        self.tdi_label_pos_weight = tdi_label_pos_weight
         #: Readout FFN width, independent of the message-passing width; 0 keeps chemprop's default.
         self.ffn_hidden = ffn_hidden
         #: Hidden layers of the readout FFN, and the pooling of atom vectors into the molecule
@@ -871,6 +896,8 @@ class GraphNetwork:
 
     def _scale_for(self, target: str, assay: str) -> tuple[float, float]:
         """The ``(centre, spread)`` that labels of this target and assay are standardised with."""
+        if assay == TDI_LABEL_ASSAY and self.tdi_label_loss == "bce":
+            return 0.0, 1.0  # the logistic loss reads the raw 0/1 label
         own = self._task_scale.get((target, assay)) if self.per_task_scaling else None
         if own is not None:
             return own
@@ -989,6 +1016,9 @@ class GraphNetwork:
         # gave chemprop's default MSE over all tasks, which trained the carrier columns and
         # made "absolute" an MSE run rather than MAE.
         weights = torch.tensor([[1.0, 0.0, 0.0] + [1.0] * len(self.response_assays)])
+        bce_column = None
+        if self.tdi_label_loss == "bce" and TDI_LABEL_ASSAY in self.response_assays:
+            bce_column = RESPONSE + self.response_assays.index(TDI_LABEL_ASSAY)
         if self.loss == "soft_threshold":
             # The point and ranking augmentations layer onto the dead-zone loss; the ranking
             # hinge needs the batch, so it is a distinct criterion when it is switched on.
@@ -997,11 +1027,16 @@ class GraphNetwork:
                     ranking_weight=self.ranking_loss_weight,
                     ranking_margin=self.ranking_margin,
                     point_weight=self.point_loss_weight,
+                    bce_column=bce_column,
+                    bce_pos_weight=self.tdi_label_pos_weight,
                     task_weights=weights,
                 )
             else:
                 criterion = SoftThresholdLoss(
-                    point_weight=self.point_loss_weight, task_weights=weights
+                    point_weight=self.point_loss_weight,
+                    bce_column=bce_column,
+                    bce_pos_weight=self.tdi_label_pos_weight,
+                    task_weights=weights,
                 )
         elif self.loss == "absolute":
             criterion = cpnn.MAE(task_weights=weights)

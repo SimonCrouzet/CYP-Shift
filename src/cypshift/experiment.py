@@ -477,6 +477,12 @@ class GraphConfig:
     #: own copy. ``0`` is off. Needs the shared-trunk graph (a separated trunk already trains one
     #: model per isoform). Swept.
     finetune_per_target_epochs: int = 0
+    #: Loss of the ``is_TDI`` label task (``sources.tdi_label``): ``squared`` (a squared error
+    #: on the standardised 0/1 label) or ``bce`` (the logistic loss on the raw 0/1 label, the
+    #: output a logit). ``bce`` needs the soft-threshold objective. Swept.
+    tdi_label_loss: str = "squared"
+    #: Weight of the positive class in the ``bce`` loss; 1 leaves the classes unweighted.
+    tdi_label_pos_weight: float = 1.0
     #: Save each cross-validation fold's molecule encodings of its held-out compounds in the run
     #: bundle (``out_of_fold_embedding.parquet``), for a model stacked on the encoder.
     save_embedding: bool = False
@@ -769,6 +775,20 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
                 "and model.graph.prune_tolerance must be non-negative"
+            )
+        if graph.tdi_label_loss not in ("squared", "bce") or graph.tdi_label_pos_weight <= 0:
+            raise ValueError(
+                "model.graph.tdi_label_loss is 'squared' or 'bce' and "
+                "model.graph.tdi_label_pos_weight must be positive"
+            )
+        if graph.tdi_label_loss == "bce" and (
+            not self.sources.tdi_label
+            or self.model.kind != "graph"
+            or self.model.objective != "soft_threshold"
+        ):
+            raise ValueError(
+                "model.graph.tdi_label_loss='bce' needs sources.tdi_label, model.kind='graph' and "
+                "the soft_threshold objective"
             )
         if graph.save_embedding and (self.model.kind != "graph" or graph.separate_trunks):
             raise ValueError(

@@ -1133,3 +1133,25 @@ def test_the_pooled_stage_is_unchanged_by_the_assays_the_copies_train_on():
     smiles = ["CCO", "CCN", "CCC"]
     assert np.allclose(plain.predict_pooled(smiles).mean, direct.predict_pooled(smiles).mean)
     assert not np.allclose(plain.predict(smiles).mean, direct.predict(smiles).mean)
+
+
+def test_the_logistic_loss_of_the_label_column_weights_the_positives_and_leaves_the_rest():
+    from cypshift.models.graph import RESPONSE, SoftThresholdLoss
+
+    weights = torch.tensor([[1.0, 0.0, 0.0, 1.0]])
+    preds = torch.zeros(2, 4)
+    targets = torch.tensor([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 0.0]])
+    plain = SoftThresholdLoss(bce_column=RESPONSE, task_weights=weights)
+    weighted = SoftThresholdLoss(bce_column=RESPONSE, bce_pos_weight=3.0, task_weights=weights)
+    args = (preds, targets, torch.ones_like(targets), torch.ones(2))
+    base, up = plain._calc_unreduced_loss(*args), weighted._calc_unreduced_loss(*args)
+    # a logit of 0 is a probability of 1/2: both rows cost ln 2; a weight of 3 triples the positive
+    assert torch.allclose(base[:, RESPONSE], torch.full((2,), 0.6931), atol=1e-3)
+    assert torch.allclose(up[:, RESPONSE], torch.tensor([3 * 0.6931, 0.6931]), atol=1e-3)
+    squared = SoftThresholdLoss(task_weights=weights)._calc_unreduced_loss(*args)
+    assert torch.allclose(squared[:, RESPONSE], torch.tensor([1.0, 0.0]))
+
+
+def test_the_label_task_reads_the_raw_zero_one_label_under_the_logistic_loss():
+    net = GraphNetwork(hidden=16, depth=2, response_assays=("tdi_label",), tdi_label_loss="bce")
+    assert net._scale_for("CYP3A4", "tdi_label") == (0.0, 1.0)

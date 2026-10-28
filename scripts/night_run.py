@@ -736,6 +736,8 @@ def _resolved_key(overrides: dict) -> str:
     for field in ("hard_parameter_sharing", "per_task_scaling"):
         if not graph[field]:
             del graph[field]  # recorded names predate them
+    if graph["tdi_label_loss"] == "squared":
+        del graph["tdi_label_loss"], graph["tdi_label_pos_weight"]  # the default, as recorded
     if not graph["save_embedding"]:
         del graph["save_embedding"]  # an output, not a setting of the recipe
     if not graph["finetune_per_target_assays"]:
