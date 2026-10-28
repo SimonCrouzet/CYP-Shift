@@ -108,6 +108,8 @@ DATA_SIDE_NOT_SWEPT = {
     "data.seed": "fixed so that configurations are compared on the same folds and seed",
     "sources.structure": "needs the Boltz cofold cache, which is empty",
     "sources.tdi_label": "classification track; varied by the TDI cells of the questions plan",
+    "data.tdi_folds": "classification track; varied by the TDI fold cells of the questions plan",
+    "multifidelity.tdi_label_uncovered_weight": "classification track; varied by the TDI cells",
     "multifidelity.screen_model_hidden": "screen helper width; the graph cannot take that helper",
     "training.preset": "curriculum; the graph ignores stage settings",
     "training.stages": "curriculum; the graph ignores stage settings",
