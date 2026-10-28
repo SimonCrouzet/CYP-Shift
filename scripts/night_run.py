@@ -2785,6 +2785,24 @@ TFM_TUNING_CELLS = {
     "tfm_octant_dense_temp0p7": {**TFM_OCTANT, "model.tfm.softmax_temperature": 0.7},
     "tfm_octant_dense_est32": {**TFM_OCTANT, "model.tfm.n_estimators": 32},
 }
+#: The same probes from the dense features with the CheMeleon embedding appended, the best TabPFN
+#: feature set of the same-input comparison: the Octant rows alone as the reference, then one change
+#: each (the Tox21 rows, a narrower PCA, the median).
+TFM_CHEMELEON = {**TFM_OCTANT, **FEATURE_SETS["dense_chemeleon"]}
+TFM_CHEMELEON_CELLS = {
+    "tfm_octant_dense_chemeleon": TFM_CHEMELEON,
+    "tfm_octant_dense_chemeleon_tox21": {**TFM_CHEMELEON, "sources.tox21": True},
+    "tfm_octant_dense_chemeleon_pca128": {**TFM_CHEMELEON, "model.tfm.pca_components": 128},
+    "tfm_octant_dense_chemeleon_median": {**TFM_CHEMELEON, "model.tfm.prediction": "median"},
+}
+#: Boosted trees from the base-data deep member (``boosted_deep_base_data``), one change each: the
+#: squared and the absolute loss, no Novartis rows, a narrower column sample.
+BOOSTED_PROBE_SETS = {
+    "boosted_deep_squared": {"model.objective": "squared"},
+    "boosted_deep_absolute": {"model.objective": "absolute"},
+    "boosted_deep_no_novartis": {"sources.novartis": False},
+    "boosted_deep_colsample0p3": {"model.boosted.colsample_bytree": 0.3},
+}
 
 
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
@@ -2846,12 +2864,20 @@ def run_questions() -> None:
             raise ValueError(f"cell {cell.tag} is not a valid configuration")
         names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
         boosted[names[cell.tag]] = overrides
-    # The TabPFN settings tests are not part of the plan; only CYP_CELLS brings them in.
+    # The TabPFN and boosted probes are not part of the plan; only CYP_CELLS brings them in.
     asked = os.environ.get("CYP_CELLS", "").split(",")
-    for tag, overrides in TFM_TUNING_CELLS.items():
+    deep = _apply(recipe, BOOSTED_BASE_CELLS[0].sets)
+    probes = {
+        **TFM_TUNING_CELLS,
+        **TFM_CHEMELEON_CELLS,
+        **{tag: {**deep, **sets} for tag, sets in BOOSTED_PROBE_SETS.items()},
+    }
+    for tag, overrides in probes.items():
         if tag in asked:
+            if not _is_valid(overrides):
+                raise ValueError(f"cell {tag} is not a valid configuration")
             names[tag] = _recipe_name(tag, overrides, declared)
-            tfm[names[tag]] = overrides
+            (tfm if overrides["model.kind"] == "tfm" else boosted)[names[tag]] = overrides
     other = {**tabular, **curve, **boosted}
     queue = os.environ.get("CYP_QUEUE", "all")
     if queue not in QUEUES:

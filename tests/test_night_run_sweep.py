@@ -1438,3 +1438,36 @@ def test_each_tabpfn_tuning_cell_is_valid_and_differs_from_its_reference_by_one_
         assert night_run._is_valid(overrides)
         changed = {key for key in overrides if overrides[key] != reference.get(key)}
         assert len(changed) == (0 if overrides is reference else 1), tag
+
+
+def test_the_probes_are_valid_one_setting_changes_and_stay_out_of_the_plan(
+    monkeypatch,
+):
+    deep = night_run._apply(
+        night_run._apply(
+            dict(night_run.REGRESSION[night_run.FOCUS_BASE]), night_run._BOTH + night_run._BUDGET
+        ),
+        night_run.BOOSTED_BASE_CELLS[0].sets,
+    )
+    groups = (
+        (night_run.TFM_CHEMELEON_CELLS, night_run.TFM_CHEMELEON),
+        ({tag: {**deep, **sets} for tag, sets in night_run.BOOSTED_PROBE_SETS.items()}, deep),
+    )
+    for cells, reference in groups:
+        for tag, overrides in cells.items():
+            assert night_run._is_valid(overrides), tag
+            changed = {key for key in overrides if overrides[key] != reference.get(key)}
+            assert len(changed) == (0 if overrides is reference else 1), tag
+    queue = {}
+    monkeypatch.setattr(night_run, "run_phase", lambda phase, configs, seeds: queue.update(configs))
+    monkeypatch.setattr(night_run, "_report_factors", lambda cells, names: pd.DataFrame())
+    monkeypatch.setattr(night_run, "_report_fair", lambda configs: pd.DataFrame())
+    monkeypatch.setattr(
+        night_run, "ranked_means", lambda phase: pd.DataFrame({"mean": [], "std": [], "count": []})
+    )
+    night_run.run_questions()
+    assert len(queue) == 64
+    monkeypatch.setenv("CYP_CELLS", "boosted_deep_squared,tfm_octant_dense_chemeleon_pca128")
+    queue.clear()
+    night_run.run_questions()
+    assert sorted(o["model.kind"] for o in queue.values()) == ["boosted", "tfm"]
