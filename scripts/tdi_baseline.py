@@ -260,6 +260,11 @@ def main() -> None:
         help="run bundle of a cell run with save_embedding: add its out-of-fold encodings",
     )
     parser.add_argument(
+        "--coverage-of",
+        type=Path,
+        help="run bundle whose compounds define the covered set without adding its columns",
+    )
+    parser.add_argument(
         "--covered-only",
         action="store_true",
         help="score only the compounds the bundle's folds covered (the direct-labelled ones)",
@@ -301,6 +306,9 @@ def main() -> None:
     )
     logger.info("%s features: %d columns", args.features, features.shape[1])
     covered = np.ones(len(table), dtype=bool)
+    if args.coverage_of:
+        seen = pd.read_parquet(args.coverage_of / "out_of_fold.parquet")["Molecule_Name"]
+        covered &= table["Molecule_Name"].isin(seen).to_numpy()
     if args.embedding_bundle:
         encodings, seen = bundle_features(table, args.embedding_bundle, embedding=True)
         features = np.hstack([features, encodings])
