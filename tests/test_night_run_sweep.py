@@ -1430,3 +1430,11 @@ def test_a_recipe_keeps_its_name_while_the_tabpfn_settings_are_left_to_tabpfn():
         ("model.tfm.prediction", "median"),
     ):
         assert setting.rsplit(".", 1)[1] in tfm_block({setting: value})
+
+
+def test_each_tabpfn_tuning_cell_is_valid_and_differs_from_its_reference_by_one_setting():
+    reference = night_run.TFM_TUNING_CELLS["tfm_octant_dense"]
+    for tag, overrides in night_run.TFM_TUNING_CELLS.items():
+        assert night_run._is_valid(overrides)
+        changed = {key for key in overrides if overrides[key] != reference.get(key)}
+        assert len(changed) == (0 if overrides is reference else 1), tag

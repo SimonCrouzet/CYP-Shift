@@ -2769,6 +2769,22 @@ CURVE_CELLS = {
         **dict(_BUDGET),
     },
 }
+#: TabPFN on the fair dense inputs with the Octant rows alone (no Tox21, no Novartis), one of its
+#: own settings changed per cell from the first cell, the reference.
+TFM_OCTANT = {
+    "model.kind": "tfm",
+    **FEATURE_SETS["dense"],
+    "sources.screen": False,
+    "sources.octant": True,
+    "sources.tox21": False,
+    "sources.novartis": False,
+}
+TFM_TUNING_CELLS = {
+    "tfm_octant_dense": TFM_OCTANT,
+    "tfm_octant_dense_median": {**TFM_OCTANT, "model.tfm.prediction": "median"},
+    "tfm_octant_dense_temp0p7": {**TFM_OCTANT, "model.tfm.softmax_temperature": 0.7},
+    "tfm_octant_dense_est32": {**TFM_OCTANT, "model.tfm.n_estimators": 32},
+}
 
 
 #: Parts of the questions plan's queue: the graph fits with the CheMeleon encoder (which need a
@@ -2830,6 +2846,12 @@ def run_questions() -> None:
             raise ValueError(f"cell {cell.tag} is not a valid configuration")
         names[cell.tag] = _recipe_name(cell.tag, overrides, declared)
         boosted[names[cell.tag]] = overrides
+    # The TabPFN settings tests are not part of the plan; only CYP_CELLS brings them in.
+    asked = os.environ.get("CYP_CELLS", "").split(",")
+    for tag, overrides in TFM_TUNING_CELLS.items():
+        if tag in asked:
+            names[tag] = _recipe_name(tag, overrides, declared)
+            tfm[names[tag]] = overrides
     other = {**tabular, **curve, **boosted}
     queue = os.environ.get("CYP_QUEUE", "all")
     if queue not in QUEUES:
