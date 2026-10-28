@@ -195,6 +195,37 @@ def test_mitra_worker_predicts_each_endpoint_from_its_own_context(tmp_path):
         assert predictions["prediction__CYP3A4"].tolist() == [8.0, 8.0, 8.0]
 
 
+class _PrevalenceClassifier:
+    def __init__(self, settings):
+        self.settings = settings
+
+    def fit(self, features, labels):
+        self.share = float(np.mean(labels))
+        assert set(np.unique(labels)) <= {0, 1}
+        return self
+
+    def predict_proba(self, features):
+        return np.column_stack(
+            [np.full(len(features), 1 - self.share)] * 1 + [np.full(len(features), self.share)]
+        )
+
+
+def test_mitra_worker_classification_writes_the_probability_of_the_positive_class(tmp_path):
+    from cypshift.models import mitra_worker
+
+    source, target = tmp_path / "source.npz", tmp_path / "target.npz"
+    np.savez(
+        source,
+        query=np.zeros((2, 2), np.float32),
+        x__tdi=np.zeros((4, 2), np.float32),
+        y__tdi=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    settings = {"task": "classification", "fine_tune": False, "fine_tune_steps": 0, "seed": 0}
+    mitra_worker.run(source, target, settings, make_regressor=_PrevalenceClassifier)
+    with np.load(target) as predictions:
+        assert predictions["prediction__tdi"].tolist() == [0.25, 0.25]
+
+
 def test_mitra_backend_fits_nothing_in_process_and_predicts_through_the_worker(monkeypatch):
     """fit keeps the context rows; predict hands every endpoint's context and the query to one
     worker run in the Mitra environment and reads the predictions back."""

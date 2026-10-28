@@ -1,6 +1,12 @@
-"""Direct is_TDI classifier baseline: LightGBM on molecular features, scored by cross-validated MCC.
+"""Direct is_TDI classifier baseline: LightGBM, TabPFN or Mitra on molecular features, scored by
+cross-validated MCC.
 
     python scripts/tdi_baseline.py --output scratch/tdi_baseline_oof.csv
+    python scripts/tdi_baseline.py --model tabpfn --output scratch/tdi_tabpfn_oof.csv
+
+``--model tabpfn`` and ``--model mitra`` are the tabular foundation models, which read dense
+features (the physicochemical and mechanistic blocks, not the fingerprint) as in the regression
+family; Mitra runs in its own environment (``MITRA_PYTHON``).
 
 The models in the repo call ``is_TDI`` from the gap between two predicted potencies. This trains a
 classifier on the ``is_TDI`` labels directly, one per enzyme (CYP2D6, CYP3A4), on the same
@@ -12,8 +18,12 @@ on the out-of-fold scores (optimistic), with ROC AUC and average precision for t
 """
 
 import argparse
+import json
 import logging
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import lightgbm as lgb
@@ -27,6 +37,9 @@ from cypshift.data.splits import stratified_scaffold_folds  # noqa: E402 -- afte
 from cypshift.features.molecular import featurise  # noqa: E402
 
 logger = logging.getLogger("tdi_baseline")
+MODELS = ("lightgbm", "tabpfn", "mitra")
+MITRA_PYTHON = "/mnt/wsl/ext/envs/mitra/bin/python"
+MITRA_WORKER = Path(__file__).resolve().parents[1] / "src/cypshift/models/mitra_worker.py"
 
 TDI_TABLE = Path("data/raw/cyp-challenge-TRAIN_TDI.csv")
 ENZYMES = ("CYP2D6", "CYP3A4")
@@ -64,16 +77,17 @@ def predicted_potency(table: pd.DataFrame, paths: list[Path]) -> np.ndarray:
     return mean.reindex(table["Molecule_Name"]).to_numpy(dtype=np.float32)
 
 
-def out_of_fold_scores(
-    features: np.ndarray, labels: np.ndarray, folds: np.ndarray, threads: int, seed: int
+def fold_scores(
+    model: str,
+    train_x: np.ndarray,
+    train_y: np.ndarray,
+    test_x: np.ndarray,
+    threads: int,
+    seed: int,
 ) -> np.ndarray:
-    """Out-of-fold positive-class probabilities of a LightGBM classifier; NaN where unlabelled."""
-    scores = np.full(len(labels), np.nan)
-    labelled = ~np.isnan(labels)
-    for fold in np.unique(folds):
-        train = labelled & (folds != fold)
-        test = labelled & (folds == fold)
-        model = lgb.LGBMClassifier(
+    """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold."""
+    if model == "lightgbm":
+        classifier = lgb.LGBMClassifier(
             n_estimators=400,
             learning_rate=0.03,
             num_leaves=31,
@@ -86,8 +100,67 @@ def out_of_fold_scores(
             random_state=seed,
             verbose=-1,
         )
-        model.fit(features[train], labels[train].astype(int))
-        scores[test] = model.predict_proba(features[test])[:, 1]
+        classifier.fit(train_x, train_y)
+        return classifier.predict_proba(test_x)[:, 1]
+    # The foundation models read dense features: fill a gap with the training fold's median.
+    medians = np.nan_to_num(np.nanmedian(train_x, axis=0))
+    fill = (
+        np.where(np.isnan(train_x), medians, train_x),
+        np.where(np.isnan(test_x), medians, test_x),
+    )
+    if model == "tabpfn":
+        import torch
+        from tabpfn import TabPFNClassifier
+
+        classifier = TabPFNClassifier(
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            random_state=seed,
+            ignore_pretraining_limits=True,
+        )
+        classifier.fit(fill[0], train_y)
+        return classifier.predict_proba(fill[1])[:, 1]
+    with tempfile.TemporaryDirectory() as directory:
+        source, target = Path(directory) / "context.npz", Path(directory) / "prediction.npz"
+        np.savez(source, x__tdi=fill[0], y__tdi=train_y.astype(float), query=fill[1])
+        settings = {
+            "task": "classification",
+            "fine_tune": False,
+            "fine_tune_steps": 0,
+            "seed": seed,
+        }
+        settings["device"] = "cuda"
+        command = [
+            os.environ.get("MITRA_PYTHON", MITRA_PYTHON),
+            str(MITRA_WORKER),
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+            "--settings",
+            json.dumps(settings),
+        ]
+        subprocess.run(command, check=True)
+        with np.load(target) as data:
+            return data["prediction__tdi"]
+
+
+def out_of_fold_scores(
+    features: np.ndarray,
+    labels: np.ndarray,
+    folds: np.ndarray,
+    threads: int,
+    seed: int,
+    model: str = "lightgbm",
+) -> np.ndarray:
+    """Out-of-fold positive-class probabilities of a classifier; NaN where unlabelled."""
+    scores = np.full(len(labels), np.nan)
+    labelled = ~np.isnan(labels)
+    for fold in np.unique(folds):
+        train = labelled & (folds != fold)
+        test = labelled & (folds == fold)
+        scores[test] = fold_scores(
+            model, features[train], labels[train].astype(int), features[test], threads, seed
+        )
         logger.info("fold %d: %d train, %d held out", fold + 1, train.sum(), test.sum())
     return scores
 
@@ -101,6 +174,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--bits", type=int, default=4096)
+    parser.add_argument("--model", choices=MODELS, default="lightgbm")
     parser.add_argument(
         "--direct-potency",
         action="store_true",
@@ -116,11 +190,21 @@ def main() -> None:
         "has none)",
     )
     args = parser.parse_args()
+    if args.model == "tabpfn":
+        from cypshift.local_env import load_local_env
+
+        load_local_env()  # the TabPFN token, never printed
 
     table = pd.read_csv(args.table)
     smiles = table["SMILES"].tolist()
     logger.info("featurising %d compounds", len(smiles))
-    features = featurise(smiles, fingerprint=True, physchem=True, mechanism=True, n_bits=args.bits)
+    features = featurise(
+        smiles,
+        fingerprint=args.model == "lightgbm",
+        physchem=True,
+        mechanism=True,
+        n_bits=args.bits,
+    )
     if args.predicted_potency:
         features = np.hstack([features, predicted_potency(table, args.predicted_potency)])
     labels = {e: table[f"{e}_is_TDI"].astype(float) for e in ENZYMES}
@@ -138,7 +222,7 @@ def main() -> None:
         if args.direct_potency:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
-        scores = out_of_fold_scores(columns, truth, folds, args.threads, args.seed)
+        scores = out_of_fold_scores(columns, truth, folds, args.threads, args.seed, args.model)
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
         keep = ~np.isnan(truth)
