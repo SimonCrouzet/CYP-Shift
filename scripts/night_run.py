@@ -2641,6 +2641,22 @@ TDI_GRAPH_CELLS = (
         ),
         "tdi",
     ),
+    # A per-isoform TDI specialist: the regularised B with both TDI tasks, then a copy per isoform
+    # trained for 10 epochs at lr 1e-5 on that isoform's direct, preincubated and label rows alone.
+    Cell(
+        "tdi_specialist_b_reg",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            *_TDI_BOTH,
+            ("model.graph.finetune_per_target_epochs", 10),
+            ("model.graph.finetune_per_target_lr", 1e-5),
+            (
+                "model.graph.finetune_per_target_assays",
+                ("direct_inhibition_drc", "tdi_drc", "tdi_label"),
+            ),
+        ),
+        "tdi",
+    ),
     Cell(
         "tdi_label_b_reg",
         (

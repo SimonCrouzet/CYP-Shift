@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from cypshift.config import ISOFORMS
-from cypshift.data.assembly import ASSAYS, DATA_SPACES, RESPONSE_ASSAY
+from cypshift.data.assembly import ASSAYS, DATA_SPACES, RESPONSE_ASSAY, TDI_LABEL_ASSAY
 from cypshift.data.auxiliary import AUXILIARY_WEIGHTING as _AUXILIARY_WEIGHTING
 from cypshift.data.conditioning import DESCRIPTOR_SOURCES as _DESCRIPTOR_SOURCES
 from cypshift.data.selection import SELECTIONS
@@ -813,7 +813,10 @@ class ExperimentConfig:
                     "model.graph.finetune_per_target_assays is ignored without "
                     "model.graph.finetune_per_target_epochs"
                 )
-            unknown = set(graph.finetune_per_target_assays) - {*ASSAYS, RESPONSE_ASSAY}
+            known = {*ASSAYS, RESPONSE_ASSAY}
+            if self.sources.tdi_label:
+                known.add(TDI_LABEL_ASSAY)
+            unknown = set(graph.finetune_per_target_assays) - known
             if unknown:
                 raise ValueError(
                     f"model.graph.finetune_per_target_assays has unknown {sorted(unknown)}"

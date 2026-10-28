@@ -1565,7 +1565,11 @@ class GraphNetwork:
             )
             members = []
             centre, spread = self._scale_for(isoform, TDI_LABEL_ASSAY)
-            for model in self._members:
+            for index, member_model in enumerate(self._members):
+                # An isoform with a per-target copy is scored by it (its label rows may have been
+                # part of the copy's fine-tune).
+                own = self._branches[index].get(endpoint) if index < len(self._branches) else None
+                model = member_model if own is None else own
                 model.eval()
                 with torch.no_grad():
                     predicted = torch.cat(

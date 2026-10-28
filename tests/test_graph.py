@@ -1155,3 +1155,30 @@ def test_the_logistic_loss_of_the_label_column_weights_the_positives_and_leaves_
 def test_the_label_task_reads_the_raw_zero_one_label_under_the_logistic_loss():
     net = GraphNetwork(hidden=16, depth=2, response_assays=("tdi_label",), tdi_label_loss="bce")
     assert net._scale_for("CYP3A4", "tdi_label") == (0.0, 1.0)
+
+
+def test_the_label_score_of_an_isoform_comes_from_its_per_target_copy():
+    net = GraphNetwork(
+        hidden=16,
+        depth=2,
+        ffn_hidden=16,
+        epochs=1,
+        batch_size=8,
+        response_assays=("tdi_label",),
+        finetune_per_target_epochs=1,
+        early_stopping_patience=0,
+    )
+    rows = _two_target_rows(24)
+    labels = rows.copy()
+    labels["assay"], labels["data_space"], labels["value"] = "tdi_label", "challenge", 0.0
+    labels.loc[labels.index[::2], "value"] = 1.0
+    labels["conf_low"] = labels["conf_high"] = labels["value"]
+    net.fit(pd.concat([rows, labels], ignore_index=True))
+    smiles = ["CCO", "CCN", "CCC"]
+    before = net._tdi_label_scores(smiles)
+    copy = net._branches[0]["CYP3A4_pIC50_direct_inhibition"]
+    for parameter in copy.parameters():
+        parameter.data.add_(1.0)
+    after = net._tdi_label_scores(smiles)
+    column = list(net.endpoints).index("CYP3A4_pIC50_direct_inhibition")
+    assert not np.allclose(before[:, column], after[:, column])
