@@ -4,9 +4,12 @@ cross-validated MCC.
     python scripts/tdi_baseline.py --output scratch/tdi_baseline_oof.csv
     python scripts/tdi_baseline.py --model tabpfn --output scratch/tdi_tabpfn_oof.csv
 
-``--model tabpfn`` and ``--model mitra`` are the tabular foundation models, which read dense
-features (the physicochemical and mechanistic blocks, not the fingerprint) as in the regression
-family; Mitra runs in its own environment (``MITRA_PYTHON``).
+``--model tabpfn`` and ``--model mitra`` are the tabular foundation models. ``--features`` picks
+one of the regression comparison's feature sets (dense: physicochemical + mechanistic; chemeleon:
+the CheMeleon embedding; dense_chemeleon; fp_dense: Morgan fingerprint + dense). The foundation
+models read them as the regression ones do: impute, standardise, and PCA to 500 components when a
+set is wider than that, fitted on the training fold; LightGBM reads them raw. Mitra runs in its own
+environment (``MITRA_PYTHON``).
 
 The models in the repo call ``is_TDI`` from the gap between two predicted potencies. This trains a
 classifier on the ``is_TDI`` labels directly, one per enzyme (CYP2D6, CYP3A4), on the same
@@ -34,10 +37,18 @@ from sklearn.metrics import average_precision_score, matthews_corrcoef, roc_auc_
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cypshift.data.splits import stratified_scaffold_folds  # noqa: E402 -- after the src path
-from cypshift.features.molecular import featurise  # noqa: E402
+from cypshift.features.assembly import molecular_feature_matrix  # noqa: E402
 
 logger = logging.getLogger("tdi_baseline")
 MODELS = ("lightgbm", "tabpfn", "mitra")
+#: The feature sets of the regression comparison: (fingerprint, physchem + mechanistic, embedding).
+FEATURE_SETS = {
+    "dense": (False, True, "none"),
+    "chemeleon": (False, False, "chemeleon"),
+    "dense_chemeleon": (False, True, "chemeleon"),
+    "fp_dense": (True, True, "none"),
+}
+PCA_COMPONENTS = 500
 MITRA_PYTHON = "/mnt/wsl/ext/envs/mitra/bin/python"
 MITRA_WORKER = Path(__file__).resolve().parents[1] / "src/cypshift/models/mitra_worker.py"
 
@@ -84,6 +95,7 @@ def fold_scores(
     test_x: np.ndarray,
     threads: int,
     seed: int,
+    pca: int = PCA_COMPONENTS,
 ) -> np.ndarray:
     """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold."""
     if model == "lightgbm":
@@ -102,11 +114,20 @@ def fold_scores(
         )
         classifier.fit(train_x, train_y)
         return classifier.predict_proba(test_x)[:, 1]
-    # The foundation models read dense features: fill a gap with the training fold's median.
-    medians = np.nan_to_num(np.nanmedian(train_x, axis=0))
+    # The foundation models read the set as the regression ones do: impute, standardise, PCA when
+    # wider than PCA_COMPONENTS, fitted on the training fold.
+    from sklearn.decomposition import PCA
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    steps = [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+    if train_x.shape[1] > pca:
+        steps.append(("pca", PCA(n_components=pca, random_state=seed)))
+    reducer = Pipeline(steps).fit(train_x)
     fill = (
-        np.where(np.isnan(train_x), medians, train_x),
-        np.where(np.isnan(test_x), medians, test_x),
+        reducer.transform(train_x).astype(np.float32),
+        reducer.transform(test_x).astype(np.float32),
     )
     if model == "tabpfn":
         import torch
@@ -151,6 +172,7 @@ def out_of_fold_scores(
     threads: int,
     seed: int,
     model: str = "lightgbm",
+    pca: int = PCA_COMPONENTS,
 ) -> np.ndarray:
     """Out-of-fold positive-class probabilities of a classifier; NaN where unlabelled."""
     scores = np.full(len(labels), np.nan)
@@ -159,7 +181,13 @@ def out_of_fold_scores(
         train = labelled & (folds != fold)
         test = labelled & (folds == fold)
         scores[test] = fold_scores(
-            model, features[train], labels[train].astype(int), features[test], threads, seed
+            model,
+            features[train],
+            labels[train].astype(int),
+            features[test],
+            threads,
+            seed,
+            pca,
         )
         logger.info("fold %d: %d train, %d held out", fold + 1, train.sum(), test.sum())
     return scores
@@ -175,10 +203,12 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--bits", type=int, default=4096)
     parser.add_argument("--model", choices=MODELS, default="lightgbm")
+    parser.add_argument("--features", choices=tuple(FEATURE_SETS), default="fp_dense")
     parser.add_argument(
-        "--dense-only",
-        action="store_true",
-        help="LightGBM on the dense blocks alone, the features the foundation models read",
+        "--pca",
+        type=int,
+        default=PCA_COMPONENTS,
+        help="components the foundation models keep of a wider set (the regression models: 500)",
     )
     parser.add_argument(
         "--direct-potency",
@@ -203,13 +233,19 @@ def main() -> None:
     table = pd.read_csv(args.table)
     smiles = table["SMILES"].tolist()
     logger.info("featurising %d compounds", len(smiles))
-    features = featurise(
+    fingerprint, dense, embedding = FEATURE_SETS[args.features]
+    features = molecular_feature_matrix(
         smiles,
-        fingerprint=args.model == "lightgbm" and not args.dense_only,
-        physchem=True,
-        mechanism=True,
-        n_bits=args.bits,
+        n_bits=args.bits if args.model == "lightgbm" else 2048,
+        fingerprint_radius=2,
+        physchem=dense,
+        mechanism=dense,
+        ionization_geometry=False,
+        ionization_cache="data/external/ionization/features.parquet",
+        molecular_embedding=embedding,
+        use_fingerprint=fingerprint,
     )
+    logger.info("%s features: %d columns", args.features, features.shape[1])
     if args.predicted_potency:
         features = np.hstack([features, predicted_potency(table, args.predicted_potency)])
     labels = {e: table[f"{e}_is_TDI"].astype(float) for e in ENZYMES}
@@ -227,7 +263,9 @@ def main() -> None:
         if args.direct_potency:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
-        scores = out_of_fold_scores(columns, truth, folds, args.threads, args.seed, args.model)
+        scores = out_of_fold_scores(
+            columns, truth, folds, args.threads, args.seed, args.model, args.pca
+        )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
         keep = ~np.isnan(truth)
