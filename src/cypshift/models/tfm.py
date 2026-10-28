@@ -84,11 +84,16 @@ class TabularFoundationModel:
         pca_components: int = 500,
         fine_tune: bool = True,
         fine_tune_steps: int = 50,
+        n_estimators: int = 0,
+        softmax_temperature: float = 0.0,
+        prediction: str = "mean",
         device: str | None = None,
         seed: int = 0,
     ) -> None:
         if backend not in TFM_BACKENDS:
             raise ValueError(f"unknown tfm backend {backend!r}; have {TFM_BACKENDS}")
+        if prediction not in ("mean", "median"):
+            raise ValueError(f"unknown tfm prediction {prediction!r}; have mean, median")
         self.targets = targets
         self.backend = backend
         self.n_bits = n_bits
@@ -107,6 +112,10 @@ class TabularFoundationModel:
         #: this many steps (AutoGluon's own defaults).
         self.fine_tune = fine_tune
         self.fine_tune_steps = fine_tune_steps
+        #: TabPFN only; 0 leaves its own default ("auto" estimators, the checkpoint's temperature).
+        self.n_estimators = n_estimators
+        self.softmax_temperature = softmax_temperature
+        self.prediction = prediction
         self.device = device
         self.seed = seed
         self._models: dict[str, object] = {}
@@ -147,9 +156,16 @@ class TabularFoundationModel:
             return _ContextRows()
         from tabpfn import TabPFNRegressor
 
-        device = self._device()
+        options: dict[str, object] = {}
+        if self.n_estimators:
+            options["n_estimators"] = self.n_estimators
+        if self.softmax_temperature:
+            options["softmax_temperature"] = self.softmax_temperature
         return TabPFNRegressor(
-            device=device, random_state=self.seed, ignore_pretraining_limits=True
+            device=self._device(),
+            random_state=self.seed,
+            ignore_pretraining_limits=True,
+            **options,
         )
 
     def _fit_reducer(self, raw: NDArray[np.float32]) -> None:
@@ -264,8 +280,10 @@ class TabularFoundationModel:
         if self.backend == "mitra":
             predicted = self._predict_mitra(features)
         else:
+            options = {} if self.prediction == "mean" else {"output_type": self.prediction}
             predicted = {
-                isoform: model.predict(features) for isoform, model in self._models.items()
+                isoform: model.predict(features, **options)
+                for isoform, model in self._models.items()
             }
         columns = []
         for endpoint in REGRESSION_ENDPOINTS:

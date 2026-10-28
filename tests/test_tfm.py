@@ -316,3 +316,56 @@ def test_fine_tune_settings_belong_to_mitra_only():
     config.override("model.tfm.backend", "autogluon")
     with pytest.raises(ValueError, match="model.tfm.backend"):
         config.validate()
+
+
+def test_tabpfn_settings_reach_the_regressor_only_when_set(monkeypatch):
+    import sys
+    import types
+
+    seen = []
+
+    class _FakeTabPFNRegressor:
+        def __init__(self, **kwargs):
+            seen.append(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules, "tabpfn", types.SimpleNamespace(TabPFNRegressor=_FakeTabPFNRegressor)
+    )
+    TabularFoundationModel(device="cpu")._regressor()
+    TabularFoundationModel(device="cpu", n_estimators=32, softmax_temperature=0.7)._regressor()
+    assert "n_estimators" not in seen[0] and "softmax_temperature" not in seen[0]
+    assert seen[1]["n_estimators"] == 32 and seen[1]["softmax_temperature"] == 0.7
+
+
+def test_median_prediction_asks_the_regressor_for_the_median_and_mean_leaves_the_call_alone():
+    class _Asked:
+        def predict(self, features, **options):
+            self.options = options
+            return np.zeros(len(features))
+
+    model = TabularFoundationModel(n_bits=64, pca_components=10_000)
+    model._reducer = type("Identity", (), {"transform": lambda self, raw: raw})()
+    model._raw_features = lambda smiles: np.zeros((len(smiles), 3), np.float32)
+    model._models = {"CYP1A2": _Asked()}
+    model.predict(["CCO"])
+    assert model._models["CYP1A2"].options == {}
+    model.prediction = "median"
+    model.predict(["CCO"])
+    assert model._models["CYP1A2"].options == {"output_type": "median"}
+
+
+def test_tabpfn_settings_belong_to_tabpfn_and_prediction_is_mean_or_median():
+    from cypshift.experiment import ExperimentConfig
+
+    config = ExperimentConfig()
+    config.override("model.kind", "tfm")
+    config.override("model.tfm.n_estimators", 32)
+    config.validate()
+    config.override("model.tfm.backend", "mitra")
+    with pytest.raises(ValueError, match="TabPFN's"):
+        config.validate()
+    config = ExperimentConfig()
+    config.override("model.kind", "tfm")
+    config.override("model.tfm.prediction", "mode")
+    with pytest.raises(ValueError, match="model.tfm.prediction"):
+        config.validate()

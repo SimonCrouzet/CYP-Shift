@@ -532,9 +532,19 @@ class TfmConfig:
     #: steps before predicting (AutoGluon's defaults); False predicts in context alone.
     fine_tune: bool = True
     fine_tune_steps: int = 50
+    #: TabPFN only: the number of forward passes it averages (each sees the context under a
+    #: different preprocessing). 0 leaves TabPFN's own choice (8 on this feature width).
+    n_estimators: int = 0
+    #: TabPFN only: the temperature of the output distribution's softmax. 0 leaves the
+    #: checkpoint's own value (0.9); 1.0 is no rescaling.
+    softmax_temperature: float = 0.0
+    #: TabPFN only: the summary of the predicted distribution taken as the prediction, ``mean``
+    #: or ``median`` (the median is the point estimate that minimises absolute error).
+    prediction: str = "mean"
 
 
 TFM_BACKENDS = ("tabpfn", "mitra")
+TFM_PREDICTIONS = ("mean", "median")
 
 
 @dataclass
@@ -1087,6 +1097,19 @@ class ExperimentConfig:
                     f"model.tfm.fine_tune and fine_tune_steps are Mitra's; "
                     f"backend {tfm.backend!r} would ignore them"
                 )
+            if tfm.backend != "tabpfn" and (
+                tfm.n_estimators != defaults.n_estimators
+                or tfm.softmax_temperature != defaults.softmax_temperature
+                or tfm.prediction != defaults.prediction
+            ):
+                raise ValueError(
+                    f"model.tfm.n_estimators, softmax_temperature and prediction are TabPFN's; "
+                    f"backend {tfm.backend!r} would ignore them"
+                )
+            if tfm.prediction not in TFM_PREDICTIONS:
+                raise ValueError(f"model.tfm.prediction={tfm.prediction!r}; have {TFM_PREDICTIONS}")
+            if tfm.n_estimators < 0 or tfm.softmax_temperature < 0:
+                raise ValueError("model.tfm.n_estimators and softmax_temperature are not negative")
         if self.sources.tdi_label and self.model.kind != "graph":
             raise ValueError(
                 f"sources.tdi_label is wired only into the graph model, not {self.model.kind!r}"

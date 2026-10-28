@@ -274,6 +274,9 @@ def build_model(
             pca_components=config.model.tfm.pca_components,
             fine_tune=config.model.tfm.fine_tune,
             fine_tune_steps=config.model.tfm.fine_tune_steps,
+            n_estimators=config.model.tfm.n_estimators,
+            softmax_temperature=config.model.tfm.softmax_temperature,
+            prediction=config.model.tfm.prediction,
             seed=config.data.seed,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")

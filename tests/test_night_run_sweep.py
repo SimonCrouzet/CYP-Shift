@@ -1415,3 +1415,18 @@ def test_the_readout_cells_change_one_factor_of_the_regularised_b_with_its_fine_
         assert {k: v for k, v in overrides.items() if base.get(k) != v} == {changes[cell.tag]: True}
         keys.add(night_run._resolved_key(overrides))
     assert len(keys) == 3
+
+
+def test_a_recipe_keeps_its_name_while_the_tabpfn_settings_are_left_to_tabpfn():
+    def tfm_block(overrides):
+        key = night_run._resolved_key({"model.kind": "tfm", **overrides})
+        return key[key.index("'tfm': {") :].split("}")[0]
+
+    plain = tfm_block({})
+    assert not any(name in plain for name in ("n_estimators", "softmax_temperature", "prediction"))
+    for setting, value in (
+        ("model.tfm.n_estimators", 32),
+        ("model.tfm.softmax_temperature", 0.7),
+        ("model.tfm.prediction", "median"),
+    ):
+        assert setting.rsplit(".", 1)[1] in tfm_block({setting: value})

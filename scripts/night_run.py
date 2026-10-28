@@ -733,6 +733,13 @@ def _resolved_key(overrides: dict) -> str:
     if tfm["backend"] != "mitra":
         # Mitra's settings; recorded names predate them
         del tfm["fine_tune"], tfm["fine_tune_steps"]
+    for field, default in (
+        ("n_estimators", 0),
+        ("softmax_temperature", 0.0),
+        ("prediction", "mean"),
+    ):
+        if tfm[field] == default:
+            del tfm[field]  # TabPFN's own choices, left to it; recorded names predate them
     for field in ("hard_parameter_sharing", "per_task_scaling"):
         if not graph[field]:
             del graph[field]  # recorded names predate them
