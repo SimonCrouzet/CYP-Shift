@@ -2785,23 +2785,25 @@ TFM_TUNING_CELLS = {
     "tfm_octant_dense_temp0p7": {**TFM_OCTANT, "model.tfm.softmax_temperature": 0.7},
     "tfm_octant_dense_est32": {**TFM_OCTANT, "model.tfm.n_estimators": 32},
 }
-#: The same probes from the dense features with the CheMeleon embedding appended, the best TabPFN
-#: feature set of the same-input comparison: the Octant rows alone as the reference, then one change
-#: each (the Tox21 rows, a narrower PCA, the median).
+#: TabPFN's own settings from the dense features with the CheMeleon embedding appended (the best
+#: TabPFN feature set of the same-input comparison) on the Octant rows alone: the reference, then
+#: one change each (the median, the softmax temperature, the estimator count, a narrower PCA).
 TFM_CHEMELEON = {**TFM_OCTANT, **FEATURE_SETS["dense_chemeleon"]}
 TFM_CHEMELEON_CELLS = {
     "tfm_octant_dense_chemeleon": TFM_CHEMELEON,
-    "tfm_octant_dense_chemeleon_tox21": {**TFM_CHEMELEON, "sources.tox21": True},
-    "tfm_octant_dense_chemeleon_pca128": {**TFM_CHEMELEON, "model.tfm.pca_components": 128},
     "tfm_octant_dense_chemeleon_median": {**TFM_CHEMELEON, "model.tfm.prediction": "median"},
+    "tfm_octant_dense_chemeleon_temp0p7": {**TFM_CHEMELEON, "model.tfm.softmax_temperature": 0.7},
+    "tfm_octant_dense_chemeleon_est32": {**TFM_CHEMELEON, "model.tfm.n_estimators": 32},
+    "tfm_octant_dense_chemeleon_pca128": {**TFM_CHEMELEON, "model.tfm.pca_components": 128},
 }
-#: Boosted trees from the base-data deep member (``boosted_deep_base_data``), one change each: the
-#: squared and the absolute loss, no Novartis rows, a narrower column sample.
+#: Boosted trees' own settings from the base-data deep member (``boosted_deep_base_data``, the
+#: fingerprint and descriptor features), one change each: the squared and the absolute loss, a
+#: narrower column sample, a larger leaf minimum.
 BOOSTED_PROBE_SETS = {
     "boosted_deep_squared": {"model.objective": "squared"},
     "boosted_deep_absolute": {"model.objective": "absolute"},
-    "boosted_deep_no_novartis": {"sources.novartis": False},
     "boosted_deep_colsample0p3": {"model.boosted.colsample_bytree": 0.3},
+    "boosted_deep_min_child100": {"model.boosted.min_child_samples": 100},
 }
 
 
