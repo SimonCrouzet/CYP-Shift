@@ -1455,6 +1455,10 @@ def test_the_probes_are_valid_one_setting_changes_and_stay_out_of_the_plan(
         ({tag: {**deep, **sets} for tag, sets in night_run.BOOSTED_PROBE_SETS.items()}, deep),
         (night_run.TFM_PCA128_CELLS, night_run.TFM_PCA128),
         (
+            {"tfm_all_rows_pca128": night_run.TFM_ALL_ROWS_PCA128},
+            night_run.fair_configs(("tfm",))["fair_tfm_dense_chemeleon_octant_tox21_novartis"][4],
+        ),
+        (
             {
                 tag: {**squared, **sets}
                 for tag, sets in night_run.BOOSTED_SQUARED_PROBE_SETS.items()

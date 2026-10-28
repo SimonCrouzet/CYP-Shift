@@ -2815,6 +2815,13 @@ TFM_PCA128_CELLS = {
     "tfm_pca128_temp0p7": {**TFM_PCA128, "model.tfm.softmax_temperature": 0.7},
     "tfm_pca128_temp0p5": {**TFM_PCA128, "model.tfm.softmax_temperature": 0.5},
 }
+#: TabPFN's best settings of the probes (the dense and CheMeleon features, a 128-wide PCA) on the
+#: recipe's rows (Octant, Tox21, Novartis): the all-rows cell of the same-input comparison with the
+#: narrower PCA.
+TFM_ALL_ROWS_PCA128 = {
+    **fair_configs(("tfm",))["fair_tfm_dense_chemeleon_octant_tox21_novartis"][4],
+    "model.tfm.pca_components": 128,
+}
 #: Boosted trees from the squared-loss member (``boosted_deep_squared``), one setting each.
 BOOSTED_SQUARED_PROBE_SETS = {
     "boosted_squared_min_child100": {"model.boosted.min_child_samples": 100},
@@ -2891,6 +2898,7 @@ def run_questions() -> None:
         **TFM_TUNING_CELLS,
         **TFM_CHEMELEON_CELLS,
         **TFM_PCA128_CELLS,
+        "tfm_all_rows_pca128": TFM_ALL_ROWS_PCA128,
         **{tag: {**deep, **sets} for tag, sets in BOOSTED_PROBE_SETS.items()},
         **{
             tag: {**deep, "model.objective": "squared", **sets}
