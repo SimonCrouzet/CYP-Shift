@@ -743,6 +743,8 @@ def _resolved_key(overrides: dict) -> str:
     for field in ("hard_parameter_sharing", "per_task_scaling"):
         if not graph[field]:
             del graph[field]  # recorded names predate them
+    if resolved["multifidelity"]["tdi_label_uncovered_weight"] == 1.0:
+        del resolved["multifidelity"]["tdi_label_uncovered_weight"]  # recorded names predate it
     if not resolved["data"]["tdi_folds"]:
         del resolved["data"]["tdi_folds"]  # recorded names predate it
     if graph["tdi_label_loss"] == "squared":
@@ -2692,6 +2694,49 @@ TDI_GRAPH_CELLS = (
         "tdi",
     ),
 )
+#: The TDI cells on the TDI folds (``data.tdi_folds``: scaffold-grouped, stratified on the TDI
+#: positives, the folds ``tdi_baseline.py`` uses), on the regularised B with the ``is_TDI`` label
+#: task: the reference; the label head trained with the logistic loss; the label rows of compounds
+#: with no direct measurement (all negatives) at weight 0 and 0.25; and both TDI tasks with the
+#: heads and encodings saved per fold, for stacking on the same folds.
+_B_REG_TDI = (
+    *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+    ("data.tdi_folds", True),
+)
+TDI_FOLD_CELLS = (
+    Cell("tdi5_label_b_reg", (*_B_REG_TDI, ("sources.tdi_label", True)), "tdi5"),
+    Cell(
+        "tdi5_label_b_reg_bce",
+        (*_B_REG_TDI, ("sources.tdi_label", True), ("model.graph.tdi_label_loss", "bce")),
+        "tdi5",
+        "tdi5_label_b_reg",
+    ),
+    Cell(
+        "tdi5_label_b_reg_uncovered_0",
+        (
+            *_B_REG_TDI,
+            ("sources.tdi_label", True),
+            ("multifidelity.tdi_label_uncovered_weight", 0.0),
+        ),
+        "tdi5",
+        "tdi5_label_b_reg",
+    ),
+    Cell(
+        "tdi5_label_b_reg_uncovered_025",
+        (
+            *_B_REG_TDI,
+            ("sources.tdi_label", True),
+            ("multifidelity.tdi_label_uncovered_weight", 0.25),
+        ),
+        "tdi5",
+        "tdi5_label_b_reg",
+    ),
+    Cell(
+        "tdi5_both_b_reg_embed",
+        (*_B_REG_TDI, *_TDI_BOTH, ("model.graph.save_embedding", True)),
+        "tdi5",
+    ),
+)
 #: Boosted trees on the base recipe's data (Octant, Tox21, Novartis, qHTS ``both``, the weight
 #: budget): the deep soft-threshold member and the pinball member of the earlier blends.
 BOOSTED_BASE_CELLS = (
@@ -2759,6 +2804,7 @@ def run_questions() -> None:
         *FINETUNE_30_CELLS,
         *READOUT_CELLS,
         *TDI_GRAPH_CELLS,
+        *TDI_FOLD_CELLS,
     )
     names, graph = {"base": base}, {base: recipe}
     for cell in cells:

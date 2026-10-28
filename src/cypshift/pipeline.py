@@ -465,7 +465,11 @@ def assemble_training_data(
             auxiliary = auxiliary.assign(source="_pooled")
         observations = pd.concat([observations, auxiliary[observations.columns]], ignore_index=True)
     if config.sources.tdi_label and tdi_table is not None:
-        labels = tdi_label_observations(tdi_table)
+        labels = tdi_label_observations(
+            tdi_table,
+            direct_names=set(load("inhibition", Path(config.data.directory))["Molecule_Name"]),
+            uncovered_weight=config.multifidelity.tdi_label_uncovered_weight,
+        )
         observations = pd.concat([observations, labels[observations.columns]], ignore_index=True)
     if config.training.inverse_variance_weighting:
         observations = weight_by_inverse_variance(

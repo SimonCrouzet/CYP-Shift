@@ -320,6 +320,10 @@ class MultifidelityConfig:
     screen_strategy: str = "extra_rows"
     screen_weight: float = 0.3
     tdi_weight: float = 0.5
+    #: Weight of the ``is_TDI`` label rows (``sources.tdi_label``) of compounds with no direct
+    #: measurement, relative to the others (1.0, as every label row is by default). All of those
+    #: labels are negatives, and the blinded test compounds all have a direct curve.
+    tdi_label_uncovered_weight: float = 1.0
     #: Hidden-layer width of the screen screen_model model (an MLP), which is also the
     #: dimension of the ``embedding`` screen_model. Wired into fit_screen_model; swept.
     screen_model_hidden: int = 16
@@ -788,6 +792,13 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
                 "and model.graph.prune_tolerance must be non-negative"
+            )
+        if self.multifidelity.tdi_label_uncovered_weight < 0 or (
+            self.multifidelity.tdi_label_uncovered_weight != 1.0 and not self.sources.tdi_label
+        ):
+            raise ValueError(
+                "multifidelity.tdi_label_uncovered_weight is non-negative and needs "
+                "sources.tdi_label"
             )
         if self.data.tdi_folds and not (self.sources.tdi_label or self.sources.tdi_assay_condition):
             raise ValueError(

@@ -39,3 +39,15 @@ def test_the_encodings_are_read_per_compound(tmp_path):
     table = pd.DataFrame({"Molecule_Name": ["B", "A"]})
     features, covered = script.bundle_features(table, _bundle(tmp_path), embedding=True)
     assert features.tolist() == [[2.0, 4.0], [1.0, 3.0]] and covered.all()
+
+
+def test_only_the_scored_compounds_get_a_score_while_every_labelled_one_trains():
+    rng = np.random.default_rng(0)
+    features = rng.normal(size=(120, 4))
+    labels = (features[:, 0] > 0).astype(float)
+    labels[[3, 100]] = np.nan
+    folds = np.arange(120) % 2
+    scored = np.arange(120) >= 60
+    scores = script.out_of_fold_scores(features, labels, folds, threads=1, seed=0, scored=scored)
+    assert np.isnan(scores[:60]).all() and np.isnan(scores[100])
+    assert not np.isnan(np.delete(scores[60:], 40)).any()

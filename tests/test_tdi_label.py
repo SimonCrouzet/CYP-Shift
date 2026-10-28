@@ -32,6 +32,29 @@ def test_the_labels_become_one_zero_or_one_row_per_compound_and_labelled_enzyme(
     assert set(rows["value"]) == {0.0, 1.0}
 
 
+def test_the_labels_of_compounds_without_a_direct_measurement_are_down_weighted_or_dropped():
+    direct = {"m0", "m1", "m4"}
+    half = tdi_label_observations(_tdi_table(), direct_names=direct, uncovered_weight=0.5)
+    assert len(half) == 9
+    weights = half.groupby(half["Molecule_Name"].isin(direct))["weight"].unique()
+    assert weights[True].tolist() == [1.0] and weights[False].tolist() == [0.5]
+    dropped = tdi_label_observations(_tdi_table(), direct_names=direct, uncovered_weight=0.0)
+    assert set(dropped["Molecule_Name"]) == direct and len(dropped) == 5
+    assert (
+        len(tdi_label_observations(_tdi_table(), direct_names=direct)) == 9
+    )  # weight 1.0 keeps all
+
+
+def test_the_weight_of_uncovered_labels_needs_the_label_task():
+    config = ExperimentConfig()
+    config.override("model.kind", "graph")
+    config.override("multifidelity.tdi_label_uncovered_weight", 0.0)
+    with pytest.raises(ValueError, match="tdi_label_uncovered_weight"):
+        config.validate()
+    config.override("sources.tdi_label", True)
+    config.validate()
+
+
 def test_a_table_without_labels_gives_no_rows():
     empty = _tdi_table().assign(CYP2D6_is_TDI=None, CYP3A4_is_TDI=None)
     assert tdi_label_observations(empty).empty

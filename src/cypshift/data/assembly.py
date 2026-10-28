@@ -17,6 +17,7 @@ last respect, and the weights say so rather than pretending otherwise.
 """
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import numpy as np
@@ -209,16 +210,28 @@ def build_observations(
     return observations
 
 
-def tdi_label_observations(tdi: pd.DataFrame, weight: float = 1.0) -> pd.DataFrame:
+def tdi_label_observations(
+    tdi: pd.DataFrame,
+    weight: float = 1.0,
+    direct_names: Collection[str] | None = None,
+    uncovered_weight: float = 1.0,
+) -> pd.DataFrame:
     """The ``is_TDI`` labels (1.0 or 0.0) of the scored classification enzymes as response rows.
 
     One row per compound and enzyme that carries a label, on the assay tag
-    :data:`TDI_LABEL_ASSAY`, so a graph with that response task learns the call directly.
+    :data:`TDI_LABEL_ASSAY`, so a graph with that response task learns the call directly. A
+    compound not in ``direct_names`` (no direct measurement; every such label is a negative) gets
+    ``weight * uncovered_weight``, and no row at all when that is zero.
     """
     rows = []
     for endpoint in CLASSIFICATION_ENDPOINTS:
         isoform = endpoint.split("_")[0]
         present = tdi[endpoint].notna()
+        row_weight = np.full(len(tdi), weight)
+        if direct_names is not None:
+            uncovered = ~tdi["Molecule_Name"].isin(direct_names).to_numpy()
+            row_weight[uncovered] = weight * uncovered_weight
+            present &= row_weight > 0
         if not present.any():
             continue
         value = tdi.loc[present, endpoint].astype(bool).to_numpy(float)
@@ -230,7 +243,7 @@ def tdi_label_observations(tdi: pd.DataFrame, weight: float = 1.0) -> pd.DataFra
                     "target": isoform,
                     "assay": TDI_LABEL_ASSAY,
                     "value": value,
-                    "weight": weight,
+                    "weight": row_weight[present.to_numpy()],
                     "conf_low": value,
                     "conf_high": value,
                     "is_censored": False,

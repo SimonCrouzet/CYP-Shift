@@ -54,6 +54,7 @@ MITRA_PYTHON = "/mnt/wsl/ext/envs/mitra/bin/python"
 MITRA_WORKER = Path(__file__).resolve().parents[1] / "src/cypshift/models/mitra_worker.py"
 
 TDI_TABLE = Path("data/raw/cyp-challenge-TRAIN_TDI.csv")
+INHIBITION_TABLE = Path("data/raw/cyp-challenge-TRAIN_inhibition.csv")
 ENZYMES = ("CYP2D6", "CYP3A4")
 
 
@@ -214,13 +215,17 @@ def out_of_fold_scores(
     pca: int = PCA_COMPONENTS,
     n_extra: int = 0,
     balanced: bool = False,
+    scored: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Out-of-fold positive-class probabilities of a classifier; NaN where unlabelled."""
+    """Out-of-fold positive-class probabilities of a classifier, trained on the labelled compounds
+    of the other folds; NaN except for the labelled compounds in ``scored`` (default: all)."""
     scores = np.full(len(labels), np.nan)
     labelled = ~np.isnan(labels)
     for fold in np.unique(folds):
         train = labelled & (folds != fold)
         test = labelled & (folds == fold)
+        if scored is not None:
+            test &= scored
         scores[test] = fold_scores(
             model,
             features[train],
@@ -281,9 +286,12 @@ def main() -> None:
         help="run bundle whose compounds define the covered set without adding its columns",
     )
     parser.add_argument(
-        "--covered-only",
-        action="store_true",
-        help="score only the compounds the bundle's folds covered (the direct-labelled ones)",
+        "--train-on",
+        choices=("all", "covered"),
+        default="all",
+        help="train on every labelled compound, or only on those with a direct measurement. The "
+        "scored compounds are always the covered ones (the blinded test has a direct curve for "
+        "all): the compounds with a direct measurement that every bundle given also covers",
     )
     parser.add_argument(
         "--direct-potency",
@@ -321,7 +329,8 @@ def main() -> None:
         use_fingerprint=fingerprint,
     )
     logger.info("%s features: %d columns", args.features, features.shape[1])
-    covered = np.ones(len(table), dtype=bool)
+    direct = pd.read_csv(INHIBITION_TABLE, usecols=["Molecule_Name"])["Molecule_Name"]
+    covered = table["Molecule_Name"].isin(direct).to_numpy()
     if args.coverage_of:
         seen = pd.read_parquet(args.coverage_of / "out_of_fold.parquet")["Molecule_Name"]
         covered &= table["Molecule_Name"].isin(seen).to_numpy()
@@ -342,23 +351,23 @@ def main() -> None:
     features = np.hstack([features, *extra])
     n_extra = sum(block.shape[1] for block in extra) + (1 if args.direct_potency else 0)
     labels = {e: table[f"{e}_is_TDI"].astype(float) for e in ENZYMES}
-    if args.covered_only:
-        labels = {e: label.where(covered) for e, label in labels.items()}
-        logger.info("scoring the %d compounds the bundles cover", int(covered.sum()))
+    logger.info("scoring the %d compounds with a direct measurement", int(covered.sum()))
     folds = tdi_scaffold_folds(table, args.folds, args.seed).to_numpy()
 
     out = table[["Molecule_Name", "SMILES"]].copy()
     out["fold"] = folds
     rows = []
     for enzyme in ENZYMES:
-        truth = labels[enzyme].to_numpy()
+        labelled = labels[enzyme].to_numpy()
+        truth = np.where(covered, labelled, np.nan)
+        training = truth if args.train_on == "covered" else labelled
         columns = features
         if args.direct_potency:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
         scores = out_of_fold_scores(
             columns,
-            truth,
+            training,
             folds,
             args.threads,
             args.seed,
@@ -366,6 +375,7 @@ def main() -> None:
             args.pca,
             n_extra,
             args.balanced,
+            scored=covered,
         )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
