@@ -260,6 +260,12 @@ def main() -> None:
         help="run bundle of a cell run with save_embedding: add its out-of-fold encodings",
     )
     parser.add_argument(
+        "--extra-table",
+        type=Path,
+        help="parquet with Molecule_Name and extra feature columns (e.g. predictions of a model "
+        "trained on another TDI source), added to every enzyme's features",
+    )
+    parser.add_argument(
         "--coverage-of",
         type=Path,
         help="run bundle whose compounds define the covered set without adding its columns",
@@ -316,6 +322,9 @@ def main() -> None:
     extra = []
     if args.predicted_potency:
         extra.append(predicted_potency(table, args.predicted_potency))
+    if args.extra_table:
+        frame = pd.read_parquet(args.extra_table).set_index("Molecule_Name")
+        extra.append(frame.reindex(table["Molecule_Name"]).to_numpy(np.float32))
     if args.stack_bundle:
         stacked, seen = bundle_features(table, args.stack_bundle, embedding=False)
         extra.append(stacked)
