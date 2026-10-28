@@ -2587,6 +2587,14 @@ TDI_GRAPH_CELLS = (
         ),
         "tdi",
     ),
+    Cell(
+        "tdi_label_b_reg",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            ("sources.tdi_label", True),
+        ),
+        "tdi",
+    ),
 )
 #: Boosted trees on the base recipe's data (Octant, Tox21, Novartis, qHTS ``both``, the weight
 #: budget): the deep soft-threshold member and the pinball member of the earlier blends.
