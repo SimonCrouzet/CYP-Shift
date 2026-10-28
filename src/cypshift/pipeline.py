@@ -911,8 +911,11 @@ def save_run_bundle(
     evaluation: pd.DataFrame,
     submission: pd.DataFrame,
     scores: pd.DataFrame,
+    pooled: pd.DataFrame | None = None,
 ) -> None:
     """Write one run's per-compound out-of-fold predictions, truth, resolved config and scores.
+    ``pooled``, the predictions of the pooled members before any per-target fine-tune, goes to
+    ``out_of_fold_pooled.parquet`` beside them.
 
     This is what later pairing, blending and calibration need -- the predictions per compound
     on a shared holdout, not just the aggregate score. The files are written in place into
@@ -930,6 +933,11 @@ def save_run_bundle(
     predictions = submission.rename(columns={e: f"{e}_pred" for e in REGRESSION_ENDPOINTS})
     out_of_fold = evaluation[truth_columns].merge(predictions, on="Molecule_Name", validate="1:1")
     out_of_fold.to_parquet(bundle_path / "out_of_fold.parquet", index=False)
+    if pooled is not None:
+        pooled_predictions = pooled.rename(columns={e: f"{e}_pred" for e in REGRESSION_ENDPOINTS})
+        evaluation[truth_columns].merge(
+            pooled_predictions, on="Molecule_Name", validate="1:1"
+        ).to_parquet(bundle_path / "out_of_fold_pooled.parquet", index=False)
     meta = {
         "config": config.to_dict(),
         "scores": scores.round(4).reset_index().to_dict("records"),
@@ -1054,6 +1062,7 @@ def run_cv(
     )
 
     out_of_fold = []
+    pooled_out_of_fold = []
     tdi_out_of_fold = []
     curves: dict[int, list[dict]] = {}
     for fold in range(n_folds):
@@ -1093,6 +1102,14 @@ def run_cv(
         for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
             fold_predictions[endpoint] = prediction.mean[:, column]
         out_of_fold.append(fold_predictions)
+        if graph.finetune_per_target_epochs and hasattr(model, "predict_pooled"):
+            # What the pooled members predict before their per-target copies are trained, from the
+            # same fit, so the fine-tune can be compared with no fine-tune on identical models.
+            pooled_prediction = model.predict_pooled(evaluation["SMILES"].tolist())
+            fold_pooled = evaluation[["Molecule_Name"]].copy()
+            for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
+                fold_pooled[endpoint] = pooled_prediction.mean[:, column]
+            pooled_out_of_fold.append(fold_pooled)
 
         # The TDI assay_condition, out of fold too, but only when the preincubated assay_condition
         # was actually
@@ -1120,7 +1137,8 @@ def run_cv(
                 tdi_scores[["MCC_mean", "Accuracy_mean"]].to_string(),
             )
     if bundle_path is not None:
-        save_run_bundle(bundle_path, config, train, submission, scores)
+        pooled = pd.concat(pooled_out_of_fold, ignore_index=True) if pooled_out_of_fold else None
+        save_run_bundle(bundle_path, config, train, submission, scores, pooled)
         if curves:
             write_curves(bundle_path, curves)
     return scores, submission, tdi_scores

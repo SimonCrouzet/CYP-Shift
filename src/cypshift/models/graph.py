@@ -1220,8 +1220,11 @@ class GraphNetwork:
         for parameter in model.message_passing.parameters():
             parameter.requires_grad = trainable
 
-    def _samples_at_assay(self, smiles: list[str], assay: str) -> NDArray[np.float64]:
-        """Per-member predicted pIC50 at one assay condition; (members, n, endpoints)."""
+    def _samples_at_assay(
+        self, smiles: list[str], assay: str, per_target: bool = True
+    ) -> NDArray[np.float64]:
+        """Per-member predicted pIC50 at one assay condition; (members, n, endpoints). A target
+        with a per-target copy is predicted by it unless ``per_target`` is off."""
         if not self._members:
             raise RuntimeError("model is not fitted")
         torch.set_float32_matmul_precision(self.matmul_precision)
@@ -1242,7 +1245,11 @@ class GraphNetwork:
                 dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
             )
             for index, member_model in enumerate(self._members):
-                own = self._branches[index].get(endpoint) if index < len(self._branches) else None
+                own = (
+                    self._branches[index].get(endpoint)
+                    if per_target and index < len(self._branches)
+                    else None
+                )
                 model = member_model if own is None else own
                 model.eval()
                 with torch.no_grad():
@@ -1257,6 +1264,12 @@ class GraphNetwork:
     def predict(self, smiles: list[str]) -> PredictiveDistribution:
         """Predict at the scored (direct-inhibition) assay condition for every endpoint."""
         return PredictiveDistribution(self._samples_at_assay(smiles, SCORED_ASSAY), self.endpoints)
+
+    def predict_pooled(self, smiles: list[str]) -> PredictiveDistribution:
+        """The same prediction from the pooled members alone, ignoring the per-target copies."""
+        return PredictiveDistribution(
+            self._samples_at_assay(smiles, SCORED_ASSAY, per_target=False), self.endpoints
+        )
 
     def _tdi_label_scores(self, smiles: list[str]) -> NDArray[np.float64]:
         """The trained ``is_TDI`` response of every member, averaged: ``(n, endpoints)``, NaN for an

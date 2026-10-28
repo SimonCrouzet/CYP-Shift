@@ -658,6 +658,33 @@ def test_save_run_bundle_writes_oof_predictions_and_metadata(tmp_path):
     assert "config" in meta and "scores" in meta
 
 
+def test_save_run_bundle_writes_the_pooled_predictions_beside_the_fine_tuned_ones(tmp_path):
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import save_run_bundle
+
+    names = ["A", "B"]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = [5.0, 6.0]
+        evaluation[f"{endpoint}_conf_low"] = evaluation[endpoint] - 0.2
+        evaluation[f"{endpoint}_conf_high"] = evaluation[endpoint] + 0.2
+    tuned, pooled = pd.DataFrame({"Molecule_Name": names}), pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        tuned[endpoint], pooled[endpoint] = [4.9, 6.1], [4.5, 6.5]
+    scores = pd.DataFrame({"ST-RAE_mean": [0.6]}, index=["MA"])
+    scores.index.name = "endpoint"
+    save_run_bundle(tmp_path / "a", ExperimentConfig.load(), evaluation, tuned, scores, pooled)
+    save_run_bundle(tmp_path / "b", ExperimentConfig.load(), evaluation, tuned, scores)
+    column = f"{REGRESSION_ENDPOINTS[0]}_pred"
+    assert pd.read_parquet(tmp_path / "a" / "out_of_fold_pooled.parquet")[column].tolist() == [
+        4.5,
+        6.5,
+    ]
+    assert pd.read_parquet(tmp_path / "a" / "out_of_fold.parquet")[column].tolist() == [4.9, 6.1]
+    assert not (tmp_path / "b" / "out_of_fold_pooled.parquet").exists()
+
+
 def test_r2_decomposition_joins_predictions_by_molecule_not_position():
     """F01 guard: the pooled-CV submission is in fold order, so the decomposition must join on
     Molecule_Name. Perfect predictions supplied in reverse row order still score R2 = 1."""

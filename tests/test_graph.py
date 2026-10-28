@@ -791,3 +791,14 @@ def test_without_per_target_fine_tuning_there_are_no_copies():
     net = _finetuned()
     net.fit(_two_target_rows(24))
     assert net._branches == [{}]
+
+
+def test_the_pooled_prediction_ignores_the_per_target_copies():
+    net = _finetuned(finetune_per_target_epochs=1)
+    net.fit(_two_target_rows(24))
+    smiles = ["CCO", "CCN", "CCC"]
+    pooled = net.predict_pooled(smiles).mean
+    for parameter in net._branches[0]["CYP3A4_pIC50_direct_inhibition"].parameters():
+        parameter.data.add_(1.0)
+    assert np.allclose(net.predict_pooled(smiles).mean, pooled)
+    assert not np.allclose(net.predict(smiles).mean[:, 3], pooled[:, 3])

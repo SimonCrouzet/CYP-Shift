@@ -86,3 +86,16 @@ def test_a_blend_weights_its_members_and_reads_each_members_seed(tmp_path, monke
     table = script.cell_metrics("rev", [], blends={"mix": ["exact@1:3", "off@0:1"]})
     # 3/4 of an exact and 1/4 of a prediction off by 1: a constant error of 0.25
     assert table.set_index("name")["MAE"]["mix"] == pytest.approx(0.25)
+
+
+def test_a_name_with_a_bang_reads_the_pooled_predictions(tmp_path, monkeypatch):
+    bundle = tmp_path / "rev" / "reg_cell_seed0"
+    bundle.mkdir(parents=True)
+    tuned, pooled = _oof(), _oof()
+    for column in (c for c in pooled.columns if c.endswith("_pred")):
+        pooled[column] = pooled[column] + 1.0
+    tuned.to_parquet(bundle / "out_of_fold.parquet")
+    pooled.to_parquet(bundle / "out_of_fold_pooled.parquet")
+    monkeypatch.setattr(script, "BUNDLES", tmp_path)
+    table = script.cell_metrics("rev", ["cell", "cell!"]).set_index("name")["MAE"]
+    assert table["cell"] == pytest.approx(0.5) and table["cell!"] == pytest.approx(1.5)

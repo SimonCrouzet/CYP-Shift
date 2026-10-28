@@ -80,7 +80,8 @@ def blend(tables: list[pd.DataFrame], weights: list[float] | None = None) -> pd.
 
 
 def split_member(spec: str, rev: str, seed: int) -> tuple[str, str, int, float]:
-    """``(rev, name, seed, weight)`` of ``[REV/]NAME[@SEED][:WEIGHT]``."""
+    """``(rev, name, seed, weight)`` of ``[REV/]NAME[@SEED][:WEIGHT]``; a name ending in ``!`` is
+    kept with its ``!`` (see :func:`read_cell`)."""
     spec, _, weight = spec.partition(":")
     spec, _, own_seed = spec.partition("@")
     if "/" in spec:
@@ -89,9 +90,14 @@ def split_member(spec: str, rev: str, seed: int) -> tuple[str, str, int, float]:
 
 
 def read_cell(rev: str, name: str, seed: int = 0) -> pd.DataFrame:
-    """The out-of-fold table of a cell; ``name`` may be ``[REV/]NAME[@SEED]``."""
+    """The out-of-fold table of a cell; ``name`` may be ``[REV/]NAME[@SEED]``. ``NAME!`` reads the
+    pooled members' predictions of a cell with a per-target fine-tune (``out_of_fold_pooled``)."""
     rev, name, seed, _ = split_member(name, rev, seed)
-    return pd.read_parquet(BUNDLES / rev / f"reg_{name}_seed{seed}" / "out_of_fold.parquet")
+    pooled = name.endswith("!")
+    path = BUNDLES / rev / f"reg_{name.rstrip('!')}_seed{seed}"
+    return pd.read_parquet(
+        path / ("out_of_fold_pooled.parquet" if pooled else "out_of_fold.parquet")
+    )
 
 
 def cell_metrics(
