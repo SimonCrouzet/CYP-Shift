@@ -88,6 +88,32 @@ def predicted_potency(table: pd.DataFrame, paths: list[Path]) -> np.ndarray:
     return mean.reindex(table["Molecule_Name"]).to_numpy(dtype=np.float32)
 
 
+def bundle_features(
+    table: pd.DataFrame, bundle: Path, embedding: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """The stacked columns of a graph run's bundle for the compounds of ``table`` and which of them
+    the run's folds covered: ``(features, covered)``.
+
+    ``embedding`` reads ``out_of_fold_embedding.parquet`` (the encoder's encodings); otherwise the
+    columns are every head of the run (``out_of_fold_auxiliary.parquet``), its direct pIC50
+    predictions, and per enzyme the preincubated head minus the direct one where the run has both.
+    Each compound's values are from the fold model that did not train on it.
+    """
+    names = table["Molecule_Name"]
+    if embedding:
+        frame = pd.read_parquet(bundle / "out_of_fold_embedding.parquet").set_index("Molecule_Name")
+        return frame.reindex(names).to_numpy(np.float32), names.isin(frame.index).to_numpy()
+    direct = pd.read_parquet(bundle / "out_of_fold.parquet").set_index("Molecule_Name")
+    direct = direct[[c for c in direct.columns if c.endswith("_pred")]]
+    heads = pd.read_parquet(bundle / "out_of_fold_auxiliary.parquet").set_index("Molecule_Name")
+    frame = direct.join(heads)
+    for enzyme in ("CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"):
+        endpoint = f"{enzyme}_pIC50_direct_inhibition"
+        if f"{endpoint}__tdi_drc" in frame:
+            frame[f"{endpoint}__shift"] = frame[f"{endpoint}__tdi_drc"] - frame[f"{endpoint}_pred"]
+    return frame.reindex(names).to_numpy(np.float32), names.isin(frame.index).to_numpy()
+
+
 def fold_scores(
     model: str,
     train_x: np.ndarray,
@@ -223,6 +249,22 @@ def main() -> None:
         help="components the foundation models keep of a wider set (the regression models: 500)",
     )
     parser.add_argument(
+        "--stack-bundle",
+        type=Path,
+        help="run bundle of a graph cell: add every head of its out-of-fold predictions "
+        "(out_of_fold.parquet and out_of_fold_auxiliary.parquet) as extra columns",
+    )
+    parser.add_argument(
+        "--embedding-bundle",
+        type=Path,
+        help="run bundle of a cell run with save_embedding: add its out-of-fold encodings",
+    )
+    parser.add_argument(
+        "--covered-only",
+        action="store_true",
+        help="score only the compounds the bundle's folds covered (the direct-labelled ones)",
+    )
+    parser.add_argument(
         "--direct-potency",
         action="store_true",
         help="add the enzyme's measured direct pIC50 as a feature (an upper bound for stacking "
@@ -258,10 +300,24 @@ def main() -> None:
         use_fingerprint=fingerprint,
     )
     logger.info("%s features: %d columns", args.features, features.shape[1])
+    covered = np.ones(len(table), dtype=bool)
+    if args.embedding_bundle:
+        encodings, seen = bundle_features(table, args.embedding_bundle, embedding=True)
+        features = np.hstack([features, encodings])
+        covered &= seen
+    extra = []
     if args.predicted_potency:
-        features = np.hstack([features, predicted_potency(table, args.predicted_potency)])
-    n_extra = (4 if args.predicted_potency else 0) + (1 if args.direct_potency else 0)
+        extra.append(predicted_potency(table, args.predicted_potency))
+    if args.stack_bundle:
+        stacked, seen = bundle_features(table, args.stack_bundle, embedding=False)
+        extra.append(stacked)
+        covered &= seen
+    features = np.hstack([features, *extra])
+    n_extra = sum(block.shape[1] for block in extra) + (1 if args.direct_potency else 0)
     labels = {e: table[f"{e}_is_TDI"].astype(float) for e in ENZYMES}
+    if args.covered_only:
+        labels = {e: label.where(covered) for e, label in labels.items()}
+        logger.info("scoring the %d compounds the bundles cover", int(covered.sum()))
     strata = sum(
         (labels[e].fillna(0).to_numpy() * (2**i)).astype(int) for i, e in enumerate(ENZYMES)
     )
