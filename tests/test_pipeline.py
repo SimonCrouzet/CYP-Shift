@@ -685,6 +685,32 @@ def test_save_run_bundle_writes_the_pooled_predictions_beside_the_fine_tuned_one
     assert not (tmp_path / "b" / "out_of_fold_pooled.parquet").exists()
 
 
+def test_save_run_bundle_writes_the_embedding_when_given(tmp_path):
+    from cypshift.config import REGRESSION_ENDPOINTS
+    from cypshift.experiment import ExperimentConfig
+    from cypshift.pipeline import save_run_bundle
+
+    names = ["A", "B"]
+    evaluation = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        evaluation[endpoint] = [5.0, 6.0]
+        evaluation[f"{endpoint}_conf_low"] = evaluation[endpoint] - 0.2
+        evaluation[f"{endpoint}_conf_high"] = evaluation[endpoint] + 0.2
+    submission = pd.DataFrame({"Molecule_Name": names})
+    for endpoint in REGRESSION_ENDPOINTS:
+        submission[endpoint] = [4.9, 6.1]
+    scores = pd.DataFrame({"ST-RAE_mean": [0.6]}, index=["MA"])
+    scores.index.name = "endpoint"
+    embedding = pd.DataFrame({"Molecule_Name": names, "e0": [0.1, 0.2], "e1": [0.3, 0.4]})
+    save_run_bundle(
+        tmp_path / "a", ExperimentConfig.load(), evaluation, submission, scores, embedding=embedding
+    )
+    assert pd.read_parquet(tmp_path / "a" / "out_of_fold_embedding.parquet")["e1"].tolist() == [
+        0.3,
+        0.4,
+    ]
+
+
 def test_r2_decomposition_joins_predictions_by_molecule_not_position():
     """F01 guard: the pooled-CV submission is in fold order, so the decomposition must join on
     Molecule_Name. Perfect predictions supplied in reverse row order still score R2 = 1."""

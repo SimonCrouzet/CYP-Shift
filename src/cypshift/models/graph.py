@@ -1441,6 +1441,36 @@ class GraphNetwork:
             scores[:, column] = np.mean(members, axis=0)
         return scores
 
+    def embed(self, smiles: list[str]) -> NDArray[np.float32]:
+        """The molecule encodings of the pooled members' encoders (message passing, pooling and
+        any batch norm, before the readout), averaged over the members: ``(n, width)``."""
+        if not self._members:
+            raise RuntimeError("model is not fitted")
+        torch.set_float32_matmul_precision(self.matmul_precision)
+        n = len(smiles)
+        frame = pd.DataFrame(
+            {
+                "SMILES": smiles,
+                "target": [self.endpoints[0].split("_")[0]] * n,
+                "assay": [SCORED_ASSAY] * n,
+                "source": ["challenge"] * n,
+            }
+        )
+        dataset = cpdata.MoleculeDataset(self._datapoints(frame, labelled=False))
+        loader = cpdata.build_dataloader(
+            dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers
+        )
+        members = []
+        for model in self._members:
+            model.eval()
+            with torch.no_grad():
+                members.append(
+                    torch.cat([model.fingerprint(batch.bmg, batch.V_d, None) for batch in loader])
+                    .cpu()
+                    .numpy()
+                )
+        return np.mean(members, axis=0).astype(np.float32)
+
     def predict_auxiliary(self, smiles: list[str]) -> dict[str, NDArray[np.float64]]:
         """Every head the pooled members trained, read for each scored endpoint's target:
         ``{assay: (n, endpoints)}`` in the vocabulary's order, the mean over the members.

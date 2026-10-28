@@ -477,6 +477,9 @@ class GraphConfig:
     #: own copy. ``0`` is off. Needs the shared-trunk graph (a separated trunk already trains one
     #: model per isoform). Swept.
     finetune_per_target_epochs: int = 0
+    #: Save each cross-validation fold's molecule encodings of its held-out compounds in the run
+    #: bundle (``out_of_fold_embedding.parquet``), for a model stacked on the encoder.
+    save_embedding: bool = False
     #: Peak learning rate of that stage, with the initial and final rates a tenth of it; ``0``
     #: keeps the model's own schedule. Ignored without ``finetune_per_target_epochs``.
     finetune_per_target_lr: float = 0.0
@@ -763,6 +766,11 @@ class ExperimentConfig:
             raise ValueError(
                 "model.graph.early_stopping_patience is a share of the epochs, from 0 up to 1, "
                 "and model.graph.prune_tolerance must be non-negative"
+            )
+        if graph.save_embedding and (self.model.kind != "graph" or graph.separate_trunks):
+            raise ValueError(
+                "model.graph.save_embedding needs model.kind='graph' with one shared trunk "
+                "(model.graph.separate_trunks off)"
             )
         if graph.finetune_per_target_epochs < 0 or graph.finetune_per_target_lr < 0:
             raise ValueError(

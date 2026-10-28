@@ -217,6 +217,12 @@ class TestCapabilityContract:
             {"model.kind": "boosted", "multifidelity.screen_strategy": "response_head"},
             {"model.kind": "boosted", "model.graph.per_target_heads": True},
             {"model.kind": "boosted", "model.graph.finetune_per_target_epochs": 5},
+            {"model.kind": "boosted", "model.graph.save_embedding": True},
+            {
+                "model.kind": "graph",
+                "model.graph.save_embedding": True,
+                "model.graph.separate_trunks": True,
+            },
             {"model.kind": "graph", "model.graph.finetune_per_target_epochs": -1},
             {
                 "model.kind": "graph",

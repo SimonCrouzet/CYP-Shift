@@ -1084,3 +1084,11 @@ def cpnn_regression_ffn():
     from chemprop import nn as cpnn
 
     return cpnn.RegressionFFN
+
+
+def test_embed_returns_one_encoder_width_vector_per_compound():
+    net = _finetuned()
+    net.fit(_two_target_rows(24))
+    encodings = net.embed(["CCO", "CCN", "CCC"])
+    assert encodings.shape == (3, net.hidden) and np.isfinite(encodings).all()
+    assert not np.allclose(encodings[0], encodings[1])

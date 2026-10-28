@@ -929,12 +929,14 @@ def save_run_bundle(
     scores: pd.DataFrame,
     pooled: pd.DataFrame | None = None,
     auxiliary: pd.DataFrame | None = None,
+    embedding: pd.DataFrame | None = None,
 ) -> None:
     """Write one run's per-compound out-of-fold predictions, truth, resolved config and scores.
     ``pooled``, the predictions of the pooled members before any per-target fine-tune, goes to
     ``out_of_fold_pooled.parquet`` beside them; ``auxiliary``, the other heads of the model
     (``<endpoint>__<assay>`` columns, see :func:`auxiliary_heads`), to
-    ``out_of_fold_auxiliary.parquet``.
+    ``out_of_fold_auxiliary.parquet``; ``embedding``, ``Molecule_Name`` and one column per encoding
+    width, to ``out_of_fold_embedding.parquet``.
 
     This is what later pairing, blending and calibration need -- the predictions per compound
     on a shared holdout, not just the aggregate score. The files are written in place into
@@ -952,6 +954,8 @@ def save_run_bundle(
     predictions = submission.rename(columns={e: f"{e}_pred" for e in REGRESSION_ENDPOINTS})
     out_of_fold = evaluation[truth_columns].merge(predictions, on="Molecule_Name", validate="1:1")
     out_of_fold.to_parquet(bundle_path / "out_of_fold.parquet", index=False)
+    if embedding is not None:
+        embedding.to_parquet(bundle_path / "out_of_fold_embedding.parquet", index=False)
     if pooled is not None:
         pooled_predictions = pooled.rename(columns={e: f"{e}_pred" for e in REGRESSION_ENDPOINTS})
         evaluation[truth_columns].merge(
@@ -1084,6 +1088,7 @@ def run_cv(
 
     out_of_fold = []
     pooled_out_of_fold = []
+    embedding_out_of_fold = []
     auxiliary_out_of_fold = []
     tdi_out_of_fold = []
     curves: dict[int, list[dict]] = {}
@@ -1132,6 +1137,13 @@ def run_cv(
             for column, endpoint in enumerate(REGRESSION_ENDPOINTS):
                 fold_pooled[endpoint] = pooled_prediction.mean[:, column]
             pooled_out_of_fold.append(fold_pooled)
+        if graph.save_embedding and hasattr(model, "embed"):
+            encodings = model.embed(evaluation["SMILES"].tolist())
+            fold_embedding = pd.DataFrame(
+                encodings, columns=[f"e{i}" for i in range(encodings.shape[1])]
+            )
+            fold_embedding.insert(0, "Molecule_Name", evaluation["Molecule_Name"].to_numpy())
+            embedding_out_of_fold.append(fold_embedding)
         fold_auxiliary = auxiliary_heads(model, evaluation)
         if fold_auxiliary is not None:
             auxiliary_out_of_fold.append(fold_auxiliary)
@@ -1166,7 +1178,12 @@ def run_cv(
         auxiliary = (
             pd.concat(auxiliary_out_of_fold, ignore_index=True) if auxiliary_out_of_fold else None
         )
-        save_run_bundle(bundle_path, config, train, submission, scores, pooled, auxiliary)
+        embedding = (
+            pd.concat(embedding_out_of_fold, ignore_index=True) if embedding_out_of_fold else None
+        )
+        save_run_bundle(
+            bundle_path, config, train, submission, scores, pooled, auxiliary, embedding
+        )
         if curves:
             write_curves(bundle_path, curves)
     return scores, submission, tdi_scores

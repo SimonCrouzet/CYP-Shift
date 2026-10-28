@@ -736,6 +736,8 @@ def _resolved_key(overrides: dict) -> str:
     for field in ("hard_parameter_sharing", "per_task_scaling"):
         if not graph[field]:
             del graph[field]  # recorded names predate them
+    if not graph["save_embedding"]:
+        del graph["save_embedding"]  # an output, not a setting of the recipe
     if not graph["finetune_per_target_epochs"]:
         del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:
@@ -2574,6 +2576,7 @@ FINETUNE_30_CELLS = (
 #: The regression recipe with the preincubated (TDI) assay_condition trained, so the one graph also
 #: calls ``is_TDI`` from the gap between its two predicted conditions: the base, and the regularised
 #: B at 100 epochs.
+_TDI_BOTH = (("sources.tdi_label", True), ("sources.tdi_assay_condition", True))
 TDI_GRAPH_CELLS = (
     Cell("tdi_graph_base", (("sources.tdi_assay_condition", True),), "tdi"),
     Cell("tdi_label_base", (("sources.tdi_label", True),), "tdi"),
@@ -2596,6 +2599,23 @@ TDI_GRAPH_CELLS = (
             *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
             ("sources.tdi_label", True),
         ),
+        "tdi",
+    ),
+    # Both TDI tasks, with every head's predictions and the encoder's encodings saved per fold, on
+    # the base, on the regularised B, and on the CheMeleon encoder fine-tuned on all the sources.
+    Cell("tdi_both_base_embed", (*_TDI_BOTH, ("model.graph.save_embedding", True)), "tdi"),
+    Cell(
+        "tdi_both_b_reg_embed",
+        (
+            *next(cell.sets for cell in CAPACITY_CELLS if cell.tag == "graph_b_reg"),
+            *_TDI_BOTH,
+            ("model.graph.save_embedding", True),
+        ),
+        "tdi",
+    ),
+    Cell(
+        "tdi_both_chemeleon_embed",
+        (_CHEMELEON, *_TDI_BOTH, ("model.graph.save_embedding", True)),
         "tdi",
     ),
 )
