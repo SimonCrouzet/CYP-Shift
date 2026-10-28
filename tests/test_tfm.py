@@ -5,8 +5,11 @@ set as the other models and only adapts its dimensionality -- without needing Ta
 (the per-endpoint fit, which downloads weights and wants a token, is not exercised here).
 """
 
+import json
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from cypshift.models.tfm import TabularFoundationModel
 
@@ -156,3 +159,129 @@ def test_auxiliary_potency_rows_join_the_fit_behind_one_indicator_column_per_ass
     indicator = dict(zip(recorder.y, recorder.features[:, -1], strict=True))
     assert indicator == {5.0: 0.0, 6.0: 0.0, 7.0: 1.0}
     assert model._features(["CCO"])[0, -1] == 0.0  # a scored compound is on no auxiliary assay
+
+
+class _MeanRegressor:
+    """A stand-in for Mitra that predicts the mean of the labels it was fit on."""
+
+    def __init__(self, settings):
+        self.settings = settings
+
+    def fit(self, features, labels):
+        self.mean = float(np.mean(labels))
+        return self
+
+    def predict(self, features):
+        return np.full(len(features), self.mean)
+
+
+def test_mitra_worker_predicts_each_endpoint_from_its_own_context(tmp_path):
+    from cypshift.models import mitra_worker
+
+    source, target = tmp_path / "source.npz", tmp_path / "target.npz"
+    np.savez(
+        source,
+        query=np.zeros((3, 2), np.float32),
+        x__CYP1A2=np.zeros((2, 2), np.float32),
+        y__CYP1A2=np.array([4.0, 6.0]),
+        x__CYP3A4=np.zeros((1, 2), np.float32),
+        y__CYP3A4=np.array([8.0]),
+    )
+    settings = {"fine_tune": False, "fine_tune_steps": 0, "device": "cpu", "seed": 0}
+    mitra_worker.run(source, target, settings, make_regressor=_MeanRegressor)
+    with np.load(target) as predictions:
+        assert sorted(predictions.files) == ["prediction__CYP1A2", "prediction__CYP3A4"]
+        assert predictions["prediction__CYP1A2"].tolist() == [5.0, 5.0, 5.0]
+        assert predictions["prediction__CYP3A4"].tolist() == [8.0, 8.0, 8.0]
+
+
+def test_mitra_backend_fits_nothing_in_process_and_predicts_through_the_worker(monkeypatch):
+    """fit keeps the context rows; predict hands every endpoint's context and the query to one
+    worker run in the Mitra environment and reads the predictions back."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from cypshift.models import mitra_worker, tfm
+
+    model = TabularFoundationModel(
+        backend="mitra", n_bits=64, pca_components=10_000, fine_tune=False, fine_tune_steps=7
+    )
+    observations = pd.DataFrame(
+        [
+            {
+                "SMILES": smiles,
+                "target": target,
+                "assay": "direct_inhibition_drc",
+                "value": value,
+                "is_censored": False,
+            }
+            for target, rows in {
+                "CYP1A2": [("CCO", 5.0), ("c1ccccc1", 7.0)],
+                "CYP2D6": [("CCN", 3.0)],
+            }.items()
+            for smiles, value in rows
+        ]
+    )
+    model.fit(observations)
+    assert sorted(model._models) == ["CYP1A2", "CYP2D6"]
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        arguments = dict(zip(command[2::2], command[3::2], strict=True))
+        mitra_worker.run(
+            Path(arguments["--source"]),
+            Path(arguments["--target"]),
+            json.loads(arguments["--settings"]),
+            make_regressor=_MeanRegressor,
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="worker log")
+
+    monkeypatch.setattr(tfm.subprocess, "run", fake_run)
+    monkeypatch.setenv("MITRA_PYTHON", sys.executable)
+    prediction = model.predict(["CCCC", "CCCCC"])
+
+    assert len(calls) == 1  # one worker run for every endpoint
+    assert calls[0][0] == sys.executable
+    assert json.loads(calls[0][-1])["fine_tune_steps"] == 7
+    by_endpoint = dict(zip(prediction.endpoints, prediction.samples[0].T, strict=True))
+    assert by_endpoint["CYP1A2_pIC50_direct_inhibition"].tolist() == [6.0, 6.0]
+    assert by_endpoint["CYP2D6_pIC50_direct_inhibition"].tolist() == [3.0, 3.0]
+    assert np.isnan(by_endpoint["CYP3A4_pIC50_direct_inhibition"]).all()  # no context
+
+
+def test_mitra_worker_failure_surfaces_its_error(monkeypatch):
+    import subprocess
+
+    from cypshift.models import tfm
+
+    model = TabularFoundationModel(backend="mitra", n_bits=64, pca_components=10_000)
+    model._models = {"CYP1A2": tfm._ContextRows().fit(np.zeros((1, 3), np.float32), np.ones(1))}
+    model._reducer = type("R", (), {"transform": lambda self, x: x})()
+    monkeypatch.setattr(
+        model, "_raw_features", lambda smiles: np.zeros((len(smiles), 3), np.float32)
+    )
+    monkeypatch.setattr(
+        tfm.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "CUDA out of memory"),
+    )
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        model.predict(["CCO"])
+
+
+def test_fine_tune_settings_belong_to_mitra_only():
+    from cypshift.experiment import ExperimentConfig
+
+    config = ExperimentConfig()
+    config.override("model.kind", "tfm")
+    config.override("model.tfm.fine_tune_steps", 20)
+    with pytest.raises(ValueError, match="Mitra's"):
+        config.validate()
+    config.override("model.tfm.backend", "mitra")
+    config.validate()
+    config.override("model.tfm.backend", "autogluon")
+    with pytest.raises(ValueError, match="model.tfm.backend"):
+        config.validate()

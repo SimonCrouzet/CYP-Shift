@@ -497,14 +497,18 @@ class GraphConfig:
 class TfmConfig:
     """The tabular foundation model family; see :data:`TFM_BACKENDS`."""
 
-    #: Which tabular foundation model backs it (``tabpfn``; Mitra to come). Swept.
+    #: Which tabular foundation model backs it (``tabpfn`` or ``mitra``). Swept.
     backend: str = "tabpfn"
     #: PCA target width for the dimensionality adaptation that fits the shared feature set to
     #: TabPFN's ~2000-feature ceiling (and off its weak spot, raw sparse fingerprints). Swept.
     pca_components: int = 500
+    #: Mitra only: fine-tune the pretrained weights on the context rows for ``fine_tune_steps``
+    #: steps before predicting (AutoGluon's defaults); False predicts in context alone.
+    fine_tune: bool = True
+    fine_tune_steps: int = 50
 
 
-TFM_BACKENDS = ("tabpfn",)
+TFM_BACKENDS = ("tabpfn", "mitra")
 
 
 @dataclass
@@ -977,6 +981,18 @@ class ExperimentConfig:
                 )
             if self.sources.tdi_assay_condition:
                 raise ValueError("model.kind='tfm' cannot use the preincubated assay_condition")
+            tfm = self.model.tfm
+            if tfm.backend not in TFM_BACKENDS:
+                raise ValueError(f"model.tfm.backend={tfm.backend!r}; have {TFM_BACKENDS}")
+            defaults = TfmConfig()
+            if tfm.backend != "mitra" and (
+                tfm.fine_tune != defaults.fine_tune
+                or tfm.fine_tune_steps != defaults.fine_tune_steps
+            ):
+                raise ValueError(
+                    f"model.tfm.fine_tune and fine_tune_steps are Mitra's; "
+                    f"backend {tfm.backend!r} would ignore them"
+                )
         if self.sources.tdi_label and self.model.kind != "graph":
             raise ValueError(
                 f"sources.tdi_label is wired only into the graph model, not {self.model.kind!r}"

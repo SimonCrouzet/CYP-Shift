@@ -263,6 +263,8 @@ def build_model(
             ionization_cache=config.features.ionization_cache,
             screen_model=screen_model,
             pca_components=config.model.tfm.pca_components,
+            fine_tune=config.model.tfm.fine_tune,
+            fine_tune_steps=config.model.tfm.fine_tune_steps,
             seed=config.data.seed,
         )
     raise ValueError(f"model.kind={kind!r} has no builder")

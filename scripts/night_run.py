@@ -729,6 +729,10 @@ def _resolved_key(overrides: dict) -> str:
             del auxiliary["row_selection_assays"]
     if not resolved["sources"]["tdi_label"]:
         del resolved["sources"]["tdi_label"]  # recorded names predate it
+    tfm = resolved["model"]["tfm"]
+    if tfm["backend"] != "mitra":
+        # Mitra's settings; recorded names predate them
+        del tfm["fine_tune"], tfm["fine_tune_steps"]
     if not graph["finetune_per_target_epochs"]:
         del graph["finetune_per_target_epochs"], graph["finetune_per_target_lr"]
     if not graph["monitor_fold"]:
@@ -2407,6 +2411,7 @@ FAIR_DATA = {
 }
 FAIR_FAMILIES = {
     "tfm": ("reg", {"model.kind": "tfm"}),
+    "mitra": ("reg", {"model.kind": "tfm", "model.tfm.backend": "mitra"}),
     "neural": ("reg", {"model.kind": "neural"}),
     "boosted": ("reg", {}),
     "curve": ("tdi", TDI["curve_heads"]),
@@ -2662,7 +2667,7 @@ def run_questions() -> None:
     for tag, overrides in CURVE_CELLS.items():
         names[tag] = _recipe_name(tag, overrides, declared)
         curve[names[tag]] = overrides
-    fair = fair_configs(tuple(FAIR_FAMILIES))
+    fair = fair_configs(tuple(family for family in FAIR_FAMILIES if family != "mitra"))
     tabular = {n: spec[4] for n, spec in fair.items() if spec[1] != "tfm"}
     tfm = {n: spec[4] for n, spec in fair.items() if spec[1] == "tfm"}
     # The graph fits (the GPU) and the CPU-bound fits alternate, so the GPU is busy from the first

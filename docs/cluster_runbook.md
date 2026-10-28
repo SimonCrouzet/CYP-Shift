@@ -153,6 +153,7 @@ Per-machine tokens live in `local.machine.env` at the repo root. It is gitignore
 | `LIGHTNING_TEAMSPACE` + `LIGHTNING_USERNAME` (or `LIGHTNING_ORG`) | the teamspace the Studio lives in and its owner; the SDK needs both (or pass `--teamspace` and `--user`/`--org`). `CYP_LAI_TEAMSPACE` / `CYP_LAI_STUDIO` are launcher defaults for `--teamspace` / `--studio` |
 | `WANDB_API_KEY`, `WANDB_PROJECT`, `WANDB_ENTITY` | `CYP_WANDB=1` locally; forwarded by `launch --wandb` (the key falls back to the `wandb login` entry in `~/.netrc`; `launch --wandb` refuses to start without one) |
 | `TABPFN_TOKEN` | the `tfm_*` configs; forwarded by `launch` when set |
+| `MITRA_PYTHON` | the interpreter of the Mitra environment (default `/mnt/wsl/ext/envs/mitra/bin/python`) that `model.tfm.backend=mitra` runs `cypshift.models.mitra_worker` in; it needs `autogluon.tabular[mitra]`, which the cypshift environment cannot take, and is not in the Modal image |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | the Modal SDK (alternative: `modal token set`) |
 | `HF_TOKEN` | gated HuggingFace assets (embedding generation); forwarded by `launch` when set, else the token `hf auth login` stored |
 
