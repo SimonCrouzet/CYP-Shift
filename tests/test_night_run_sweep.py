@@ -1494,3 +1494,23 @@ def test_a_recipe_keeps_its_name_while_the_novartis_rate_task_is_off():
     plain = night_run._resolved_key({"model.kind": "graph"})
     rates = night_run._resolved_key({"model.kind": "graph", "sources.novartis_kobs": True})
     assert "novartis_kobs" not in plain and "novartis_kobs" in rates
+
+
+def test_a_run_limited_to_some_folds_is_recorded_and_bundled_under_its_own_name(monkeypatch):
+    seen = {}
+    scores = pd.DataFrame(
+        {"ST-RAE_mean": [0.6, 0.6]}, index=[night_run.MACRO_LABEL, "CYP1A2_pIC50_direct_inhibition"]
+    )
+
+    def fake_cv(config, n_folds, bundle_path, only_folds):
+        seen.update(bundle=bundle_path, only_folds=only_folds)
+        return scores, None, None
+
+    monkeypatch.setattr(night_run, "run_cv", fake_cv)
+    monkeypatch.setattr(night_run, "ONLY_FOLDS", (0, 1))
+    row = night_run.compute_row("reg", "cell", {"model.kind": "boosted"}, 0)
+    assert row["name"] == "cell_folds01" and seen["only_folds"] == (0, 1)
+    assert seen["bundle"].name == "reg_cell_folds01_seed0"
+    monkeypatch.setattr(night_run, "ONLY_FOLDS", ())
+    assert night_run.compute_row("reg", "cell", {"model.kind": "boosted"}, 0)["name"] == "cell"
+    assert seen["only_folds"] is None

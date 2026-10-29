@@ -36,6 +36,7 @@ def test_the_graph_jobs_run_one_seed_each_through_night_run():
     job = script.graph_job(2)
     assert job.argv == ("scripts/night_run.py",)
     assert job.env["CYP_SEEDS"] == "2" and job.env["CYP_CELLS"] == script.GRAPH_CELL
+    assert job.env["CYP_FOLDS"] == ""  # every fold
     assert job.env["CYP_JOBS"] == "1" and job.env["CYP_WORKERS"] == "0"
     assert job.outputs[0].parts[-2] == f"reg_{script.GRAPH_NAME}_seed2"
 
@@ -53,7 +54,8 @@ def test_the_graph_recipe_name_is_the_one_night_run_gives_the_cell():
 def test_the_novartis_job_runs_the_rate_cell_at_seed_zero_and_its_name_is_current():
     job = next(j for j in script.jobs() if j.stage == "novartis")
     assert job.env["CYP_CELLS"] == script.KOBS_CELL and job.env["CYP_SEEDS"] == "0"
-    assert job.outputs[0].parts[-2] == f"reg_{script.KOBS_NAME}_seed0"
+    assert job.env["CYP_FOLDS"] == "0,1"  # a quick paired look: the first two folds
+    assert job.outputs[0].parts[-2] == f"reg_{script.KOBS_NAME}_folds01_seed0"
     declared = {night_run._resolved_key(o): k for k, o in night_run.REGRESSION.items()}
     recipe = night_run._apply(
         dict(night_run.REGRESSION[night_run.FOCUS_BASE]), night_run._BOTH + night_run._BUDGET

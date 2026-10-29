@@ -64,6 +64,10 @@ TDI_SUBMISSION = Path("submissions/night_submission_classification.csv")
 BUNDLE_DIR = Path("data/run_bundles")
 #: Folds for the stratified, scaffold-grouped cross-validation each config is scored on.
 N_FOLDS = 5
+#: Run only these folds (``CYP_FOLDS``, comma-separated indices), for a quick paired look at a cell.
+#: The result is recorded under the name plus ``_folds<indices>``, so it never stands for the full
+#: cross-validation of that cell.
+ONLY_FOLDS = tuple(int(i) for i in os.environ.get("CYP_FOLDS", "").split(",") if i.strip())
 #: Graph dataloader worker processes, read from the environment so it can be tuned per run
 #: without editing tracked code (which would change the results namespace and force a fresh
 #: run). Set ``CYP_WORKERS`` before launching: ~4 on a free machine, 2 when sharing it, 0-1
@@ -1688,10 +1692,14 @@ def compute_row(phase: str, name: str, overrides: dict, seed: int) -> dict:
             config.override("model.graph.prune_tolerance", float(PRUNE_TOLERANCE))
     config.validate()
     started = time.time()
+    if ONLY_FOLDS:
+        name = f"{name}_folds{''.join(map(str, ONLY_FOLDS))}"
     bundle = BUNDLE_DIR / REV / f"{phase}_{name}_seed{seed}".replace(":", "_")
     # Each seed is a full stratified scaffold cross-validation (every compound predicted once
     # out of fold); the seed drives both the fold partition and the model's own randomness.
-    scores, _, tdi = run_cv(config, n_folds=N_FOLDS, bundle_path=bundle)
+    scores, _, tdi = run_cv(
+        config, n_folds=N_FOLDS, bundle_path=bundle, only_folds=ONLY_FOLDS or None
+    )
     macro = float(scores.loc[MACRO_LABEL, "ST-RAE_mean"])
     row = {
         "rev": REV,

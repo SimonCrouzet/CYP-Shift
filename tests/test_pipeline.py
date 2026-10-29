@@ -889,3 +889,11 @@ def test_the_novartis_rate_rows_reach_the_training_table_as_a_cyp3a4_response(mo
     assert rows["value"].tolist() == [-2.0, -1.0]
     # deduplicated against every train and test compound, the TDI table included
     assert seen["challenge_rows"] > 6000
+
+
+def test_only_folds_must_name_folds_of_the_partition():
+    from cypshift.pipeline import run_cv
+
+    for bad in ([5], [-1], []):
+        with pytest.raises(ValueError, match="only_folds"):
+            run_cv(ExperimentConfig(), n_folds=5, only_folds=bad)

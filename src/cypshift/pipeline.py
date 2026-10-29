@@ -6,6 +6,7 @@ follow exactly the same path and cannot drift apart.
 
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -1120,6 +1121,7 @@ def run_cv(
     config: ExperimentConfig,
     n_folds: int = 5,
     bundle_path: Path | None = None,
+    only_folds: Sequence[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
     """Fit and score the configured model by stratified, scaffold-grouped cross-validation.
 
@@ -1132,6 +1134,8 @@ def run_cv(
     compound, none of them in-sample.
 
     With ``bundle_path`` set, the pooled predictions, config and scores are written there.
+    ``only_folds`` runs just those folds (indices into the ``n_folds``): the pooled predictions and
+    scores then cover only their compounds, so compare them with another run on the same folds.
 
     Returns:
         The regression score table over the pooled out-of-fold predictions, those
@@ -1139,6 +1143,9 @@ def run_cv(
         (a dose-response curve), otherwise None.
     """
     config.validate()
+    to_run = list(range(n_folds) if only_folds is None else only_folds)
+    if not to_run or not set(to_run) <= set(range(n_folds)):
+        raise ValueError(f"only_folds {list(only_folds)} must be indices of the {n_folds} folds")
     directory = Path(config.data.directory)
     train = load("inhibition", directory)
     test = load("test", directory)
@@ -1160,7 +1167,7 @@ def run_cv(
     test_by_fold: dict[str, list[pd.DataFrame]] = {}
     tdi_out_of_fold = []
     curves: dict[int, list[dict]] = {}
-    for fold in range(n_folds):
+    for fold in to_run:
         held_out = folds == fold
         retained, evaluation = train.loc[~held_out], train.loc[held_out]
         # Keep this fold's compounds and the blinded test out of the TDI assay_condition, so a
