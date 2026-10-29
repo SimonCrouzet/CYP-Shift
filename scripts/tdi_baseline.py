@@ -4,12 +4,15 @@ cross-validated MCC.
     python scripts/tdi_baseline.py --output scratch/tdi_baseline_oof.csv
     python scripts/tdi_baseline.py --model tabpfn --output scratch/tdi_tabpfn_oof.csv
 
-``--model tabpfn`` and ``--model mitra`` are the tabular foundation models. ``--features`` picks
-one of the regression comparison's feature sets (dense: physicochemical + mechanistic; chemeleon:
-the CheMeleon embedding; dense_chemeleon; fp_dense: Morgan fingerprint + dense). The foundation
-models read them as the regression ones do: impute, standardise, and PCA to 500 components when a
-set is wider than that, fitted on the training fold; LightGBM reads them raw. Mitra runs in its own
-environment (``MITRA_PYTHON``).
+``--model knn`` is a Tanimoto-weighted vote of the 15 nearest training compounds (fingerprint
+features only). ``--model tabpfn`` and ``--model mitra`` are the tabular foundation models.
+``--features`` picks one of the regression comparison's feature sets (dense: physicochemical +
+mechanistic; chemeleon: the CheMeleon embedding; dense_chemeleon; fp_dense: Morgan fingerprint +
+dense). The foundation models read them as the regression ones do: impute, standardise, and PCA to
+500 components when a set is wider than that, fitted on the training fold; LightGBM reads them raw.
+Mitra runs in its own environment (``MITRA_PYTHON``). ``--test-output`` also writes the blinded
+test compounds' scores (the mean over the fold models) and ``--max-folds`` runs the first folds
+only, for a timing run.
 
 The models in the repo call ``is_TDI`` from the gap between two predicted potencies. This trains a
 classifier on the ``is_TDI`` labels directly, one per enzyme (CYP2D6, CYP3A4), on the same
@@ -37,11 +40,14 @@ from sklearn.metrics import average_precision_score, matthews_corrcoef, roc_auc_
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cypshift.data.splits import tdi_scaffold_folds  # noqa: E402 -- after the src path
+from cypshift.data.challenge import load  # noqa: E402 -- after the src path
+from cypshift.data.splits import tdi_scaffold_folds  # noqa: E402
 from cypshift.features.assembly import molecular_feature_matrix  # noqa: E402
 
 logger = logging.getLogger("tdi_baseline")
-MODELS = ("lightgbm", "tabpfn", "mitra")
+MODELS = ("lightgbm", "tabpfn", "mitra", "knn")
+#: Neighbours the Tanimoto classifier averages.
+NEIGHBOURS = 15
 #: The feature sets of the regression comparison: (fingerprint, physchem + mechanistic, embedding).
 FEATURE_SETS = {
     "dense": (False, True, "none"),
@@ -116,6 +122,25 @@ def bundle_features(
     return frame.reindex(names).to_numpy(np.float32), names.isin(frame.index).to_numpy()
 
 
+def neighbour_scores(
+    train_bits: np.ndarray, train_y: np.ndarray, test_bits: np.ndarray, neighbours: int = NEIGHBOURS
+) -> np.ndarray:
+    """Tanimoto-weighted mean label of the ``neighbours`` most similar training compounds, from
+    binary fingerprints."""
+    train, test = (np.asarray(x > 0, dtype=np.float32) for x in (train_bits, test_bits))
+    shared = test @ train.T
+    union = test.sum(axis=1)[:, None] + train.sum(axis=1)[None, :] - shared
+    similarity = np.divide(shared, union, out=np.zeros_like(shared), where=union > 0)
+    k = min(neighbours, similarity.shape[1])
+    nearest = np.argpartition(-similarity, k - 1, axis=1)[:, :k]
+    weight = np.take_along_axis(similarity, nearest, axis=1)
+    label = train_y.astype(np.float32)[nearest]
+    total = weight.sum(axis=1)
+    return np.divide(
+        (weight * label).sum(axis=1), total, out=np.full(len(test), train_y.mean()), where=total > 0
+    )
+
+
 def fold_scores(
     model: str,
     train_x: np.ndarray,
@@ -126,9 +151,13 @@ def fold_scores(
     pca: int = PCA_COMPONENTS,
     n_extra: int = 0,
     balanced: bool = False,
+    bits: int = 0,
 ) -> np.ndarray:
     """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold. The
-    last ``n_extra`` columns (stacked potencies) skip the PCA of the foundation models."""
+    last ``n_extra`` columns (stacked potencies) skip the PCA of the foundation models; ``knn``
+    reads the first ``bits`` columns as the fingerprint."""
+    if model == "knn":
+        return neighbour_scores(train_x[:, :bits], train_y, test_x[:, :bits])
     if model == "lightgbm":
         classifier = lgb.LGBMClassifier(
             n_estimators=400,
@@ -216,29 +245,46 @@ def out_of_fold_scores(
     n_extra: int = 0,
     balanced: bool = False,
     scored: np.ndarray | None = None,
-) -> np.ndarray:
+    bits: int = 0,
+    test_features: np.ndarray | None = None,
+    max_folds: int | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
     """Out-of-fold positive-class probabilities of a classifier, trained on the labelled compounds
-    of the other folds; NaN except for the labelled compounds in ``scored`` (default: all)."""
+    of the other folds; NaN except for the labelled compounds in ``scored`` (default: all).
+
+    With ``test_features`` each fold's model also scores them, and their mean over the folds is
+    returned second (None otherwise). ``max_folds`` runs only the first folds, for a timing run.
+    """
     scores = np.full(len(labels), np.nan)
+    test_total = None if test_features is None else np.zeros(len(test_features))
     labelled = ~np.isnan(labels)
-    for fold in np.unique(folds):
+    ran = 0
+    for fold in np.unique(folds)[:max_folds]:
         train = labelled & (folds != fold)
         test = labelled & (folds == fold)
         if scored is not None:
             test &= scored
-        scores[test] = fold_scores(
+        rows = (
+            features[test] if test_features is None else np.vstack([features[test], test_features])
+        )
+        predicted = fold_scores(
             model,
             features[train],
             labels[train].astype(int),
-            features[test],
+            rows,
             threads,
             seed,
             pca,
             n_extra,
             balanced,
+            bits,
         )
+        scores[test] = predicted[: int(test.sum())]
+        if test_total is not None:
+            test_total += predicted[int(test.sum()) :]
+        ran += 1
         logger.info("fold %d: %d train, %d held out", fold + 1, train.sum(), test.sum())
-    return scores
+    return scores, None if test_total is None else test_total / ran
 
 
 def main() -> None:
@@ -307,28 +353,56 @@ def main() -> None:
         "predicted direct pIC50 of the four enzymes is added as features (NaN where a compound "
         "has none)",
     )
+    parser.add_argument(
+        "--test-output",
+        type=Path,
+        help="CSV for the blinded test compounds' scores: the mean over the fold models, so on "
+        "the scale of the out-of-fold scores. Needs a plain feature set (no stacked columns)",
+    )
+    parser.add_argument(
+        "--max-folds",
+        type=int,
+        help="run only the first folds, for a timing run; the report covers their compounds",
+    )
     args = parser.parse_args()
+    stacked = (
+        args.stack_bundle
+        or args.embedding_bundle
+        or args.extra_table
+        or args.predicted_potency
+        or args.direct_potency
+    )
+    if args.test_output and stacked:
+        parser.error("--test-output needs the plain feature set: the test has no stacked columns")
+    if args.model == "knn" and not FEATURE_SETS[args.features][0]:
+        parser.error("--model knn reads a fingerprint: use --features fp_dense")
     if args.model == "tabpfn":
         from cypshift.local_env import load_local_env
 
         load_local_env()  # the TabPFN token, never printed
 
     table = pd.read_csv(args.table)
-    smiles = table["SMILES"].tolist()
-    logger.info("featurising %d compounds", len(smiles))
     fingerprint, dense, embedding = FEATURE_SETS[args.features]
-    features = molecular_feature_matrix(
-        smiles,
-        n_bits=args.bits if args.model == "lightgbm" else 2048,
-        fingerprint_radius=2,
-        physchem=dense,
-        mechanism=dense,
-        ionization_geometry=False,
-        ionization_cache="data/external/ionization/features.parquet",
-        molecular_embedding=embedding,
-        use_fingerprint=fingerprint,
-    )
+    n_bits = args.bits if args.model in ("lightgbm", "knn") else 2048
+
+    def featurise(smiles: list[str]) -> np.ndarray:
+        return molecular_feature_matrix(
+            smiles,
+            n_bits=n_bits,
+            fingerprint_radius=2,
+            physchem=dense,
+            mechanism=dense,
+            ionization_geometry=False,
+            ionization_cache="data/external/ionization/features.parquet",
+            molecular_embedding=embedding,
+            use_fingerprint=fingerprint,
+        )
+
+    logger.info("featurising %d compounds", len(table))
+    features = featurise(table["SMILES"].tolist())
     logger.info("%s features: %d columns", args.features, features.shape[1])
+    test = load("test", TDI_TABLE.parent) if args.test_output else None
+    test_features = None if test is None else featurise(test["SMILES"].tolist())
     direct = pd.read_csv(INHIBITION_TABLE, usecols=["Molecule_Name"])["Molecule_Name"]
     covered = table["Molecule_Name"].isin(direct).to_numpy()
     if args.coverage_of:
@@ -356,6 +430,7 @@ def main() -> None:
 
     out = table[["Molecule_Name", "SMILES"]].copy()
     out["fold"] = folds
+    test_out = None if test is None else test[["Molecule_Name", "SMILES"]].copy()
     rows = []
     for enzyme in ENZYMES:
         labelled = labels[enzyme].to_numpy()
@@ -365,7 +440,7 @@ def main() -> None:
         if args.direct_potency:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
             columns = np.hstack([features, potency[:, None]])
-        scores = out_of_fold_scores(
+        scores, test_scores = out_of_fold_scores(
             columns,
             training,
             folds,
@@ -376,10 +451,15 @@ def main() -> None:
             n_extra,
             args.balanced,
             scored=covered,
+            bits=n_bits,
+            test_features=test_features,
+            max_folds=args.max_folds,
         )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
-        keep = ~np.isnan(truth)
+        if test_scores is not None:
+            test_out[f"{enzyme}_score"] = test_scores
+        keep = ~np.isnan(truth) & ~np.isnan(scores)
         y, s = truth[keep].astype(int), scores[keep]
         prevalence = float(y.mean())
         threshold, best = best_threshold_mcc(y, s)
@@ -400,6 +480,10 @@ def main() -> None:
     macro = report[["MCC@0.5", "MCC@prevalence", "MCC@best", "ROC_AUC", "AP"]].mean()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, index=False)
+    if test_out is not None:
+        args.test_output.parent.mkdir(parents=True, exist_ok=True)
+        test_out.to_csv(args.test_output, index=False)
+        logger.info("wrote %s", args.test_output)
     logger.info("\n%s", report.round(4).to_string(index=False))
     logger.info("macro mean over the two enzymes:\n%s", macro.round(4).to_string())
     logger.info("wrote %s", args.output)

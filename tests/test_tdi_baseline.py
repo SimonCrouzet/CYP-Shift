@@ -48,6 +48,29 @@ def test_only_the_scored_compounds_get_a_score_while_every_labelled_one_trains()
     labels[[3, 100]] = np.nan
     folds = np.arange(120) % 2
     scored = np.arange(120) >= 60
-    scores = script.out_of_fold_scores(features, labels, folds, threads=1, seed=0, scored=scored)
+    scores, test_scores = script.out_of_fold_scores(
+        features, labels, folds, threads=1, seed=0, scored=scored
+    )
+    assert test_scores is None
     assert np.isnan(scores[:60]).all() and np.isnan(scores[100])
     assert not np.isnan(np.delete(scores[60:], 40)).any()
+
+
+def test_neighbour_scores_are_the_similarity_weighted_label_of_the_nearest_compounds():
+    train = np.array([[1, 1, 0, 0], [1, 1, 1, 0], [0, 0, 1, 1], [0, 0, 0, 1]])
+    labels = np.array([1, 1, 0, 0])
+    test = np.array([[1, 1, 0, 0], [0, 0, 1, 1], [0, 0, 0, 0]])
+    scores = script.neighbour_scores(train, labels, test, neighbours=2)
+    assert scores.tolist() == [1.0, 0.0, 0.5]  # an all-zero fingerprint falls back to the mean
+
+
+def test_the_fold_models_also_score_the_test_features_and_a_timing_run_stops_early():
+    rng = np.random.default_rng(1)
+    features = rng.normal(size=(90, 3))
+    labels = (features[:, 0] > 0).astype(float)
+    folds = np.arange(90) % 3
+    scores, test_scores = script.out_of_fold_scores(
+        features, labels, folds, threads=1, seed=0, test_features=features[:7], max_folds=2
+    )
+    assert test_scores.shape == (7,) and ((test_scores >= 0) & (test_scores <= 1)).all()
+    assert np.isnan(scores[folds == 2]).all() and not np.isnan(scores[folds < 2]).any()
