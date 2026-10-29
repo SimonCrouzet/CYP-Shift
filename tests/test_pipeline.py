@@ -1,5 +1,7 @@
 """Turning a configuration into an experiment."""
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -897,3 +899,54 @@ def test_only_folds_must_name_folds_of_the_partition():
     for bad in ([5], [-1], []):
         with pytest.raises(ValueError, match="only_folds"):
             run_cv(ExperimentConfig(), n_folds=5, only_folds=bad)
+
+
+class _ConstantModel:
+    """Predicts the same pIC50 for every compound."""
+
+    def fit(self, observations, **options):
+        return self
+
+    def predict(self, smiles):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(mean=np.full((len(smiles), 4), 5.0))
+
+
+def _fake_cross_validation(monkeypatch):
+    import cypshift.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "build_model", lambda *args, **kwargs: _ConstantModel())
+    monkeypatch.setattr(
+        pipeline,
+        "assemble_training_data",
+        lambda *args, **kwargs: (pd.DataFrame({"target": list(ISOFORMS)}), None),
+    )
+    config = ExperimentConfig()
+    config.override("model.kind", "boosted")
+    return pipeline, config
+
+
+def test_a_cross_validation_of_some_folds_scores_and_saves_only_their_compounds(
+    monkeypatch, tmp_path
+):
+    pipeline, config = _fake_cross_validation(monkeypatch)
+    scores, submission, _ = pipeline.run_cv(
+        config, n_folds=5, bundle_path=tmp_path / "bundle", only_folds=[0, 1]
+    )
+    saved = pd.read_parquet(tmp_path / "bundle" / "out_of_fold.parquet")
+    full = len(pipeline.load("inhibition", Path(config.data.directory)))
+    assert 0.3 * full < len(submission) < 0.5 * full  # two of five folds
+    assert len(saved) == len(submission) and not scores.empty
+
+
+def test_the_predictions_are_saved_even_when_the_scoring_fails(monkeypatch, tmp_path):
+    pipeline, config = _fake_cross_validation(monkeypatch)
+
+    def failing(*args, **kwargs):
+        raise ValueError("scoring broke")
+
+    monkeypatch.setattr(pipeline, "score_submission", failing)
+    with pytest.raises(ValueError, match="scoring broke"):
+        pipeline.run_cv(config, n_folds=5, bundle_path=tmp_path / "bundle", only_folds=[0])
+    assert len(pd.read_parquet(tmp_path / "bundle" / "out_of_fold.parquet")) > 0

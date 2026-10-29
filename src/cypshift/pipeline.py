@@ -1252,18 +1252,13 @@ def run_cv(
             tdi_out_of_fold.append(fold_tdi)
 
     submission = pd.concat(out_of_fold, ignore_index=True)
-    scores = score_submission(submission, train)
-    _log_r2_decomposition(submission, train)
-    tdi_scores = None
-    if tdi_out_of_fold:
-        pooled_tdi = pd.concat(tdi_out_of_fold, ignore_index=True)
-        tdi_scores = _score_tdi_out_of_fold(pooled_tdi, directory)
-        if tdi_scores is not None:
-            logger.info(
-                "TDI CV (ranked by MCC):\n%s",
-                tdi_scores[["MCC_mean", "Accuracy_mean"]].to_string(),
-            )
-    if bundle_path is not None:
+    # Only the compounds of the folds that ran have a prediction; scored against all of them, a
+    # partial run would fail (and the whole fit with it).
+    truth = train[train["Molecule_Name"].isin(submission["Molecule_Name"])]
+
+    def write_bundle(run_scores: pd.DataFrame) -> None:
+        if bundle_path is None:
+            return
         pooled = pd.concat(pooled_out_of_fold, ignore_index=True) if pooled_out_of_fold else None
         auxiliary = (
             pd.concat(auxiliary_out_of_fold, ignore_index=True) if auxiliary_out_of_fold else None
@@ -1277,9 +1272,9 @@ def run_cv(
         save_run_bundle(
             bundle_path,
             config,
-            train,
+            truth,
             submission,
-            scores,
+            run_scores,
             pooled,
             auxiliary,
             embedding,
@@ -1287,6 +1282,25 @@ def run_cv(
         )
         if curves:
             write_curves(bundle_path, curves)
+
+    try:
+        scores = score_submission(submission, truth)
+        _log_r2_decomposition(submission, truth)
+        tdi_scores = None
+        if tdi_out_of_fold:
+            pooled_tdi = pd.concat(tdi_out_of_fold, ignore_index=True)
+            tdi_scores = _score_tdi_out_of_fold(pooled_tdi, directory)
+            if tdi_scores is not None:
+                logger.info(
+                    "TDI CV (ranked by MCC):\n%s",
+                    tdi_scores[["MCC_mean", "Accuracy_mean"]].to_string(),
+                )
+    except Exception:
+        # The fits are the expensive part: keep their predictions when only the scoring failed.
+        logger.exception("scoring failed; saving the predictions without scores")
+        write_bundle(pd.DataFrame())
+        raise
+    write_bundle(scores)
     return scores, submission, tdi_scores
 
 
