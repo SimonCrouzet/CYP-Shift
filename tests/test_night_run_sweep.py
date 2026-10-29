@@ -1514,3 +1514,11 @@ def test_a_run_limited_to_some_folds_is_recorded_and_bundled_under_its_own_name(
     monkeypatch.setattr(night_run, "ONLY_FOLDS", ())
     assert night_run.compute_row("reg", "cell", {"model.kind": "boosted"}, 0)["name"] == "cell"
     assert seen["only_folds"] is None
+
+
+def test_a_stop_file_keeps_a_new_sweep_process_from_starting_anything(monkeypatch, tmp_path):
+    stop = tmp_path / "STOP"
+    stop.write_text("")
+    monkeypatch.setattr(night_run, "STOP_FILE", stop)
+    monkeypatch.setattr(night_run, "load_local_env", lambda: pytest.fail("the sweep started"))
+    night_run.main()  # returns at once

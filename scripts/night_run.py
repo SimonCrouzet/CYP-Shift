@@ -3193,8 +3193,16 @@ def run_night() -> None:
     report_night(names)
 
 
+#: While this file exists a new sweep process starts nothing and exits (one already running is not
+#: touched), so a queue of sweep processes can be held back without killing the one in progress.
+STOP_FILE = Path(os.environ.get("CYP_STOP_FILE", "data/STOP"))
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    if STOP_FILE.exists():
+        logger.info("%s exists: not starting a sweep", STOP_FILE)
+        return
     load_local_env()  # tokens for a local run; a remote run is forwarded them by lightning_run
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     _archive_stale_results()
