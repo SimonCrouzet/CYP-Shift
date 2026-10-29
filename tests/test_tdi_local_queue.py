@@ -50,6 +50,19 @@ def test_the_graph_recipe_name_is_the_one_night_run_gives_the_cell():
     assert night_run._recipe_name(cell.tag, overrides, declared) == script.GRAPH_NAME
 
 
+def test_the_novartis_job_runs_the_rate_cell_at_seed_zero_and_its_name_is_current():
+    job = next(j for j in script.jobs() if j.stage == "novartis")
+    assert job.env["CYP_CELLS"] == script.KOBS_CELL and job.env["CYP_SEEDS"] == "0"
+    assert job.outputs[0].parts[-2] == f"reg_{script.KOBS_NAME}_seed0"
+    declared = {night_run._resolved_key(o): k for k, o in night_run.REGRESSION.items()}
+    recipe = night_run._apply(
+        dict(night_run.REGRESSION[night_run.FOCUS_BASE]), night_run._BOTH + night_run._BUDGET
+    )
+    cell = next(c for c in night_run.TDI_FOLD_CELLS if c.tag == script.KOBS_CELL)
+    overrides = night_run._apply(recipe, cell.sets)
+    assert night_run._recipe_name(cell.tag, overrides, declared) == script.KOBS_NAME
+
+
 def test_an_unknown_stage_is_refused():
     with pytest.raises(ValueError, match="stage"):
         script.selected("lightgbm,forest")

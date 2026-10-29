@@ -13,6 +13,7 @@ import pandas as pd
 
 from cypshift.config import CLASSIFICATION_ENDPOINTS, ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import (
+    NOVARTIS_KOBS_ASSAY,
     OBSERVATION_COLUMNS,
     RESPONSE_ASSAY,
     SCREEN_LOG2FC_ASSAY,
@@ -20,6 +21,7 @@ from cypshift.data.assembly import (
     TDI_LABEL_ASSAY,
     SourceWeights,
     build_observations,
+    novartis_kobs_observations,
     tdi_label_observations,
 )
 from cypshift.data.challenge import load
@@ -136,6 +138,8 @@ def build_model(
                 response_assays.append(SCREEN_LOG2FC_ASSAY)
         if config.sources.tdi_label:
             response_assays.append(TDI_LABEL_ASSAY)
+        if config.sources.novartis_kobs:
+            response_assays.append(NOVARTIS_KOBS_ASSAY)
         return graph_cls(
             loss=config.model.objective,
             tau=config.model.objective_tau,
@@ -471,6 +475,17 @@ def assemble_training_data(
             uncovered_weight=config.multifidelity.tdi_label_uncovered_weight,
         )
         observations = pd.concat([observations, labels[observations.columns]], ignore_index=True)
+    if config.sources.novartis_kobs:
+        from cypshift.data import novartis
+
+        directory = Path(config.data.directory)
+        challenge = pd.concat(
+            [load(name, directory)["SMILES"] for name in ("tdi", "inhibition", "test")]
+        )
+        kobs = novartis.load_tdi(challenge, dedup_mode=config.data.dedup_mode)
+        logger.info("Novartis: %d log_kobs rows after dedup", len(kobs))
+        rows = novartis_kobs_observations(kobs, weight=config.multifidelity.novartis_kobs_weight)
+        observations = pd.concat([observations, rows[observations.columns]], ignore_index=True)
     if config.training.inverse_variance_weighting:
         observations = weight_by_inverse_variance(
             observations, response_assays=precision_response_assays(config)

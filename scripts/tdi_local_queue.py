@@ -13,9 +13,10 @@ Stages: ``lightgbm`` (three feature sets, with test scores), ``knn`` (Tanimoto n
 ``tabpfn`` (a one-fold timing run on the CheMeleon + dense set, 128 components; its time says
 whether the full run fits the 8 GB GPU), ``noise`` (LightGBM on the CheMeleon + dense set with the
 labels as given, without the ones whose measured shift is within one standard error of the 2-fold
-line, down-weighted by that distance, and replaced by the measured shift), ``graph`` (seeds 1 and 2
-of the TDI-fold graph cell with the label rows of compounds without a direct curve at weight 0;
-hours each on this GPU).
+line, down-weighted by that distance, and replaced by the measured shift), ``novartis`` (the graph
+cell below with the Novartis CYP3A4 log_kobs as a response task), ``graph`` (seeds 1 and 2 of the
+TDI-fold graph cell with the label rows of compounds without a direct curve at weight 0). The graph
+stages take hours each on this GPU.
 """
 
 import argparse
@@ -32,12 +33,16 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNS = Path("data/tdi_runs")
 LOGS = RUNS / "queue_logs"
 BASELINE = "scripts/tdi_baseline.py"
-STAGES = ("lightgbm", "knn", "tabpfn", "noise", "graph")
+STAGES = ("lightgbm", "knn", "tabpfn", "noise", "novartis", "graph")
 #: The graph cell whose seeds are run, and the name of its recipe in the bundles.
 GRAPH_CELL = "tdi5_label_b_reg_uncovered_0"
 GRAPH_NAME = "focus_tdi5_label_b_reg_uncovered_0_8352aa"
 GRAPH_REV = "questions3"
 GRAPH_SEEDS = (1, 2)
+#: The same cell with the Novartis CYP3A4 log_kobs as a response task (seed 0, to pair with the
+#: seed-0 run of the cell above).
+KOBS_CELL = "tdi5_label_b_reg_uncovered_0_kobs"
+KOBS_NAME = "focus_tdi5_label_b_reg_uncovered_0_kobs_ab22d4"
 
 
 @dataclass(frozen=True)
@@ -59,12 +64,14 @@ def baseline_job(name: str, stage: str, *options: str, test: bool = True) -> Job
     return Job(name, stage, tuple(argv), (test_out if test else out,))
 
 
-def graph_job(seed: int) -> Job:
-    """One seed of the graph cell, run through ``night_run.py`` as the Modal runs are."""
-    bundle = Path("data/run_bundles") / f"{GRAPH_REV}-m1" / f"reg_{GRAPH_NAME}_seed{seed}"
+def graph_job(
+    seed: int, cell: str = GRAPH_CELL, name: str = GRAPH_NAME, stage: str = "graph"
+) -> Job:
+    """One seed of a graph cell, run through ``night_run.py`` as the Modal runs are."""
+    bundle = Path("data/run_bundles") / f"{GRAPH_REV}-m1" / f"reg_{name}_seed{seed}"
     env = {
         "CYP_PLAN": "questions",
-        "CYP_CELLS": GRAPH_CELL,
+        "CYP_CELLS": cell,
         "CYP_SEEDS": str(seed),
         "CYP_REV": GRAPH_REV,
         "CYP_MEMBERS": "1",
@@ -74,8 +81,8 @@ def graph_job(seed: int) -> Job:
         "PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'scripts'}",
     }
     return Job(
-        f"graph_seed{seed}",
-        "graph",
+        f"{stage}_seed{seed}" if stage == "graph" else f"{cell}_seed{seed}",
+        stage,
         ("scripts/night_run.py",),
         (bundle / "out_of_fold_auxiliary.parquet",),
         env,
@@ -104,6 +111,7 @@ def jobs() -> list[Job]:
             )
             for mode in ("hard", "drop_ambiguous", "soft", "shift")
         ),
+        graph_job(0, KOBS_CELL, KOBS_NAME, "novartis"),
         *(graph_job(seed) for seed in GRAPH_SEEDS),
     ]
 

@@ -864,3 +864,28 @@ def test_save_run_bundle_writes_the_test_predictions_of_the_folds_when_given(tmp
     ]
     assert pd.read_parquet(tmp_path / "a" / "test_by_fold.parquet")["fold"].tolist() == [0, 0, 1, 1]
     assert not list((tmp_path / "b").glob("test_by_fold*"))
+
+
+def test_the_novartis_rate_rows_reach_the_training_table_as_a_cyp3a4_response(monkeypatch):
+    from cypshift.data import novartis
+
+    seen = {}
+
+    def fake_rates(challenge, dedup_mode="canonical_smiles"):
+        seen["challenge_rows"] = len(challenge)
+        return pd.DataFrame(
+            {"SMILES": ["CCN", "CCC"], "log_kobs": [-2.0, -1.0], "tdi_class": [0, 1]}
+        )
+
+    monkeypatch.setattr(novartis, "load_tdi", fake_rates)
+    config = ExperimentConfig()
+    config.override("model.kind", "graph")
+    config.sources.screen = False
+    config.sources.novartis_kobs = True
+    config.multifidelity.novartis_kobs_weight = 0.4
+    observations, _ = assemble_training_data(config, _retained_with_tdi())
+    rows = observations[observations["assay"] == "tdi_kobs"]
+    assert rows["target"].tolist() == ["CYP3A4"] * 2 and rows["weight"].tolist() == [0.4] * 2
+    assert rows["value"].tolist() == [-2.0, -1.0]
+    # deduplicated against every train and test compound, the TDI table included
+    assert seen["challenge_rows"] > 6000

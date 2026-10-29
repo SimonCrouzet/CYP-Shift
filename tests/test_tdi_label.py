@@ -127,3 +127,47 @@ def test_without_the_label_task_the_shift_rule_is_used(monkeypatch):
     )
     flags = net.predict_is_time_dependent(SMILES)
     assert not called and flags.shape == (len(SMILES), 4)
+
+
+def test_the_novartis_rates_become_cyp3a4_response_rows_on_their_own_assay():
+    from cypshift.data.assembly import NOVARTIS_KOBS_ASSAY, novartis_kobs_observations
+
+    kobs = pd.DataFrame({"SMILES": ["CCO", "CCN"], "log_kobs": [-2.5, -1.0], "tdi_class": [0, 2]})
+    rows = novartis_kobs_observations(kobs, weight=0.3)
+    assert list(rows.columns) == list(OBSERVATION_COLUMNS)
+    assert set(rows["assay"]) == {NOVARTIS_KOBS_ASSAY} and set(rows["target"]) == {"CYP3A4"}
+    assert rows["value"].tolist() == [-2.5, -1.0] and set(rows["weight"]) == {0.3}
+    assert rows["Molecule_Name"].is_unique and set(rows["data_space"]) == {"near_aux"}
+
+
+def test_the_novartis_rate_task_is_graph_only_and_needs_a_non_negative_weight():
+    config = ExperimentConfig()
+    config.override("model.kind", "boosted")
+    config.override("sources.novartis_kobs", True)
+    with pytest.raises(ValueError, match="novartis_kobs"):
+        config.validate()
+    config.override("model.kind", "graph")
+    config.validate()
+    config.override("multifidelity.novartis_kobs_weight", -1.0)
+    with pytest.raises(ValueError, match="novartis_kobs_weight"):
+        config.validate()
+
+
+def test_the_graph_trains_the_rate_task_beside_the_label_task_with_its_own_scale():
+    from cypshift.data.assembly import NOVARTIS_KOBS_ASSAY, novartis_kobs_observations
+
+    rates = [-3.0, -2.0, -2.5, -1.0, -1.5, -2.2]
+    kobs = pd.DataFrame({"SMILES": SMILES, "log_kobs": rates, "tdi_class": 0})
+    extra = novartis_kobs_observations(kobs).drop(columns=["Molecule_Name"])
+    net = GraphNetwork(
+        hidden=16,
+        depth=2,
+        ffn_hidden=16,
+        epochs=1,
+        batch_size=8,
+        early_stopping_patience=0,
+        response_assays=(TDI_LABEL_ASSAY, NOVARTIS_KOBS_ASSAY),
+    ).fit(pd.concat([_training_rows(), extra], ignore_index=True))
+    assert net._resp_centre[1] == pytest.approx(np.mean(rates))
+    assert net._resp_spread[1] == pytest.approx(np.std(rates))
+    assert net.predict_is_time_dependent(SMILES).shape == (len(SMILES), 4)

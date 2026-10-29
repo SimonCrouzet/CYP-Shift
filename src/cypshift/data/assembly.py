@@ -257,9 +257,38 @@ def tdi_label_observations(
     return pd.concat(rows, ignore_index=True)[list(OBSERVATION_COLUMNS)]
 
 
+def novartis_kobs_observations(kobs: pd.DataFrame, weight: float = 1.0) -> pd.DataFrame:
+    """The Novartis CYP3A4 ``log_kobs`` values as response rows on :data:`NOVARTIS_KOBS_ASSAY`.
+
+    ``kobs`` is :func:`cypshift.data.novartis.load_tdi`'s frame (``SMILES``, ``log_kobs``). The rows
+    are auxiliary (``near_aux``, source ``novartis``) and CYP3A4's alone: the set carries no rate
+    for another enzyme.
+    """
+    rows = pd.DataFrame(
+        {
+            "Molecule_Name": [f"novartis_kobs_{i}" for i in range(len(kobs))],
+            "SMILES": kobs["SMILES"].to_numpy(),
+            "target": "CYP3A4",
+            "assay": NOVARTIS_KOBS_ASSAY,
+            "value": kobs["log_kobs"].to_numpy(float),
+            "conf_low": kobs["log_kobs"].to_numpy(float),
+            "conf_high": kobs["log_kobs"].to_numpy(float),
+            "weight": weight,
+            "is_censored": False,
+            "data_space": "near_aux",
+            "source": "novartis",
+        }
+    )
+    return rows[list(OBSERVATION_COLUMNS)]
+
+
 #: The assay tag of the ``is_TDI`` labels, read by the graph as a response task: a classification
 #: readout trained directly, in place of the gap between two predicted potencies.
 TDI_LABEL_ASSAY = "tdi_label"
+
+#: The assay tag of the Novartis CYP3A4 log10 inactivation rate (``kobs``), read by the graph as a
+#: response task like the ``is_TDI`` label.
+NOVARTIS_KOBS_ASSAY = "tdi_kobs"
 
 #: Scalar properties of each assay, so the encoding can describe the experiment rather
 #: than merely index it. A model given these can learn "preincubation" as one direction
@@ -304,6 +333,8 @@ ASSAY_METADATA = {
     # A derived call, not a measurement of its own: the reference profile, so the call is neither
     # a preincubated assay nor a single-concentration one.
     TDI_LABEL_ASSAY: (0.0, 1.0, 0.0, 0.0),
+    # A rate of inactivation measured after preincubation, from curves.
+    NOVARTIS_KOBS_ASSAY: (1.0, 1.0, 0.0, 0.0),
 }
 N_METADATA_COLUMNS = 4
 

@@ -743,6 +743,9 @@ def _resolved_key(overrides: dict) -> str:
     for field in ("hard_parameter_sharing", "per_task_scaling"):
         if not graph[field]:
             del graph[field]  # recorded names predate them
+    if not resolved["sources"]["novartis_kobs"]:
+        del resolved["sources"]["novartis_kobs"]  # recorded names predate it
+        del resolved["multifidelity"]["novartis_kobs_weight"]
     if resolved["multifidelity"]["tdi_label_uncovered_weight"] == 1.0:
         del resolved["multifidelity"]["tdi_label_uncovered_weight"]  # recorded names predate it
     if not resolved["data"]["tdi_folds"]:
@@ -2730,6 +2733,19 @@ TDI_FOLD_CELLS = (
         ),
         "tdi5",
         "tdi5_label_b_reg",
+    ),
+    # The weight-0 cell with the Novartis CYP3A4 log_kobs (16k public structures) as a response
+    # task beside CYP3A4's own labels.
+    Cell(
+        "tdi5_label_b_reg_uncovered_0_kobs",
+        (
+            *_B_REG_TDI,
+            ("sources.tdi_label", True),
+            ("multifidelity.tdi_label_uncovered_weight", 0.0),
+            ("sources.novartis_kobs", True),
+        ),
+        "tdi5",
+        "tdi5_label_b_reg_uncovered_0",
     ),
     Cell(
         "tdi5_both_b_reg_embed",

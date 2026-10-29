@@ -258,6 +258,10 @@ class SourcesConfig:
     #: graph (CYP2D6 and CYP3A4), so the same model that predicts the pIC50 calls the TDI
     #: track from a trained readout instead of the gap between two predicted potencies.
     tdi_label: bool = False
+    #: The Novartis CYP3A4 log10 inactivation rate (``log_kobs``, 16k public structures annotated by
+    #: the Novartis model, challenge compounds removed), trained as a response task of the graph
+    #: beside CYP3A4's own labels. Needs data/external/novartis.
+    novartis_kobs: bool = False
     #: ChEMBL auxiliary potencies.
     chembl: bool = False
     #: SAIR auxiliary potencies (needs data/external/sair.parquet).
@@ -324,6 +328,8 @@ class MultifidelityConfig:
     #: measurement, relative to the others (1.0, as every label row is by default). All of those
     #: labels are negatives, and the blinded test compounds all have a direct curve.
     tdi_label_uncovered_weight: float = 1.0
+    #: Weight of the Novartis ``log_kobs`` rows (``sources.novartis_kobs``).
+    novartis_kobs_weight: float = 0.3
     #: Hidden-layer width of the screen screen_model model (an MLP), which is also the
     #: dimension of the ``embedding`` screen_model. Wired into fit_screen_model; swept.
     screen_model_hidden: int = 16
@@ -800,6 +806,10 @@ class ExperimentConfig:
                 "multifidelity.tdi_label_uncovered_weight is non-negative and needs "
                 "sources.tdi_label"
             )
+        if self.sources.novartis_kobs and self.model.kind != "graph":
+            raise ValueError("sources.novartis_kobs is wired only into the graph model")
+        if self.multifidelity.novartis_kobs_weight < 0:
+            raise ValueError("multifidelity.novartis_kobs_weight must be non-negative")
         if self.data.tdi_folds and not (self.sources.tdi_label or self.sources.tdi_assay_condition):
             raise ValueError(
                 "data.tdi_folds is for runs that score TDI (sources.tdi_label or "
