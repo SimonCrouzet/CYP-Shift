@@ -12,7 +12,8 @@ dense). The foundation models read them as the regression ones do: impute, stand
 500 components when a set is wider than that, fitted on the training fold; LightGBM reads them raw.
 Mitra runs in its own environment (``MITRA_PYTHON``). ``--test-output`` also writes the blinded
 test compounds' scores (the mean over the fold models) and ``--max-folds`` runs the first folds
-only, for a timing run.
+only, for a timing run. ``--label-mode`` (LightGBM) trains on the labels as given, or after leaving
+out, down-weighting or replacing the ones whose measured shift is close to the 2-fold line.
 
 The models in the repo call ``is_TDI`` from the gap between two predicted potencies. This trains a
 classifier on the ``is_TDI`` labels directly, one per enzyme (CYP2D6, CYP3A4), on the same
@@ -36,6 +37,7 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from sklearn.metrics import average_precision_score, matthews_corrcoef, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -56,6 +58,17 @@ FEATURE_SETS = {
     "fp_dense": (True, True, "none"),
 }
 PCA_COMPONENTS = 500
+LABEL_MODES = ("hard", "drop_ambiguous", "soft", "shift")
+#: log10(2): a compound is a TDI positive when its preincubated pIC50 exceeds the direct one by
+#: more than this.
+SHIFT_LINE = float(np.log10(2.0))
+#: Direct pIC50 above which the label follows the measured shift (below it, it is inferred).
+DIRECT_FLOOR = 4.0
+#: Share of positives in the live half of the blinded test set, rebuilt from the leaderboard's
+#: precision, recall and accuracy (2026-10-29): well below the training shares.
+LIVE_PREVALENCE = {"CYP2D6": 0.0706, "CYP3A4": 0.2915}
+#: Measured shift from which a positive counts as strong.
+STRONG_SHIFT = 0.8
 MITRA_PYTHON = "/mnt/wsl/ext/envs/mitra/bin/python"
 MITRA_WORKER = Path(__file__).resolve().parents[1] / "src/cypshift/models/mitra_worker.py"
 
@@ -122,6 +135,66 @@ def bundle_features(
     return frame.reindex(names).to_numpy(np.float32), names.isin(frame.index).to_numpy()
 
 
+def shift_noise(table: pd.DataFrame, enzyme: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The measured shift (preincubated minus direct pIC50), its z-score against the 2-fold line and
+    its standard error, NaN for a compound whose label is not read from a measured shift (direct
+    pIC50 at or below the floor, or an arm missing)."""
+    direct = table[f"{enzyme}_pIC50_direct_inhibition"]
+    preincubated = table[f"{enzyme}_pIC50_TDI_condition"]
+    error = np.sqrt(
+        table[f"{enzyme}_pIC50_direct_inhibition_std"] ** 2
+        + table[f"{enzyme}_pIC50_TDI_condition_std"] ** 2
+    ).to_numpy(float)
+    shift = (preincubated - direct).to_numpy(float)
+    measurable = ((direct > DIRECT_FLOOR) & preincubated.notna()).to_numpy() & (error > 0)
+    z = np.where(measurable, (shift - SHIFT_LINE) / np.where(error > 0, error, 1.0), np.nan)
+    return np.where(measurable, shift, np.nan), z, np.where(measurable, error, np.nan)
+
+
+def label_mode_inputs(
+    mode: str,
+    labels: np.ndarray,
+    shift: np.ndarray,
+    z: np.ndarray,
+    error: np.ndarray,
+    z_cut: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray | None, bool]:
+    """What a model trains on: ``(targets, weights, regression)``, by how far to trust the labels.
+
+    ``hard`` is the 0/1 label. ``drop_ambiguous`` removes the compounds whose measured shift is
+    within ``z_cut`` standard errors of the 2-fold line from training. ``soft`` weights each label
+    by how far its shift is from the line (``2 * cdf(|z|) - 1``, at least 0.05). ``shift`` regresses
+    the measured shift, weighted by the inverse of its variance plus the median variance. Compounds
+    whose label is inferred rather than measured keep full weight (and are left out of ``shift``).
+    """
+    if mode == "hard":
+        return labels, None, False
+    if mode == "drop_ambiguous":
+        return np.where(np.abs(z) < z_cut, np.nan, labels), None, False
+    if mode == "soft":
+        weights = np.ones(len(labels))
+        known = ~np.isnan(z)
+        weights[known] = np.clip(2 * norm.cdf(np.abs(z[known])) - 1, 0.05, 1.0)
+        return labels, weights, False
+    if mode == "shift":
+        target = np.where(np.isnan(labels), np.nan, shift)
+        variance = error**2
+        weights = 1.0 / (variance + np.nanmedian(variance))
+        return target, np.where(np.isnan(target), 1.0, weights / np.nanmean(weights)), True
+    raise ValueError(f"label mode is one of {LABEL_MODES}, not {mode!r}")
+
+
+def reweighted_mcc(truth: np.ndarray, score: np.ndarray, prevalence: float, share: float) -> float:
+    """MCC when the top ``share`` of the scores is called positive, with the classes weighted to
+    ``prevalence`` positives (what the live half of the test set holds)."""
+    weight = np.where(truth == 1, prevalence / truth.mean(), (1 - prevalence) / (1 - truth.mean()))
+    called = score >= np.quantile(score, 1.0 - share)
+    tp, fp = weight[called & (truth == 1)].sum(), weight[called & (truth == 0)].sum()
+    fn, tn = weight[~called & (truth == 1)].sum(), weight[~called & (truth == 0)].sum()
+    denominator = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    return float((tp * tn - fp * fn) / denominator) if denominator > 0 else 0.0
+
+
 def neighbour_scores(
     train_bits: np.ndarray, train_y: np.ndarray, test_bits: np.ndarray, neighbours: int = NEIGHBOURS
 ) -> np.ndarray:
@@ -152,14 +225,20 @@ def fold_scores(
     n_extra: int = 0,
     balanced: bool = False,
     bits: int = 0,
+    weights: np.ndarray | None = None,
+    regression: bool = False,
 ) -> np.ndarray:
     """Positive-class probabilities of ``test_x`` from a classifier fitted on the training fold. The
     last ``n_extra`` columns (stacked potencies) skip the PCA of the foundation models; ``knn``
-    reads the first ``bits`` columns as the fingerprint."""
+    reads the first ``bits`` columns as the fingerprint. Sample ``weights``, or a regression on
+    ``train_y`` (the score is then the predicted value), are for LightGBM."""
+    if (weights is not None or regression) and model != "lightgbm":
+        raise ValueError("sample weights and regression are only wired into the LightGBM model")
     if model == "knn":
         return neighbour_scores(train_x[:, :bits], train_y, test_x[:, :bits])
     if model == "lightgbm":
-        classifier = lgb.LGBMClassifier(
+        estimator = lgb.LGBMRegressor if regression else lgb.LGBMClassifier
+        classifier = estimator(
             n_estimators=400,
             learning_rate=0.03,
             num_leaves=31,
@@ -171,9 +250,11 @@ def fold_scores(
             n_jobs=threads,
             random_state=seed,
             verbose=-1,
-            class_weight="balanced" if balanced else None,
+            **({} if regression else {"class_weight": "balanced" if balanced else None}),
         )
-        classifier.fit(train_x, train_y)
+        classifier.fit(train_x, train_y, sample_weight=weights)
+        if regression:
+            return classifier.predict(test_x)
         return classifier.predict_proba(test_x)[:, 1]
     # The foundation models read the set as the regression ones do: impute, standardise, PCA when
     # wider than PCA_COMPONENTS, fitted on the training fold.
@@ -248,12 +329,17 @@ def out_of_fold_scores(
     bits: int = 0,
     test_features: np.ndarray | None = None,
     max_folds: int | None = None,
+    evaluate: np.ndarray | None = None,
+    weights: np.ndarray | None = None,
+    regression: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Out-of-fold positive-class probabilities of a classifier, trained on the labelled compounds
     of the other folds; NaN except for the labelled compounds in ``scored`` (default: all).
 
     With ``test_features`` each fold's model also scores them, and their mean over the folds is
     returned second (None otherwise). ``max_folds`` runs only the first folds, for a timing run.
+    ``evaluate`` (a boolean mask) names the compounds to score instead of the labelled ones, for
+    targets that are defined for fewer compounds than are scored; ``weights`` are per compound.
     """
     scores = np.full(len(labels), np.nan)
     test_total = None if test_features is None else np.zeros(len(test_features))
@@ -261,7 +347,7 @@ def out_of_fold_scores(
     ran = 0
     for fold in np.unique(folds)[:max_folds]:
         train = labelled & (folds != fold)
-        test = labelled & (folds == fold)
+        test = (labelled if evaluate is None else evaluate) & (folds == fold)
         if scored is not None:
             test &= scored
         rows = (
@@ -270,7 +356,7 @@ def out_of_fold_scores(
         predicted = fold_scores(
             model,
             features[train],
-            labels[train].astype(int),
+            labels[train] if regression else labels[train].astype(int),
             rows,
             threads,
             seed,
@@ -278,6 +364,8 @@ def out_of_fold_scores(
             n_extra,
             balanced,
             bits,
+            None if weights is None else weights[train],
+            regression,
         )
         scores[test] = predicted[: int(test.sum())]
         if test_total is not None:
@@ -364,7 +452,19 @@ def main() -> None:
         type=int,
         help="run only the first folds, for a timing run; the report covers their compounds",
     )
+    parser.add_argument(
+        "--label-mode",
+        choices=LABEL_MODES,
+        default="hard",
+        help="LightGBM only. hard: the 0/1 label. drop_ambiguous: leave compounds whose measured "
+        "shift is within --ambiguity-z standard errors of the 2-fold line out of training. soft: "
+        "weight each label by how far its shift is from the line. shift: regress the measured "
+        "shift, weighted by its error. Evaluation always uses every label",
+    )
+    parser.add_argument("--ambiguity-z", type=float, default=1.0)
     args = parser.parse_args()
+    if args.label_mode != "hard" and args.model != "lightgbm":
+        parser.error("--label-mode other than hard is wired into the LightGBM model only")
     stacked = (
         args.stack_bundle
         or args.embedding_bundle
@@ -436,6 +536,10 @@ def main() -> None:
         labelled = labels[enzyme].to_numpy()
         truth = np.where(covered, labelled, np.nan)
         training = truth if args.train_on == "covered" else labelled
+        shift, z, error = shift_noise(table, enzyme)
+        training, weights, regression = label_mode_inputs(
+            args.label_mode, training, shift, z, error, args.ambiguity_z
+        )
         columns = features
         if args.direct_potency:
             potency = table[f"{enzyme}_pIC50_direct_inhibition"].to_numpy(dtype=np.float32)
@@ -454,6 +558,9 @@ def main() -> None:
             bits=n_bits,
             test_features=test_features,
             max_folds=args.max_folds,
+            evaluate=~np.isnan(truth),
+            weights=weights,
+            regression=regression,
         )
         out[f"{enzyme}_is_TDI"] = truth
         out[f"{enzyme}_score"] = scores
@@ -463,6 +570,9 @@ def main() -> None:
         y, s = truth[keep].astype(int), scores[keep]
         prevalence = float(y.mean())
         threshold, best = best_threshold_mcc(y, s)
+        strong = (y == 1) & (shift[keep] >= STRONG_SHIFT)
+        in_strong = (y == 0) | strong
+        top = np.argsort(-s)[: max(1, round(0.05 * len(s)))]
         rows.append(
             {
                 "enzyme": enzyme,
@@ -474,10 +584,26 @@ def main() -> None:
                 "best_threshold": threshold,
                 "ROC_AUC": float(roc_auc_score(y, s)),
                 "AP": float(average_precision_score(y, s)),
+                "AUC_strong": (
+                    float(roc_auc_score(strong[in_strong], s[in_strong]))
+                    if strong.any()
+                    else float("nan")
+                ),
+                "P@5%": float(y[top].mean()),
+                "MCC_live": float(
+                    np.mean(
+                        [
+                            reweighted_mcc(y, s, LIVE_PREVALENCE[enzyme], share)
+                            for share in (0.05, 0.10, 0.15, 0.20)
+                        ]
+                    )
+                ),
             }
         )
     report = pd.DataFrame(rows)
-    macro = report[["MCC@0.5", "MCC@prevalence", "MCC@best", "ROC_AUC", "AP"]].mean()
+    macro = report[
+        ["MCC@0.5", "MCC@prevalence", "MCC@best", "ROC_AUC", "AP", "AUC_strong", "P@5%", "MCC_live"]
+    ].mean()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(args.output, index=False)
     if test_out is not None:

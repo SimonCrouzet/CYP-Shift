@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import tdi_baseline as script  # noqa: E402 -- after the scripts path insert
@@ -74,3 +75,71 @@ def test_the_fold_models_also_score_the_test_features_and_a_timing_run_stops_ear
     )
     assert test_scores.shape == (7,) and ((test_scores >= 0) & (test_scores <= 1)).all()
     assert np.isnan(scores[folds == 2]).all() and not np.isnan(scores[folds < 2]).any()
+
+
+def _noise_table():
+    """Four compounds: clear positive, ambiguous, clear negative, and an inferred positive."""
+    return pd.DataFrame(
+        {
+            "CYP2D6_pIC50_direct_inhibition": [5.0, 5.0, 5.0, 3.5],
+            "CYP2D6_pIC50_TDI_condition": [6.0, 5.32, 5.0, 4.6],
+            "CYP2D6_pIC50_direct_inhibition_std": [0.05, 0.05, 0.05, 0.05],
+            "CYP2D6_pIC50_TDI_condition_std": [0.05, 0.05, 0.05, 0.05],
+        }
+    )
+
+
+def test_a_label_is_read_from_a_measured_shift_only_above_the_direct_floor():
+    shift, z, error = script.shift_noise(_noise_table(), "CYP2D6")
+    assert shift[:3].tolist() == pytest.approx([1.0, 0.32, 0.0])
+    assert np.isnan(shift[3]) and np.isnan(z[3]) and np.isnan(error[3])  # inferred, direct < 4
+    assert z[0] > 5 and abs(z[1]) < 1 < abs(z[2])
+    assert error[0] == pytest.approx(np.sqrt(2) * 0.05)
+
+
+def test_the_label_modes_leave_out_down_weight_or_replace_the_ambiguous_labels():
+    shift, z, error = script.shift_noise(_noise_table(), "CYP2D6")
+    labels = np.array([1.0, 1.0, 0.0, 1.0])
+    same, weights, regression = script.label_mode_inputs("hard", labels, shift, z, error)
+    assert same is labels and weights is None and not regression
+    dropped, weights, _ = script.label_mode_inputs("drop_ambiguous", labels, shift, z, error)
+    assert np.isnan(dropped[1]) and dropped[[0, 2, 3]].tolist() == [1.0, 0.0, 1.0]
+    kept, weights, _ = script.label_mode_inputs("soft", labels, shift, z, error)
+    assert weights[0] == 1.0 and weights[3] == 1.0  # clear and inferred labels keep full weight
+    assert weights[1] < 0.5 < weights[2] and kept is labels
+    target, weights, regression = script.label_mode_inputs("shift", labels, shift, z, error)
+    assert regression and target[:3].tolist() == pytest.approx([1.0, 0.32, 0.0])
+    assert np.isnan(target[3])  # no measured shift to regress
+    with pytest.raises(ValueError, match="label mode"):
+        script.label_mode_inputs("median", labels, shift, z, error)
+
+
+def test_a_regression_scores_by_the_predicted_value_with_weights_and_only_for_lightgbm():
+    rng = np.random.default_rng(2)
+    features = rng.normal(size=(120, 3))
+    target = features[:, 0] * 2.0
+    scores = script.fold_scores(
+        "lightgbm",
+        features[:90],
+        target[:90],
+        features[90:],
+        1,
+        0,
+        weights=np.ones(90),
+        regression=True,
+    )
+    assert np.corrcoef(scores, target[90:])[0, 1] > 0.7
+    with pytest.raises(ValueError, match="LightGBM"):
+        script.fold_scores("knn", features[:90], target[:90], features[90:], 1, 0, regression=True)
+
+
+def test_the_live_prevalence_reweighting_lowers_the_mcc_of_a_ranking_with_many_false_calls():
+    rng = np.random.default_rng(3)
+    truth = (rng.random(2000) < 0.3).astype(int)
+    score = truth + rng.normal(scale=1.2, size=2000)
+    plain = script.mcc_at_prevalence(truth, score, truth.mean())
+    live = script.reweighted_mcc(truth, score, 0.07, 0.07)
+    assert 0 < live < plain
+    assert script.reweighted_mcc(truth, score, truth.mean(), truth.mean()) == pytest.approx(
+        plain, abs=0.02
+    )

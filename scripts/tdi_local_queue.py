@@ -11,8 +11,11 @@ the end and the queue goes on with the next.
 
 Stages: ``lightgbm`` (three feature sets, with test scores), ``knn`` (Tanimoto neighbours),
 ``tabpfn`` (a one-fold timing run on the CheMeleon + dense set, 128 components; its time says
-whether the full run fits the 8 GB GPU), ``graph`` (seeds 1 and 2 of the TDI-fold graph cell with
-the label rows of compounds without a direct curve at weight 0; hours each on this GPU).
+whether the full run fits the 8 GB GPU), ``noise`` (LightGBM on the CheMeleon + dense set with the
+labels as given, without the ones whose measured shift is within one standard error of the 2-fold
+line, down-weighted by that distance, and replaced by the measured shift), ``graph`` (seeds 1 and 2
+of the TDI-fold graph cell with the label rows of compounds without a direct curve at weight 0;
+hours each on this GPU).
 """
 
 import argparse
@@ -29,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNS = Path("data/tdi_runs")
 LOGS = RUNS / "queue_logs"
 BASELINE = "scripts/tdi_baseline.py"
-STAGES = ("lightgbm", "knn", "tabpfn", "graph")
+STAGES = ("lightgbm", "knn", "tabpfn", "noise", "graph")
 #: The graph cell whose seeds are run, and the name of its recipe in the bundles.
 GRAPH_CELL = "tdi5_label_b_reg_uncovered_0"
 GRAPH_NAME = "focus_tdi5_label_b_reg_uncovered_0_8352aa"
@@ -91,6 +94,15 @@ def jobs() -> list[Job]:
             *("--model", "tabpfn", "--features", "dense_chemeleon", "--pca", "128"),
             *("--max-folds", "1"),
             test=False,
+        ),
+        *(
+            baseline_job(
+                f"lgb_dense_chemeleon_{mode}",
+                "noise",
+                *("--features", "dense_chemeleon", "--label-mode", mode),
+                test=False,
+            )
+            for mode in ("hard", "drop_ambiguous", "soft", "shift")
         ),
         *(graph_job(seed) for seed in GRAPH_SEEDS),
     ]
