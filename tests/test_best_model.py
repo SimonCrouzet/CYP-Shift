@@ -52,7 +52,8 @@ def _spec(tmp_path: Path, weights=(0.75, 0.25), order=None) -> dict:
 def test_the_committed_spec_has_valid_recipes_and_weights_summing_to_one():
     spec = best_model.load_spec(Path(__file__).resolve().parents[1] / best_model.SPEC)
     best_model.check(spec)
-    assert set(spec["members"]) >= {"graph_rft"}
+    assert set(spec["members"]) >= {"graph_rft", "graph_chemeleon"}
+    assert set(spec["calibration"]["per_endpoint"]) <= set(ENZYMES)
 
 
 def test_weights_must_sum_to_one(tmp_path):
@@ -94,3 +95,39 @@ def test_build_standardises_each_endpoint_to_the_targets_and_records_provenance(
 def test_the_recipe_file_carries_the_member_name_and_its_settings():
     spec = {"members": {"m": {"recipe": {"model.kind": "boosted"}}}}
     assert best_model.recipe(spec, "m") == {"name": "m", "model.kind": "boosted"}
+
+
+def _calibrated(tmp_path: Path, calibration: dict, spread: float | None = None) -> pd.DataFrame:
+    spec = _spec(tmp_path)
+    spec["calibration"].update(calibration)
+    return pd.read_csv(best_model.build(spec, tmp_path / "out" / "candidate.csv", spread))
+
+
+def test_an_endpoint_takes_its_own_spread_and_mean_shift_and_the_others_the_global_spread(tmp_path):
+    built = _calibrated(
+        tmp_path, {"spread": 1.5, "per_endpoint": {"CYP2D6": {"spread": 2.0, "shift": 0.5}}}
+    )
+    for enzyme in ENZYMES:
+        column = f"{enzyme}_pIC50_direct_inhibition"
+        mean, sd = (4.5, 1.0) if enzyme == "CYP2D6" else (4.0, 0.75)
+        assert built[column].mean() == pytest.approx(mean)
+        assert built[column].std(ddof=0) == pytest.approx(sd)
+
+
+def test_an_endpoint_with_only_a_shift_keeps_the_global_spread(tmp_path):
+    built = _calibrated(tmp_path, {"per_endpoint": {"CYP1A2": {"shift": 0.1}}}, spread=2.0)
+    column = "CYP1A2_pIC50_direct_inhibition"
+    assert built[column].mean() == pytest.approx(4.1)
+    assert built[column].std(ddof=0) == pytest.approx(1.0)
+
+
+def test_the_build_records_the_per_endpoint_calibration(tmp_path):
+    own = {"CYP3A4": {"spread": 1.0, "shift": 0.1}}
+    _calibrated(tmp_path, {"per_endpoint": own})
+    provenance = json.loads((tmp_path / "out" / "candidate.provenance.json").read_text())
+    assert provenance["per_endpoint"] == own
+
+
+def test_a_per_endpoint_entry_naming_no_target_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="CYP9Z9"):
+        _calibrated(tmp_path, {"per_endpoint": {"CYP9Z9": {"spread": 1.2}}})

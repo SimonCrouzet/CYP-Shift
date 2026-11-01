@@ -4,7 +4,9 @@
 A member is a recipe (the dotted settings of an ``ExperimentConfig``, the ones a cell of
 ``scripts/night_run.py`` sets) refit on all the training data with its own ensemble of members. The
 model is the weighted mean of the members' predictions per endpoint, with each endpoint then
-standardised to the calibration targets.
+standardised to the calibration targets. The spec's ``calibration.spread`` multiplies every target's
+spread; an optional ``calibration.per_endpoint`` maps an endpoint (``CYP2D6``) to its own ``spread``
+and a ``shift`` added to the target mean, both of which win over the global spread.
 
     python scripts/best_model.py check
     python scripts/best_model.py recipe MEMBER OUTPUT
@@ -84,6 +86,26 @@ def _sha256(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def calibration_targets(calibration: dict, spread: float | None = None) -> dict:
+    """The calibration targets with each endpoint's spread and mean already adjusted: its own
+    ``per_endpoint`` spread, else the global one (``spread`` if given, else the spec's), and its
+    ``shift`` added to the mean."""
+    targets = json.loads(Path(calibration["targets"]).read_text())
+    spread = calibration.get("spread", 1.0) if spread is None else spread
+    own = calibration.get("per_endpoint", {})
+    unknown = sorted(set(own) - set(targets))
+    if unknown:
+        raise ValueError(f"per_endpoint names no calibration target: {unknown}")
+    return {
+        enzyme: {
+            **target,
+            "mean": target["mean"] + own.get(enzyme, {}).get("shift", 0.0),
+            "sd": target["sd"] * own.get(enzyme, {}).get("spread", spread),
+        }
+        for enzyme, target in targets.items()
+    }
+
+
 def build(spec: dict, output: Path, spread: float | None = None) -> Path:
     """Blend, standardise to the calibration targets and write the candidate and its provenance."""
     output = Path(output)
@@ -93,8 +115,8 @@ def build(spec: dict, output: Path, spread: float | None = None) -> Path:
     blended.to_csv(uncalibrated, index=False)
     calibration = spec["calibration"]
     spread = calibration.get("spread", 1.0) if spread is None else spread
-    targets = json.loads(Path(calibration["targets"]).read_text())
-    calibration_probe.apply_targets(uncalibrated, targets, output, None, spread)
+    targets = calibration_targets(calibration, spread)
+    calibration_probe.apply_targets(uncalibrated, targets, output, None)
     revision = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -102,6 +124,7 @@ def build(spec: dict, output: Path, spread: float | None = None) -> Path:
         "model": spec["name"],
         "git_revision": revision,
         "spread": spread,
+        "per_endpoint": calibration.get("per_endpoint", {}),
         "targets": calibration["targets"],
         "members": {
             name: {
@@ -128,7 +151,11 @@ def main() -> None:
     recipe_parser.add_argument("output", type=Path)
     build_parser = sub.add_parser("build", help="Blend the members' files and calibrate.")
     build_parser.add_argument("--output", type=Path)
-    build_parser.add_argument("--spread", type=float, help="Factor on every target's spread.")
+    build_parser.add_argument(
+        "--spread",
+        type=float,
+        help="Factor on every target's spread; an endpoint's own per_endpoint spread still wins.",
+    )
     args = parser.parse_args()
     spec = load_spec(args.spec)
     if args.command == "check":
