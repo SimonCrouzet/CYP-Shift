@@ -7,6 +7,12 @@
 # if another family wins stage one. Auxiliary data (chembl/sair/octant/veith, on one
 # distance axis) has its own stage in configs/sweep_auxiliary.yaml.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

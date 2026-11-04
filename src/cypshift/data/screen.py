@@ -197,42 +197,64 @@ def inhibited_fraction(log2_fold_change: np.ndarray) -> np.ndarray:
 
     No calibration is involved. This is the measured quantity in the units a
     dose-response curve predicts at that concentration, which is what lets a screen
-    reading constrain the curve directly instead of via a fitted pIC50 surrogate.
+    reading constrain the curve directly instead of via a fitted pIC50 screen_model.
     """
     return np.clip(1.0 - np.power(2.0, log2_fold_change), 0.0, 1.0)
 
 
-def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) -> pd.DataFrame:
+def response_observations(
+    screen: pd.DataFrame,
+    measurement_noise: float = 0.1,
+    assay: str = "direct_inhibition_screen",
+    kind: str = "fraction",
+) -> pd.DataFrame:
     """Screen readings as constraints on the curve, one row per compound and enzyme.
 
     Args:
         screen: The long single-concentration table.
-        measurement_noise: Half-width of the interval placed around each reading, as an
-            inhibited fraction. A single well with no replicate does not support a
-            tight bound.
+        measurement_noise: Half-width of the interval placed around each reading, in the units
+            of ``kind``. A single well with no replicate does not support a tight bound.
+        assay: The assay tag stamped on each row. The default feeds the curve model, which
+            reads the screen as a point on the very curve it predicts; passing
+            :data:`cypshift.data.assembly.SCREEN_RESPONSE_ASSAY` instead routes the same
+            fractions to the graph's dedicated response head.
+        kind: ``fraction`` (default) emits the inhibited fraction in [0, 1]; ``log2fc`` emits
+            the raw measured log2 fold-change untransformed (for the ``log2fc_response``
+            strategy and ``SCREEN_LOG2FC_ASSAY``), so the screen enters as a measurement in its
+            own units rather than a squashed fraction.
 
     Returns:
-        Rows carrying the inhibited fraction and an interval around it, ready to be
-        compared against the curve evaluated at the screen concentration.
+        Rows carrying the reading and an interval around it, ready to be compared against the
+        curve evaluated at the screen concentration (fraction) or against a response head.
     """
+    if kind not in ("fraction", "log2fc"):
+        raise ValueError(f"unknown response kind {kind!r}; expected 'fraction' or 'log2fc'")
     rows = []
     for isoform in ISOFORMS:
         block = screen[screen["enzyme"] == isoform]
         if block.empty:
             continue
-        fraction = inhibited_fraction(block[FOLD_CHANGE_COLUMN].to_numpy(float))
+        raw = block[FOLD_CHANGE_COLUMN].to_numpy(float)
+        if kind == "log2fc":
+            value = raw
+            low, high = value - measurement_noise, value + measurement_noise
+        else:
+            value = inhibited_fraction(raw)
+            low = np.clip(value - measurement_noise, 0.0, 1.0)
+            high = np.clip(value + measurement_noise, 0.0, 1.0)
         rows.append(
             pd.DataFrame(
                 {
                     "Molecule_Name": block["Molecule_Name"].to_numpy(),
                     "SMILES": block["SMILES"].to_numpy(),
                     "target": isoform,
-                    "assay": "direct_inhibition_screen",
-                    "value": fraction,
-                    "conf_low": np.clip(fraction - measurement_noise, 0.0, 1.0),
-                    "conf_high": np.clip(fraction + measurement_noise, 0.0, 1.0),
+                    "assay": assay,
+                    "value": value,
+                    "conf_low": low,
+                    "conf_high": high,
                     "is_censored": False,
-                    "tier": "challenge",
+                    "data_space": "challenge",
+                    "source": "screen",
                 }
             )
         )
@@ -245,7 +267,7 @@ def response_observations(screen: pd.DataFrame, measurement_noise: float = 0.1) 
         "conf_low",
         "conf_high",
         "is_censored",
-        "tier",
+        "data_space",
     ]
     if not rows:
         # No compound in this subset has a screen reading. An empty result is the

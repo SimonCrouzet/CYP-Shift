@@ -13,7 +13,7 @@ deduplicated regardless.
 
 Source: https://huggingface.co/datasets/openadmet/Octant_CYP_inhibition_reactivity_blog_release
 (CC-BY-4.0). Its 30-minute active-enzyme preincubation means the readout captures
-reversible plus metabolite/time-dependent inhibition -- relevant to the CYP3A4 TDI arm.
+reversible plus metabolite/time-dependent inhibition -- relevant to the CYP3A4 TDI assay_condition.
 """
 
 import logging
@@ -25,6 +25,9 @@ from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
 
 logger = logging.getLogger(__name__)
 
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50",)
+
 DEFAULT_TSV = Path("data/external/octant/inhibition.tsv")
 #: The only enzyme this source covers.
 OCTANT_ENZYME = "CYP3A4"
@@ -33,6 +36,7 @@ OCTANT_ENZYME = "CYP3A4"
 def load_auxiliary(
     enzyme: str,
     challenge_smiles: pd.Series,
+    dedup_mode: str = "canonical_smiles",
     cache: Path = DEFAULT_TSV,
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Octant rows for one enzyme.
@@ -67,7 +71,7 @@ def load_auxiliary(
     frame["conf_low"] = frame["conf_low"].fillna(frame["value"])
     frame["conf_high"] = frame["conf_high"].fillna(frame["value"])
 
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Octant: %d CYP3A4 compounds after cleaning and dedup", len(deduplicated))
     return deduplicated

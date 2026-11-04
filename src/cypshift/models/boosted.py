@@ -16,6 +16,7 @@ governed by the learning rate rather than by curvature.
 """
 
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,16 +25,9 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from cypshift.config import (
-    ASSAY_FLOOR_PIC50,
-    ISOFORMS,
-    REGRESSION_ENDPOINTS,
-    TDI_SHIFT_THRESHOLD,
-)
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import ASSAYS, encode_conditions
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise
+from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.models.base import (
     PredictiveDistribution,
     active_stages,
@@ -41,6 +35,7 @@ from cypshift.models.base import (
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +74,56 @@ def soft_threshold_gradient(
     return objective
 
 
+def expectile_gradient(
+    tau: float, weight: NDArray[np.float64]
+) -> Callable[[NDArray[np.float64], NDArray[np.float64]], tuple[NDArray, NDArray]]:
+    """LightGBM gradient and Hessian for the asymmetric-least-squares (expectile) loss.
+
+    ``tau > 0.5`` weights under-prediction more heavily, so the fit errs high -- the bias the
+    soft-threshold metric rewards, because narrow active bands punish under-prediction most.
+    Unlike the dead-zone loss it has a gradient everywhere, so it preserves spread, and unlike
+    pinball it has a non-zero (piecewise-constant) Hessian, which LightGBM's second-order step
+    needs. Per-row weight is multiplied in, as for soft_threshold (LightGBM ignores it here).
+    """
+
+    def objective(
+        y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        side = np.where(y_true > y_pred, tau, 1.0 - tau)
+        gradient = 2.0 * side * (y_pred - y_true)
+        hessian = 2.0 * side
+        return gradient * weight, hessian * weight
+
+    return objective
+
+
+def pinball_gradient(
+    tau: float, weight: NDArray[np.float64]
+) -> Callable[[NDArray[np.float64], NDArray[np.float64]], tuple[NDArray, NDArray]]:
+    """LightGBM gradient and Hessian for the pinball (quantile) loss at level ``tau``.
+
+    Elicits the ``tau`` conditional quantile; ``tau > 0.5`` penalises under-prediction more.
+    The loss is piecewise linear so its true Hessian is zero; a constant stands in (as for
+    soft_threshold) to bound the step. Per-row weight multiplied in.
+    """
+
+    def objective(
+        y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        gradient = np.where(y_true > y_pred, -tau, 1.0 - tau)
+        return gradient * weight, np.ones_like(y_pred) * weight
+
+    return objective
+
+
+def fit_threads() -> dict[str, int]:
+    """LightGBM's ``n_jobs`` from ``OMP_NUM_THREADS`` when it is set. Left alone, LightGBM uses
+    every core the machine reports whatever share this process was given, which stalls fits that
+    run side by side."""
+    value = os.environ.get("OMP_NUM_THREADS", "")
+    return {"n_jobs": int(value)} if value.isdigit() and int(value) > 0 else {}
+
+
 class BoostedTrees:
     """One boosted model over every isoform, conditioned on target and assay."""
 
@@ -91,12 +136,13 @@ class BoostedTrees:
         assays: tuple[str, ...] = ASSAYS,
         conditioning: str = "factorised",
         n_bits: int = 2048,
+        use_fingerprint: bool = True,
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
         use_structure: bool = False,
         structure_cache: str = "data/structure",
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         n_estimators: int = 600,
         learning_rate: float = 0.05,
         num_leaves: int = 63,
@@ -105,6 +151,7 @@ class BoostedTrees:
         colsample_bytree: float = 0.6,
         n_members: int = 5,
         loss: str = "soft_threshold",
+        tau: float = 0.5,
         seed: int = 0,
         training: object | None = None,
         molecular_embedding: str = "none",
@@ -119,6 +166,7 @@ class BoostedTrees:
         #: Which molecular feature blocks to include and the fingerprint radius.
         #: These are read by featurise; toggling physchem changes the dense-block width,
         #: which the scaler follows. Swept via features.* in the config.
+        self.use_fingerprint = use_fingerprint
         self.physchem = physchem
         self.mechanism = mechanism
         self.fingerprint_radius = fingerprint_radius
@@ -128,8 +176,8 @@ class BoostedTrees:
         self.structure_cache = structure_cache
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
-        #: rows. See :mod:`cypshift.data.surrogate`.
-        self.surrogate = surrogate
+        #: rows. See :mod:`cypshift.data.screen_model`.
+        self.screen_model = screen_model
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
@@ -138,6 +186,7 @@ class BoostedTrees:
         self.colsample_bytree = colsample_bytree
         self.n_members = n_members
         self.loss = loss
+        self.tau = tau
         self.seed = seed
         #: Training curriculum (an object exposing ``.stages``), or None for one pooled
         #: stage. The tree has no trunk, so a multi-stage curriculum continues boosting
@@ -154,17 +203,17 @@ class BoostedTrees:
     def _features(self, smiles: list[str], encoding: NDArray[np.float32]) -> NDArray[np.float32]:
         return np.hstack(
             [
-                featurise(
+                molecular_feature_matrix(
                     smiles,
                     n_bits=self.n_bits,
-                    radius=self.fingerprint_radius,
+                    fingerprint_radius=self.fingerprint_radius,
+                    use_fingerprint=self.use_fingerprint,
                     physchem=self.physchem,
                     mechanism=self.mechanism,
-                    extra=self.surrogate,
-                    ionization=ionization_block_for(
-                        self.ionization_geometry, Path(self.ionization_cache)
-                    ),
-                    embedding=block_for(self.molecular_embedding),
+                    screen_model=self.screen_model,
+                    ionization_geometry=self.ionization_geometry,
+                    ionization_cache=self.ionization_cache,
+                    molecular_embedding=self.molecular_embedding,
                 ),
                 encoding,
             ]
@@ -195,8 +244,14 @@ class BoostedTrees:
         value = usable["value"].to_numpy(float)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
-        lower = np.where(usable["is_censored"].to_numpy(bool), -1e4, lower)
+        is_censored = usable["is_censored"].to_numpy(bool)
+        lower = np.where(is_censored, -1e4, lower)
         weight = usable["weight"].to_numpy(float)
+        if self.loss in ("squared", "absolute", "expectile", "pinball"):
+            # These objectives fit toward the point ``value``, which for a censored row is the
+            # clip, not a measurement; drop those rows (weight 0, so they leave the offset and
+            # every stage's gradient). soft_threshold keeps them, reading the bound from lower.
+            weight = np.where(is_censored, 0.0, weight)
 
         # A custom objective starts boosting from zero rather than from the label mean,
         # so predictions are offset by it and the trees learn the residual.
@@ -210,7 +265,7 @@ class BoostedTrees:
 
         # A curriculum trains the stages in order; the tree has no trunk to freeze, so a
         # later stage continues boosting from the previous stage's trees (init_model). One
-        # pooled stage over every tier reduces to a single fit, the previous behaviour.
+        # pooled stage over every data_space reduces to a single fit, the previous behaviour.
         stages = active_stages(
             usable, training_stages(self.training, self.n_estimators, self.learning_rate)
         )
@@ -229,11 +284,16 @@ class BoostedTrees:
                     colsample_bytree=self.colsample_bytree,
                     random_state=self.seed + member,
                     verbose=-1,
+                    **fit_threads(),
                 )
                 if self.loss == "soft_threshold":
                     parameters["objective"] = soft_threshold_gradient(
                         lower[mask] - self._offset, upper[mask] - self._offset, weight[mask]
                     )
+                elif self.loss == "expectile":
+                    parameters["objective"] = expectile_gradient(self.tau, weight[mask])
+                elif self.loss == "pinball":
+                    parameters["objective"] = pinball_gradient(self.tau, weight[mask])
                 elif self.loss in ("squared", "absolute"):
                     parameters["objective"] = (
                         "regression" if self.loss == "squared" else "regression_l1"
@@ -276,13 +336,14 @@ class BoostedTrees:
         return np.mean([m.predict(features) + self._offset for m in self._members], axis=0)
 
     def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
+        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
     ) -> NDArray[np.bool_]:
         """Time-dependent-inhibition call from *two scalar values* rather than two curves.
 
         The scalar counterpart of the curve model's comparison: predict the direct and
         preincubated pIC50 for each enzyme and apply the organisers' rule. Requires the
-        preincubated arm in training (``sources.tdi_arm``), or the tdi-assay prediction
+        preincubated assay_condition in training (``sources.tdi_assay_condition``), or the tdi-assay
+        prediction
         is untrained. Returns one column per isoform, matching the curve model's shape.
         """
         flags = []
@@ -292,8 +353,8 @@ class BoostedTrees:
             flags.append(
                 np.where(
                     direct > assay_floor,
-                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                    (preincubated - direct) > TDI_SHIFT_DEFAULT,
+                    preincubated > assay_floor + TDI_SHIFT_DEFAULT,
                 )
             )
         return np.stack(flags, axis=1)

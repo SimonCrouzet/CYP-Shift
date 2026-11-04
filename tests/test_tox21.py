@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from cypshift.data.tox21 import AID, _clean, load_auxiliary
+from cypshift.data.tox21 import AID, _clean, _max_response, load_auxiliary
 
 
 def test_median_over_replicate_potencies_becomes_pic50():
@@ -54,3 +54,41 @@ def test_reads_cache_and_deduplicates(tmp_path):
 
 def test_aid_map_covers_the_four_scored_enzymes():
     assert {"CYP1A2", "CYP2C9", "CYP2D6", "CYP3A4"} <= set(AID)
+
+
+def test_max_response_is_the_negated_replicate_median_on_a_0_1_scale():
+    raw = pd.DataFrame(
+        {
+            "PUBCHEM_ACTIVITY_OUTCOME": ["Active", "Inactive", "Inconclusive", "Inactive"],
+            "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO", "CCC", "CCCC", "CCCCC"],
+            "Max_Response-Replicate_1": ["FLOAT", None, -40.0, 12.0],
+            "Max_Response-Replicate_2": [-80.0, -10.0, -44.0, None],
+            "Max_Response-Replicate_3": [-100.0, -20.0, -50.0, None],
+        }
+    )
+    out = _max_response(raw).set_index("SMILES")
+    assert set(out.index) == {"CCO", "CCC", "CCCCC"}  # inconclusive dropped
+    assert out.loc["CCO", "value"] == pytest.approx(0.90)  # median of (-80, -100), text ignored
+    assert out.loc["CCC", "value"] == pytest.approx(0.15)
+    assert out.loc["CCCCC", "value"] == 0.0  # activation clips to zero
+    assert not out["is_censored"].any()
+
+
+def test_clean_routes_the_max_response_representation():
+    raw = pd.DataFrame(
+        {
+            "PUBCHEM_ACTIVITY_OUTCOME": ["Active"],
+            "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO"],
+            "Max_Response-Replicate_1": [-60.0],
+            "Potency-Replicate_1": [1.0],
+        }
+    )
+    assert _clean(raw, representation="max_response").loc[0, "value"] == pytest.approx(0.6)
+
+
+def test_a_deposit_without_max_response_columns_raises():
+    raw = pd.DataFrame(
+        {"PUBCHEM_ACTIVITY_OUTCOME": ["Active"], "PUBCHEM_EXT_DATASOURCE_SMILES": ["CCO"]}
+    )
+    with pytest.raises(KeyError, match="Max_Response-Replicate"):
+        _max_response(raw)

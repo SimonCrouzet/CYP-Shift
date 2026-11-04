@@ -104,12 +104,37 @@ def composition(pdb: str) -> dict[str, bool]:
 
 
 def crosscheck(pdb: str, accession: str) -> str:
-    """Confirm the PDB maps to this enzyme's UniProt and carries heme; return a note."""
+    """Report the PDB's heme and whether it maps to this enzyme's UniProt accession.
+
+    The accession was previously ignored, so the note silently claimed a mapping it never
+    checked. It now reads the PDB's polymer-entity UniProt references and flags a borrowed
+    (proxy) structure -- e.g. CYP2C18 using CYP2C9's deposit -- when the accession differs.
+    """
+    base = "https://data.rcsb.org/rest/v1/core"
     try:
-        entry = requests.get(f"https://data.rcsb.org/rest/v1/core/entry/{pdb}", timeout=60).json()
+        entry = requests.get(f"{base}/entry/{pdb}", timeout=60).json()
         ligs = entry.get("rcsb_entry_info", {}).get("nonpolymer_bound_components", []) or []
-        return f"bound_ligands={ligs} (heme present: {'HEM' in ligs})"
-    except Exception as error:  # noqa: BLE001
+        entity_ids = entry.get("rcsb_entry_container_identifiers", {}).get("polymer_entity_ids", [])
+        found: set[str] = set()
+        for entity_id in entity_ids:
+            poly = requests.get(f"{base}/polymer_entity/{pdb}/{entity_id}", timeout=60).json()
+            refs = (
+                poly.get("rcsb_polymer_entity_container_identifiers", {}).get(
+                    "reference_sequence_identifiers", []
+                )
+                or []
+            )
+            found.update(
+                r["database_accession"] for r in refs if r.get("database_name") == "UniProt"
+            )
+        if not accession:
+            mapping = f"uniprot={sorted(found)}"
+        elif accession in found:
+            mapping = f"maps to {accession}"
+        else:
+            mapping = f"PROXY: deposit is {sorted(found)}, not this enzyme's {accession}"
+        return f"heme_present={'HEM' in ligs}; {mapping}"
+    except Exception as error:  # noqa: BLE001 -- a best-effort provenance note, never fatal
         return f"crosscheck unavailable ({error})"
 
 

@@ -37,7 +37,7 @@ SCORED_ASSAY = "direct_inhibition_drc"
 class SharedEnsemble:
     """Structure-free model over a long observation table."""
 
-    name = "structure_free"
+    name = "proteochemometric"
 
     def __init__(
         self,

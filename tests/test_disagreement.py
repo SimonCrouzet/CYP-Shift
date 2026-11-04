@@ -93,3 +93,15 @@ def test_interval_applies_the_fitted_scale_to_new_compounds():
     narrow = fitted.interval(centre, spread=np.array([0.1, 0.1]))
     wide = fitted.interval(centre, spread=np.array([2.0, 2.0]))
     assert (wide[1] - wide[0] > narrow[1] - narrow[0]).all()
+
+
+def test_zero_disagreement_yields_a_positive_floored_interval():
+    """Fit and application must share one floored formula; otherwise a no-disagreement
+    calibration produced a huge scale yet zero-width intervals (F11)."""
+    import numpy as np
+
+    from cypshift.eval.disagreement import calibrate_width
+
+    fitted = calibrate_width(spread=np.zeros(20), residual=np.ones(20), level=0.9)
+    lo, hi = fitted.interval(np.zeros(3), spread=np.zeros(3))
+    assert np.all(hi - lo > 0)

@@ -17,6 +17,7 @@ from cypshift.decision.calibration import ConformalCalibrator
 from cypshift.eval.scoring import paired_difference, score_submission
 from cypshift.eval.uncertainty import summarise
 from cypshift.experiment import ExperimentConfig
+from cypshift.local_env import load_local_env
 from cypshift.models.boosted import BoostedTrees
 from cypshift.models.ensemble import PerTargetEnsemble
 from cypshift.models.forest import PerTargetForest
@@ -26,6 +27,12 @@ from cypshift.pipeline import assemble_training_data, build_model
 app = typer.Typer(add_completion=False, help="CYP-Shift: CYP inhibition prediction.")
 
 logger = logging.getLogger(__name__)
+
+
+@app.callback()
+def _load_tokens() -> None:
+    """Make the tokens in the gitignored ``local.machine.env`` visible to every command."""
+    load_local_env()
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -196,7 +203,10 @@ def baseline(
 @app.command()
 def submit(
     output: Annotated[Path, typer.Argument(help="Where to write the submission CSV.")],
-    directory: Path = DEFAULT_DATA_DIR,
+    directory: Annotated[
+        Path | None,
+        typer.Option(help="Data root; defaults to the config's data.directory."),
+    ] = None,
     config_path: Annotated[
         Path | None,
         typer.Option("--config", help="Experiment config; defaults to configs/default.json."),
@@ -214,39 +224,64 @@ def submit(
     ``Molecule_Name`` and ``SMILES``, and the labels stay with the organisers.
 
     ``--track`` picks which leaderboard the run is for, and the two want different
-    models. The classification track needs the preincubated arm in training, without
-    which a curve model answers "no" for every compound and scores MCC 0.0; that arm
+    models. The classification track needs the preincubated assay_condition in training, without
+    which a curve model answers "no" for every compound and scores MCC 0.0; that assay_condition
     costs about 0.04 macro ST-RAE on the regression track at every weight tried. Since
     the tracks are scored separately there is no reason to compromise -- run this twice.
 
     Each track writes exactly the columns its leaderboard wants, always led by
     ``SMILES`` and ``Molecule_Name``: the four pIC50 columns for regression, the two
     ``is_TDI`` booleans for classification. The classification track therefore needs a
-    model that can produce TDI calls -- the label compares the preincubated arm's
-    midpoint against the direct arm's, so a model emitting one pIC50 has nothing to
+    model that can produce TDI calls -- the label compares the preincubated assay_condition's
+    midpoint against the direct assay_condition's, so a model emitting one pIC50 has nothing to
     compare and the command refuses rather than write an invalid file.
     """
     _configure_logging(verbose)
     if track not in ("regression", "classification"):
         raise typer.BadParameter('track must be "regression" or "classification"')
     config = ExperimentConfig.load(config_path) if config_path else ExperimentConfig.load()
-    # The preincubated arm is what makes the classification track work -- without it a
-    # curve model answers "no" for every compound -- and it costs about 0.04 macro
-    # ST-RAE on the regression track at every weight tried. The tracks are scored on
-    # separate leaderboards, so each gets the model that suits it.
-    config.sources.tdi_arm = track == "classification"
+    # Resolve a single data root: an explicit --directory wins, otherwise the config's own
+    # directory is honoured rather than silently overwritten by the CLI default. The resolved
+    # path is then used for both config.data.directory (which assemble_training_data reads for
+    # the screen/TDI/exclusion data) and the train/test loads, so they cannot diverge.
+    directory = Path(directory) if directory is not None else Path(config.data.directory)
+    config.data.directory = str(directory)
+    # The classification track needs the preincubated assay_condition, so require it rather than
+    # silently flipping the regression track's off: the submitted recipe stays the one that
+    # was validated, and a config that deliberately kept the assay_condition on for regression is
+    # honoured.
+    if (
+        track == "classification"
+        and not config.sources.tdi_assay_condition
+        and not config.sources.tdi_label
+    ):
+        logger.info(
+            "classification track needs the preincubated assay_condition; "
+            "enabling sources.tdi_assay_condition"
+        )
+        config.sources.tdi_assay_condition = True
     config.validate()
 
     train = load("inhibition", directory)
     test = load("test", directory)
     logger.info("training on all %d compounds, predicting %d", len(train), len(test))
 
-    observations, surrogate = assemble_training_data(config, train)
+    # Full-data fit: only the blinded-test compounds are kept out of the TDI assay_condition.
+    observations, screen_model = assemble_training_data(
+        config, train, exclude_names=set(test["Molecule_Name"])
+    )
     scored = list(ISOFORMS)
     present = observations.get("target", [])
     extra = [t for t in dict.fromkeys(present) if t not in scored]
-    model = build_model(config, surrogate, targets=tuple(scored + sorted(extra)))
+    model = build_model(config, screen_model, targets=tuple(scored + sorted(extra)))
+    # Check the model can serve the track before the expensive fit, not after.
+    if track == "classification" and not hasattr(model, "predict_is_time_dependent"):
+        raise typer.BadParameter(
+            f"{model.name} cannot predict TDI; the classification track needs a model that can"
+        )
     model.fit(observations)
+    # Persist the exact recipe that produced the file, next to it.
+    config.save(output.parent / f"{output.stem}.config.json")
 
     # The leaderboard keys on Molecule_Name but requires the SMILES column too, and
     # validates the exact column set per track, so each track writes only its own.
@@ -257,10 +292,6 @@ def submit(
             submission[endpoint] = prediction.mean[:, column]
         required = list(REGRESSION_ENDPOINTS)
     else:
-        if not hasattr(model, "predict_is_time_dependent"):
-            raise typer.BadParameter(
-                f"{model.name} cannot predict TDI; the classification track needs a model that can"
-            )
         flags = model.predict_is_time_dependent(test["SMILES"].tolist())
         for endpoint in CLASSIFICATION_ENDPOINTS:
             submission[endpoint] = flags[:, list(ISOFORMS).index(endpoint.split("_")[0])]
@@ -292,7 +323,7 @@ def loss_ablation(
     """Train one architecture on each candidate objective and report every metric.
 
     A single-variable sweep: same network, same data, same split, same scoring, with
-    only the training objective changing. Every metric is reported for every arm
+    only the training objective changing. Every metric is reported for every assay_condition
     regardless of which one it trained on, since a model tuned for one can easily be
     worse on another and that trade is the thing worth seeing.
     """

@@ -29,7 +29,6 @@ almost no information about where a prediction is unreliable.
 """
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -37,12 +36,7 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import (
-    ASSAY_FLOOR_PIC50,
-    ISOFORMS,
-    REGRESSION_ENDPOINTS,
-    TDI_SHIFT_THRESHOLD,
-)
+from cypshift.config import ISOFORMS, REGRESSION_ENDPOINTS
 from cypshift.data.assembly import (
     ASSAYS,
     REFERENCE_ASSAY,
@@ -51,9 +45,7 @@ from cypshift.data.assembly import (
     n_conditions,
 )
 from cypshift.data.conditioning import descriptor_conditions
-from cypshift.features.embeddings import block_for
-from cypshift.features.ionization import block_for as ionization_block_for
-from cypshift.features.molecular import featurise, physicochemical
+from cypshift.features.assembly import molecular_feature_matrix
 from cypshift.features.scaling import BlockScaler
 from cypshift.models.base import (
     PredictiveDistribution,
@@ -62,6 +54,7 @@ from cypshift.models.base import (
     training_stages,
 )
 from cypshift.models.shared import SCORED_ASSAY
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +89,12 @@ def soft_threshold_loss(
     return ((above + below) * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
-OBJECTIVES = ("squared", "absolute", "soft_threshold")
+OBJECTIVES = ("squared", "absolute", "soft_threshold", "expectile", "pinball")
+
+#: Objectives that train toward the point ``value``; a censored row has no point target for
+#: them (its value is a clip), so it is excluded. ``soft_threshold`` reads the one-sided bound
+#: from the carriers and keeps censored rows.
+_POINT_OBJECTIVES = ("squared", "absolute", "expectile", "pinball")
 
 
 def _objective(
@@ -106,14 +104,26 @@ def _objective(
     lower: torch.Tensor,
     upper: torch.Tensor,
     weight: torch.Tensor,
+    tau: float = 0.5,
 ) -> torch.Tensor:
-    """Weighted mean of the requested per-row objective."""
+    """Weighted mean of the requested per-row objective.
+
+    ``expectile`` and ``pinball`` take ``tau``: at ``tau>0.5`` they penalise under-prediction
+    more, the upward bias the soft-threshold metric rewards, while keeping a gradient
+    everywhere (unlike the dead-zone loss) so the predicted spread does not collapse.
+    """
     if name == "soft_threshold":
         return soft_threshold_loss(prediction, lower, upper, weight)
     if name == "squared":
         per_row = (prediction - value) ** 2
     elif name == "absolute":
         per_row = (prediction - value).abs()
+    elif name == "expectile":
+        side = torch.where(value > prediction, tau, 1.0 - tau)
+        per_row = side * (value - prediction) ** 2
+    elif name == "pinball":
+        residual = value - prediction
+        per_row = torch.maximum(tau * residual, (tau - 1.0) * residual)
     else:
         raise ValueError(f"unknown objective {name!r}; expected one of {OBJECTIVES}")
     return (per_row * weight).sum() / weight.sum().clamp(min=1e-8)
@@ -282,7 +292,7 @@ class CalibratedMLP(nn.Module):
 class NeuralNetwork:
     """Structure-free model trained on the challenge's own loss."""
 
-    name = "structure_free_neural"
+    name = "proteochemometric_neural"
 
     def __init__(
         self,
@@ -291,10 +301,11 @@ class NeuralNetwork:
         assays: tuple[str, ...] = ASSAYS,
         conditioning: str = "factorised",
         n_bits: int = 2048,
+        use_fingerprint: bool = True,
         physchem: bool = True,
         mechanism: bool = True,
         fingerprint_radius: int = 2,
-        surrogate: object | None = None,
+        screen_model: object | None = None,
         hidden: int = 256,
         dropout: float = 0.2,
         epochs: int = 60,
@@ -302,6 +313,9 @@ class NeuralNetwork:
         learning_rate: float = 1e-3,
         n_forward_passes: int = 30,
         loss: str = "soft_threshold",
+        tau: float = 0.5,
+        tdi_shift_threshold: float = TDI_SHIFT_DEFAULT,
+        tdi_assay_floor: float = TDI_FLOOR_DEFAULT,
         embedding_dim: int = 8,
         descriptor_sources: tuple[str, ...] = ("curated",),
         seed: int = 0,
@@ -318,13 +332,14 @@ class NeuralNetwork:
         #: Which molecular feature blocks to include and the fingerprint radius.
         #: These are read by featurise; toggling physchem changes the dense-block width,
         #: which the scaler follows. Swept via features.* in the config.
+        self.use_fingerprint = use_fingerprint
         self.physchem = physchem
         self.mechanism = mechanism
         self.fingerprint_radius = fingerprint_radius
         #: Optional callable appended to the feature matrix, used to feed the
         #: single-concentration screen in as an input rather than as extra training
-        #: rows. See :mod:`cypshift.data.surrogate`.
-        self.surrogate = surrogate
+        #: rows. See :mod:`cypshift.data.screen_model`.
+        self.screen_model = screen_model
         self.hidden = hidden
         self.dropout = dropout
         self.epochs = epochs
@@ -332,13 +347,16 @@ class NeuralNetwork:
         self.learning_rate = learning_rate
         self.n_forward_passes = n_forward_passes
         self.loss = loss
+        self.tau = tau
+        self.tdi_shift_threshold = tdi_shift_threshold
+        self.tdi_assay_floor = tdi_assay_floor
         #: Width of the learned (target, assay) table when conditioning == "embedding".
         self.embedding_dim = embedding_dim
         #: Pocket-descriptor sources for the "descriptor" and "film" strategies.
         self.descriptor_sources = descriptor_sources
         self.seed = seed
         #: The training curriculum (an object exposing ``.stages``), or None for one
-        #: pooled stage over every tier -- the baseline.
+        #: pooled stage over every data_space -- the baseline.
         self.training = training
         #: Which cached foundation-model embedding to append, or "none".
         self.molecular_embedding = molecular_embedding
@@ -351,15 +369,17 @@ class NeuralNetwork:
     def _features(
         self, smiles: list[str], one_hot: NDArray[np.float32] | None = None
     ) -> NDArray[np.float32]:
-        molecular = featurise(
+        molecular = molecular_feature_matrix(
             smiles,
             n_bits=self.n_bits,
-            radius=self.fingerprint_radius,
+            fingerprint_radius=self.fingerprint_radius,
+            use_fingerprint=self.use_fingerprint,
             physchem=self.physchem,
             mechanism=self.mechanism,
-            extra=self.surrogate,
-            ionization=ionization_block_for(self.ionization_geometry, Path(self.ionization_cache)),
-            embedding=block_for(self.molecular_embedding),
+            screen_model=self.screen_model,
+            ionization_geometry=self.ionization_geometry,
+            ionization_cache=self.ionization_cache,
+            molecular_embedding=self.molecular_embedding,
         )
         if one_hot is None:
             return molecular.astype(np.float32)
@@ -370,48 +390,60 @@ class NeuralNetwork:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Scaled molecular features and, for the embedding strategy, condition indices.
 
-        Returns ``(features, index)`` where ``index`` is None unless conditioning is
-        ``embedding``. The embedding path keeps the condition out of the scaled feature
-        block -- it is looked up in a learned table inside the model instead of being
-        one-hot columns fed through the scaler.
+        The molecular block is scaled on its own and the (sparse one-hot or low-cardinality
+        descriptor) condition is appended raw afterwards, so standardising never fills in
+        the condition's zeros. Returns ``(features, index)`` where ``index`` is None unless
+        conditioning is ``embedding``/``heads``, which look the condition up in a learned
+        table rather than feeding it as columns.
         """
+        molecular = self._scale_blocks(self._features(smiles), fit=fit)
         if self.conditioning == "calibration":
             # The trunk conditions on the enzyme (target one-hot in the features); the
             # assay is not an input but an index into the per-assay calibration bias.
-            target_hot = np.array(
+            target_hot = torch.tensor(
                 [[t == name for name in self.targets] for t in frame["target"]],
-                dtype=np.float32,
+                dtype=torch.float32,
             )
-            features = self._scale_blocks(self._features(smiles, target_hot), fit=fit)
             assay_index = torch.tensor(
                 [self.assays.index(a) for a in frame["assay"]], dtype=torch.long
             )
-            return features, assay_index
+            return torch.cat([molecular, target_hot], dim=1), assay_index
         if self.conditioning in ("embedding", "heads"):
-            features = self._scale_blocks(self._features(smiles), fit=fit)
             index = torch.tensor(
                 condition_index(frame, self.targets, self.assays), dtype=torch.long
             )
-            return features, index
+            return molecular, index
         if self.conditioning == "film":
-            features = self._scale_blocks(self._features(smiles), fit=fit)
             block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
-            return features, torch.tensor(block, dtype=torch.float32)
+            return molecular, torch.tensor(block, dtype=torch.float32)
         if self.conditioning == "descriptor":
-            block = descriptor_conditions(frame, self.assays, self.descriptor_sources)
-            return self._scale_blocks(self._features(smiles, block), fit=fit), None
-        one_hot = encode_conditions(frame, self.conditioning, self.targets, self.assays)
-        return self._scale_blocks(self._features(smiles, one_hot), fit=fit), None
+            block = torch.tensor(
+                descriptor_conditions(frame, self.assays, self.descriptor_sources),
+                dtype=torch.float32,
+            )
+            return torch.cat([molecular, block], dim=1), None
+        one_hot = torch.tensor(
+            encode_conditions(frame, self.conditioning, self.targets, self.assays),
+            dtype=torch.float32,
+        )
+        return torch.cat([molecular, one_hot], dim=1), None
 
-    def _scale_blocks(self, features: NDArray[np.float32], fit: bool) -> torch.Tensor:
-        """Apply per-kind scaling: log1p counts, standardise descriptors, pass the rest."""
+    def _scale_blocks(self, molecular: NDArray[np.float32], fit: bool) -> torch.Tensor:
+        """Scale the molecular block: log1p the fingerprint counts, standardise every dense
+        descriptor after it -- physchem, mechanistic, screen_model, ionization and embedding --
+        rather than physchem alone, which left the appended continuous blocks unscaled."""
         if fit:
-            n_dense = len(physicochemical(["CCO"]).columns) if self.physchem else 0
-            self._scaler = BlockScaler(n_count_columns=self.n_bits, n_dense_columns=n_dense)
-            self._scaler.fit(features)
+            # The count block is the Morgan fingerprint, which is absent when use_fingerprint is
+            # off; counting its columns then would log1p the leading dense descriptors (and turn
+            # a negative descriptor into NaN).
+            n_count = self.n_bits if self.use_fingerprint else 0
+            self._scaler = BlockScaler(
+                n_count_columns=n_count, n_dense_columns=molecular.shape[1] - n_count
+            )
+            self._scaler.fit(molecular)
         if self._scaler is None:
             raise RuntimeError("model is not fitted")
-        return torch.from_numpy(self._scaler.transform(features))
+        return torch.from_numpy(self._scaler.transform(molecular))
 
     def fit(self, observations: pd.DataFrame) -> "NeuralNetwork":
         """Train on the observation table, using each row's own interval.
@@ -426,14 +458,22 @@ class NeuralNetwork:
 
         features, condition = self._encode(usable, usable["SMILES"].tolist(), fit=True)
         value = usable["value"].to_numpy(float)
+        is_censored = usable["is_censored"].to_numpy(bool)
         lower = np.where(np.isfinite(usable["conf_low"]), usable["conf_low"], value)
         upper = np.where(np.isfinite(usable["conf_high"]), usable["conf_high"], value)
-        lower = np.where(usable["is_censored"].to_numpy(bool), -UNBOUNDED, lower)
+        lower = np.where(is_censored, -UNBOUNDED, lower)
+
+        weight = usable["weight"].to_numpy(float)
+        if self.loss in _POINT_OBJECTIVES:
+            # A two-sided point objective trains toward ``value``, which for a censored row is
+            # the clip, not a measurement; drop those rows from it (weight 0). The one-sided
+            # soft-threshold objective keeps them, reading the bound from lower/upper.
+            weight = np.where(is_censored, 0.0, weight)
 
         lower_t = torch.tensor(lower, dtype=torch.float32)
         upper_t = torch.tensor(upper, dtype=torch.float32)
         value_t = torch.tensor(value, dtype=torch.float32)
-        weight_t = torch.tensor(usable["weight"].to_numpy(float), dtype=torch.float32)
+        weight_t = torch.tensor(weight, dtype=torch.float32)
 
         n_features = features.shape[1]
         n_cond = n_conditions(self.targets, self.assays)
@@ -493,6 +533,7 @@ class NeuralNetwork:
                         lower_t[index],
                         upper_t[index],
                         weight_t[index],
+                        self.tau,
                     )
                     batch_loss.backward()
                     optimiser.step()
@@ -509,8 +550,8 @@ class NeuralNetwork:
             mask = rows_for_stage(usable, stage)
             rows = all_rows[torch.tensor(mask)]
             logger.info(
-                "stage tiers=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
-                stage.tiers,
+                "stage data_spaces=%s assays=%s: %d rows, %d epochs, lr %.1e%s",
+                stage.data_spaces,
                 stage.assays or "all",
                 int(mask.sum()),
                 stage.epochs,
@@ -560,25 +601,26 @@ class NeuralNetwork:
                 passes.append(out.numpy())
         return np.mean(passes, axis=0)
 
-    def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = ASSAY_FLOOR_PIC50
-    ) -> NDArray[np.bool_]:
-        """TDI call from two scalar values -- see BoostedTrees.predict_is_time_dependent.
+    def predict_is_time_dependent(self, smiles: list[str]) -> NDArray[np.bool_]:
+        """TDI call by comparing the direct and preincubated assay_conditions, with swept
+        thresholds.
 
-        Requires the preincubated arm in training (``sources.tdi_arm``). One column per
-        isoform, matching the curve model's shape.
+        Requires the preincubated assay_condition in training (``sources.tdi_assay_condition``). One
+        column per
+        isoform, matching the curve and graph models' shape.
         """
         if self._model is None:
             raise RuntimeError("model is not fitted")
+        floor, shift = self.tdi_assay_floor, self.tdi_shift_threshold
         flags = []
         for enzyme in (e.split("_")[0] for e in REGRESSION_ENDPOINTS):
             direct = self._predict_pic50_at(smiles, enzyme, "direct_inhibition_drc")
             preincubated = self._predict_pic50_at(smiles, enzyme, "tdi_drc")
             flags.append(
                 np.where(
-                    direct > assay_floor,
-                    (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-                    preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+                    direct > floor,
+                    (preincubated - direct) > shift,
+                    preincubated > floor + shift,
                 )
             )
         return np.stack(flags, axis=1)

@@ -84,6 +84,15 @@ def _bootstrap_all_endpoints(
     n_repeats: int,
 ) -> dict[str, pd.DataFrame]:
     """Per-sample metrics for every endpoint plus the macro row."""
+    # An inner merge would silently drop any truth compound missing from the predictions,
+    # scoring a shrunken, easier set without error (dropping one badly predicted compound
+    # could flip the macro from 0.40 to 0.00). Require full coverage first; a caller that
+    # means to score a subset passes that subset as truth.
+    uncovered = set(truth[key]) - set(predictions[key])
+    if uncovered:
+        raise ValueError(
+            f"{len(uncovered)} truth compounds have no prediction (e.g. {next(iter(uncovered))})"
+        )
     merged = truth.merge(predictions, on=key, suffixes=("", "_pred"), validate="one_to_one")
     per_sample: dict[str, pd.DataFrame] = {}
     for endpoint in REGRESSION_ENDPOINTS:

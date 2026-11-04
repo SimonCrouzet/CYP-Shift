@@ -34,19 +34,20 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from cypshift.config import ISOFORMS, TDI_SHIFT_THRESHOLD
+from cypshift.config import ISOFORMS
 from cypshift.features.molecular import featurise, physicochemical
 from cypshift.features.scaling import BlockScaler
+from cypshift.models.tdi import TDI_FLOOR_DEFAULT, TDI_SHIFT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
 DIRECT, SHIFT = 0, 1
 UNBOUNDED = 1e4
 
-#: Which latent quantity an observation constrains. A direct-arm measurement pins
+#: Which latent quantity an observation constrains. A direct-assay_condition measurement pins
 #: ``direct``; a preincubated one pins ``direct + shift``; a screen reading is a
 #: censored view of ``direct``.
-ARM_DIRECT, ARM_PREINCUBATED = "direct", "preincubated"
+ASSAY_CONDITION_DIRECT, ASSAY_CONDITION_PREINCUBATED = "direct", "preincubated"
 
 
 class LatentPotencyNetwork(nn.Module):
@@ -86,7 +87,7 @@ def observation_loss(
 ) -> torch.Tensor:
     """Soft-threshold error against whichever latent quantity a row observes.
 
-    A direct-arm row is compared with ``direct``; a preincubated row with
+    A direct-assay_condition row is compared with ``direct``; a preincubated row with
     ``direct + shift``. The screen enters through its own wide, one-sided interval
     rather than through a separate term, since it measures the same quantity.
     """
@@ -141,7 +142,7 @@ class LatentPotencyModel:
         return torch.from_numpy(self._scaler.transform(matrix))
 
     def fit(self, observations: pd.DataFrame) -> "LatentPotencyModel":
-        """Train on the observation table, using each row's arm and interval.
+        """Train on the observation table, using each row's assay_condition and interval.
 
         Args:
             observations: Rows carrying ``SMILES``, ``target``, ``assay``, ``value``,
@@ -204,7 +205,8 @@ class LatentPotencyModel:
                     weight_t[batch],
                 )
                 # The shift is small and mostly zero; without a penalty the model can
-                # absorb direct-arm error into it wherever a compound has both arms.
+                # absorb direct-assay_condition error into it wherever a compound has both
+                # assay_conditions.
                 loss = loss + self.shift_penalty * shift.abs().mean()
                 loss.backward()
                 optimiser.step()
@@ -246,7 +248,7 @@ class LatentPotencyModel:
         return latent[..., DIRECT] + latent[..., SHIFT]
 
     def predict_is_time_dependent(
-        self, smiles: list[str], assay_floor: float = 4.0
+        self, smiles: list[str], assay_floor: float = TDI_FLOOR_DEFAULT
     ) -> NDArray[np.bool_]:
         """Apply the challenge's own labelling rule to the predicted latents.
 
@@ -260,6 +262,6 @@ class LatentPotencyModel:
         resolved = direct > assay_floor
         return np.where(
             resolved,
-            (preincubated - direct) > TDI_SHIFT_THRESHOLD,
-            preincubated > assay_floor + TDI_SHIFT_THRESHOLD,
+            (preincubated - direct) > TDI_SHIFT_DEFAULT,
+            preincubated > assay_floor + TDI_SHIFT_DEFAULT,
         )

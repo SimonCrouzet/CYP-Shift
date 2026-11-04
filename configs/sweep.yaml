@@ -14,6 +14,12 @@
 #
 # Bayesian rather than grid throughout, so a stage need not exhaust its space.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE

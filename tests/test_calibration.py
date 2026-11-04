@@ -109,3 +109,19 @@ def test_a_higher_nominal_level_gives_a_wider_interval():
     wide = ConformalCalibrator.fit(distribution, truth, level=0.95)
     for endpoint in ENDPOINTS:
         assert wide.multipliers[endpoint] > narrow.multipliers[endpoint]
+
+
+def test_apply_does_not_double_count_existing_aleatoric():
+    """The calibrated total must reach the conformal target, not target + prior aleatoric."""
+    from scipy.stats import norm
+
+    n = 5
+    samples = np.full((4, n, len(ENDPOINTS)), 5.0)  # zero sample spread -> epistemic 0
+    aleatoric = np.ones((4, n, len(ENDPOINTS)))  # already carries aleatoric variance 1
+    distribution = PredictiveDistribution(samples, ENDPOINTS, aleatoric)
+    assert np.allclose(distribution.total_std, 1.0)
+    z = norm.ppf(0.5 + 0.90 / 2)
+    # multiplier z, tiny floor => target variance == total_std**2 == 1
+    calibrator = ConformalCalibrator({e: z for e in ENDPOINTS}, {e: 1e-9 for e in ENDPOINTS}, 0.90)
+    out = calibrator.apply(distribution)
+    assert np.allclose(out.total_std, 1.0, atol=1e-6)  # not sqrt(2) from re-adding aleatoric

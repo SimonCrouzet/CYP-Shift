@@ -33,9 +33,12 @@ import numpy as np
 import pandas as pd
 
 from cypshift.data.chembl import PIC50_RANGE, deduplicate_against
-from cypshift.data.pubchem import download_assay
+from cypshift.data.pubchem import download_assay, max_response_inhibition
 
 logger = logging.getLogger(__name__)
+
+#: The quantities :func:`load_auxiliary` can return (see :mod:`cypshift.data.sources`).
+QUANTITIES = ("pic50", "max_response")
 
 DEFAULT_CACHE = Path("data/external/veith")
 
@@ -68,7 +71,16 @@ def detection_limit_pic50(raw: pd.DataFrame) -> float | None:
     return None if not concentrations else 6.0 - float(np.log10(max(concentrations)))
 
 
-def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
+def _max_response(named: pd.DataFrame) -> pd.DataFrame:
+    """The 0-1 inhibition at the maximal curve response (:func:`max_response_inhibition`)."""
+    if "Max_Response" not in named.columns:
+        raise KeyError("cannot use max_response: deposit has no 'Max_Response' column")
+    return max_response_inhibition(named, ["Max_Response"])
+
+
+def _clean(
+    raw: pd.DataFrame, include_inactives: bool = False, representation: str = "pic50"
+) -> pd.DataFrame:
     """Veith records into ``SMILES, value, conf_low, conf_high, is_censored`` on the pIC50 scale.
 
     Two deposit schemas appear across the panel: the newer ones carry ``Potency`` (AC50
@@ -84,6 +96,8 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
     (the default-off path) reproduces the earlier behaviour.
     """
     named = raw[raw["PUBCHEM_EXT_DATASOURCE_SMILES"].notna()]
+    if representation == "max_response":
+        return _max_response(named)
     frame = named[named["PUBCHEM_ACTIVITY_OUTCOME"] == "Active"].copy()
 
     if "Potency" in frame.columns:
@@ -134,30 +148,44 @@ def _clean(raw: pd.DataFrame, include_inactives: bool = False) -> pd.DataFrame:
 def load_auxiliary(
     enzyme: str,
     challenge_smiles: pd.Series,
+    dedup_mode: str = "canonical_smiles",
     cache: Path = DEFAULT_CACHE,
     include_inactives: bool = False,
+    representation: str = "pic50",
 ) -> pd.DataFrame:
     """Cleaned, challenge-deduplicated Veith rows for one enzyme.
 
     Returns columns ``SMILES``, ``value``, ``conf_low``, ``conf_high``, ``is_censored``,
-    ``target``. Empty for any enzyme Veith does not cover, so the source contributes only
-    where it has data. Downloads and caches on first use, since the PubChem paging is slow
-    and the answer does not change; the inactive-inclusive variant caches separately.
+    ``target``. ``representation`` chooses the quantity: ``pic50`` (fitted potency, with
+    ``include_inactives`` adding censored rows) or ``max_response`` (a 0-1 response for the
+    graph's auxiliary head). Empty for any enzyme Veith does not cover. Downloads and caches
+    on first use; each representation caches separately.
     """
     columns = ["SMILES", "value", "conf_low", "conf_high", "is_censored", "target"]
     if enzyme not in AID:
         return pd.DataFrame(columns=columns)
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"veith_{enzyme}{'_full' if include_inactives else ''}.csv"
+    # "_response_inhibition" marks the sign-corrected response: the "_response" caches written
+    # before it hold ``+Max_Response / 100`` (inhibitors at 0) and are not reused.
+    suffix = (
+        "_response_inhibition"
+        if representation == "max_response"
+        else ("_full" if include_inactives else "")
+    )
+    path = cache / f"veith_{enzyme}{suffix}.csv"
     if path.exists():
         frame = pd.read_csv(path)
     else:
-        frame = _clean(download_assay(AID[enzyme]), include_inactives=include_inactives)
+        frame = _clean(
+            download_assay(AID[enzyme]),
+            include_inactives=include_inactives,
+            representation=representation,
+        )
         frame.to_csv(path, index=False)
         logger.info(
             "Veith: cached %d %s compounds (inactives=%s)", len(frame), enzyme, include_inactives
         )
-    deduplicated = deduplicate_against(frame, challenge_smiles)
+    deduplicated = deduplicate_against(frame, challenge_smiles, dedup_mode)
     deduplicated["target"] = enzyme
     logger.info("Veith: %d %s compounds after dedup", len(deduplicated), enzyme)
     return deduplicated

@@ -1,6 +1,6 @@
 """The staged training curriculum shared across the model families.
 
-A stage selects data on two facets -- proximity ``tiers`` and data-type ``assays`` -- and
+A stage selects data on two facets -- proximity ``data_spaces`` and data-type ``assays`` -- and
 carries a swappable strategy (``epochs``, ``lr``, ``freeze_trunk``). The stage sequence is
 shared; each model applies its own transition mechanism.
 """
@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from cypshift.config import ISOFORMS
-from cypshift.data.assembly import TIERS, build_observations
+from cypshift.data.assembly import DATA_SPACES, build_observations
 from cypshift.experiment import CURRICULUM_PRESETS, ExperimentConfig, Stage, TrainingConfig
 from cypshift.models.base import ResolvedStage, active_stages, rows_for_stage, training_stages
 from cypshift.models.boosted import BoostedTrees
@@ -35,7 +35,7 @@ def _observations(seed=0):
     """Challenge dose-response rows plus a block of distant-auxiliary rows."""
     challenge = _challenge(seed)
     aux = challenge.head(12).copy()
-    aux["tier"] = "distant_aux"
+    aux["data_space"] = "distant_aux"
     aux["weight"] = 0.4
     return pd.concat([challenge, aux], ignore_index=True)
 
@@ -43,9 +43,9 @@ def _observations(seed=0):
 def _two_stage():
     return TrainingConfig(
         stages=[
-            Stage(tiers=("distant_aux", "near_aux"), epochs=2),
+            Stage(data_spaces=("distant_aux", "near_aux"), epochs=2),
             Stage(
-                tiers=("challenge",),
+                data_spaces=("challenge",),
                 assays=("direct_inhibition_drc",),
                 epochs=2,
                 freeze_trunk=True,
@@ -54,12 +54,12 @@ def _two_stage():
     )
 
 
-def test_training_stages_default_is_one_pooled_stage_over_every_tier():
-    assert training_stages(None, 60, 1e-3) == [ResolvedStage(TIERS, None, 60, 1e-3, False)]
+def test_training_stages_default_is_one_pooled_stage_over_every_data_space():
+    assert training_stages(None, 60, 1e-3) == [ResolvedStage(DATA_SPACES, None, 60, 1e-3, False)]
 
 
 def test_a_stage_reuses_the_models_epochs_and_lr_when_unset():
-    config = TrainingConfig(stages=[Stage(tiers=("challenge",))])
+    config = TrainingConfig(stages=[Stage(data_spaces=("challenge",))])
     resolved = training_stages(config, 40, 0.05)
     assert resolved[0].epochs == 40 and resolved[0].lr == pytest.approx(0.05)
 
@@ -68,25 +68,25 @@ def test_rows_for_stage_filters_on_both_facets():
     observations = _observations()
     challenge_drc = ResolvedStage(("challenge",), ("direct_inhibition_drc",), 1, 1e-3, False)
     mask = rows_for_stage(observations, challenge_drc)
-    assert (observations.loc[mask, "tier"] == "challenge").all()
-    # the aux rows share the assay but not the tier, so the facet pair excludes them
+    assert (observations.loc[mask, "data_space"] == "challenge").all()
+    # the aux rows share the assay but not the data_space, so the facet pair excludes them
     aux_drc = ResolvedStage(("distant_aux",), ("direct_inhibition_drc",), 1, 1e-3, False)
     assert rows_for_stage(observations, aux_drc).sum() == 12
 
 
 def test_active_stages_drop_facets_with_no_rows_this_run():
-    observations = _challenge()  # challenge tier only, direct_inhibition_drc only
+    observations = _challenge()  # challenge data_space only, direct_inhibition_drc only
     stages = training_stages(_two_stage(), 5, 1e-3)
     kept = active_stages(observations, stages)
-    assert [s.tiers for s in kept] == [("challenge",)]
+    assert [s.data_spaces for s in kept] == [("challenge",)]
 
 
 def test_active_stages_drop_an_absent_assay_facet():
     observations = _challenge()  # no TDI rows
     tdi_only = training_stages(
-        TrainingConfig(stages=[Stage(tiers=("challenge",), assays=("tdi_drc",))]), 5, 1e-3
+        TrainingConfig(stages=[Stage(data_spaces=("challenge",), assays=("tdi_drc",))]), 5, 1e-3
     )
-    # every stage empty -> fall back to one pooled stage over all tiers
+    # every stage empty -> fall back to one pooled stage over all data_spaces
     assert active_stages(observations, tdi_only)[0].assays is None
 
 
@@ -97,7 +97,7 @@ def test_preset_selects_a_named_curriculum():
 
 
 def test_preset_overrides_an_explicit_stage_list():
-    training = TrainingConfig(preset="pooled", stages=[Stage(tiers=("challenge",))])
+    training = TrainingConfig(preset="pooled", stages=[Stage(data_spaces=("challenge",))])
     assert training.effective_stages() == CURRICULUM_PRESETS["pooled"]
 
 
@@ -111,9 +111,9 @@ def test_unknown_preset_is_rejected_by_validation():
         ExperimentConfig(training=TrainingConfig(preset="nope")).validate()
 
 
-def test_unknown_tier_is_rejected_by_validation():
+def test_unknown_data_space_is_rejected_by_validation():
     config = ExperimentConfig()
-    config.training = TrainingConfig(stages=[Stage(tiers=("no_such_tier",))])
+    config.training = TrainingConfig(stages=[Stage(data_spaces=("no_such_data_space",))])
     with pytest.raises(ValueError, match="unknown"):
         config.validate()
 
@@ -161,7 +161,7 @@ def test_calibration_recovers_a_known_per_assay_offset():
                 conf_high=y,
                 weight=1.0,
                 is_censored=False,
-                tier="challenge",
+                data_space="challenge",
             )
         )
         rows.append(
@@ -175,7 +175,7 @@ def test_calibration_recovers_a_known_per_assay_offset():
                 conf_high=y + 1.5,
                 weight=1.0,
                 is_censored=False,
-                tier="near_aux",
+                data_space="near_aux",
             )
         )
     model = NeuralNetwork(

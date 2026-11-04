@@ -15,6 +15,12 @@
 # leaderboard and that for the science; where they disagree, the leave-one-target-out
 # result is the one about the descriptor.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: bayes
 metric:
   name: holdout/MA_ST-RAE
@@ -24,7 +30,7 @@ parameters:
   model.kind:
     value: curve
 
-  # heads is the baseline: one output head per enzyme and arm, no descriptor involved.
+  # heads is the baseline: one output head per enzyme and assay_condition, no descriptor involved.
   # descriptor concatenates a pocket vector, which a linear head reduces to a constant
   # per-enzyme offset -- measured at standard deviation 0.0000 across molecules. film
   # multiplies instead, so the enzyme can change how a molecular feature is used.

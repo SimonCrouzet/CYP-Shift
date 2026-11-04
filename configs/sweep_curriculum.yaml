@@ -4,10 +4,16 @@
 #
 # The presets are alternative *ways of fine-tuning* the same data, not different datasets:
 # turn on the sources you want, and this flips training.preset between them. "pooled" is
-# the baseline single fit; the others pretrain on outside tiers before the challenge. See
+# the baseline single fit; the others pretrain on outside data_spaces before the challenge. See
 # CURRICULUM_PRESETS in cypshift.experiment. Fixed to the neural model with a head so
 # freeze_trunk is meaningful; the boosted tree runs the same presets via init_model.
 program: scripts/run_experiment.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--track"
+  - ${args}
 method: grid
 metric:
   name: holdout/MA_ST-RAE

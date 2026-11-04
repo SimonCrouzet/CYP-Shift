@@ -54,7 +54,10 @@ class Disagreement:
                 them.
         """
         source = self.spread if spread is None else np.asarray(spread, dtype=float)
-        half = np.maximum(source * self.scale, self.floor)
+        # Scale the floored spread, the same quantity the fit divided the residuals by, so
+        # fit and application use one formula. Flooring the product instead (as before) left
+        # a zero-disagreement calibration with a huge scale yet zero-width intervals.
+        half = self.scale * np.maximum(source, self.floor)
         return centre - half, centre + half
 
 
@@ -117,8 +120,9 @@ def calibrate_width(
     if spread.shape != residual.shape:
         raise ValueError(f"spread {spread.shape} and residual {residual.shape} differ")
 
-    floor = float(np.quantile(spread[spread > 0], floor_quantile)) if (spread > 0).any() else 0.0
-    safe = np.maximum(spread, max(floor, 1e-9))
+    positive = float(np.quantile(spread[spread > 0], floor_quantile)) if (spread > 0).any() else 0.0
+    floor = max(positive, 1e-9)  # one floor, always positive, shared by fit and application
+    safe = np.maximum(spread, floor)
     scale = float(np.quantile(residual / safe, level))
     logger.info(
         "calibrated disagreement: scale %.3f, floor %.4f, target coverage %.0f%%",

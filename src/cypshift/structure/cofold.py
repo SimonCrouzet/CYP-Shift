@@ -48,8 +48,17 @@ STRUCTURE_FEATURE_NAMES = (
 
 
 def canonical_key(smiles: str) -> str:
-    """Short stable hash of a SMILES, for a cache filename."""
-    return hashlib.sha1(smiles.encode()).hexdigest()[:16]
+    """Short stable hash of a compound's canonical SMILES, for a cache filename.
+
+    Canonicalising first means ``CCO`` and ``OCC`` hash to one key and share a cached
+    cofold; hashing the raw string (as before) missed the cache for equivalent spellings.
+    An unparseable SMILES falls back to its raw text rather than failing.
+    """
+    from rdkit import Chem
+
+    molecule = Chem.MolFromSmiles(smiles)
+    key = Chem.MolToSmiles(molecule) if molecule is not None else smiles
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
 def write_boltz_input(enzyme: str, smiles: str, path: Path, affinity: bool = True) -> Path:
@@ -146,6 +155,9 @@ def pose_features(pdb: Path) -> dict[str, float]:
     fe = iron[0]
     lig_xyz = np.array([xyz for _n, xyz in ligand])
     to_iron = np.linalg.norm(lig_xyz - fe, axis=1)
+    # Distance from the nearest ligand nitrogen (any atom whose PDB name starts with N) to
+    # the heme iron: a geometric proxy for type-II coordination, not a verified coordinate
+    # bond, and it does not distinguish a donor lone pair from a protonated or amide N.
     nitrogens = [xyz for name, xyz in ligand if name.startswith("N")]
     n_iron = (
         float(np.min([np.linalg.norm(xyz - fe) for xyz in nitrogens]))

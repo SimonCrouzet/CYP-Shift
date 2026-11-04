@@ -13,7 +13,7 @@ interchangeable, and which one to reach for matters:
     enzymes. Unbiased, and its log2 fold-change ranks pIC50 at Spearman 0.83-0.94, so
     it supplies the inactives the dose-response labels lack.
 ``tdi``
-    Time-dependent inhibition arm, with paired direct-inhibition values.
+    Time-dependent inhibition assay_condition, with paired direct-inhibition values.
 ``emax``
     Maximal effect. Its 5th-95th percentile spans about 0.16 log units on every
     isoform, so it carries no discriminative signal; kept for completeness.

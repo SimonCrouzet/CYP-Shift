@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from cypshift.data.assembly import TIERS
+from cypshift.data.assembly import DATA_SPACES
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +118,10 @@ class PredictiveDistribution:
 class ResolvedStage:
     """One training stage: its data facets and its concrete (filled-in) strategy.
 
-    ``tiers`` selects proximity, ``assays`` selects the data type (``None`` = every assay).
+    ``data_spaces`` selects proximity, ``assays`` selects the data type (``None`` = every assay).
     """
 
-    tiers: tuple[str, ...]
+    data_spaces: tuple[str, ...]
     assays: tuple[str, ...] | None
     epochs: int
     lr: float
@@ -134,7 +134,7 @@ def training_stages(
     """The curriculum as concrete stages, ``None`` epochs/lr filled from the model.
 
     A model with no training config, or an empty curriculum, trains one pooled stage
-    over every tier and assay -- the baseline single fit. Otherwise each configured stage
+    over every data_space and assay -- the baseline single fit. Otherwise each configured stage
     keeps its data facets and its swappable strategy, reusing the model's own epochs and
     learning rate wherever the stage left them unset.
     """
@@ -143,10 +143,10 @@ def training_stages(
     else:
         stages = getattr(training, "stages", None)
     if not stages:
-        return [ResolvedStage(TIERS, None, default_epochs, default_lr, False)]
+        return [ResolvedStage(DATA_SPACES, None, default_epochs, default_lr, False)]
     return [
         ResolvedStage(
-            tuple(stage.tiers),
+            tuple(stage.data_spaces),
             None if stage.assays is None else tuple(stage.assays),
             default_epochs if stage.epochs is None else stage.epochs,
             default_lr if stage.lr is None else stage.lr,
@@ -157,14 +157,14 @@ def training_stages(
 
 
 def rows_for_stage(observations: pd.DataFrame, stage: ResolvedStage) -> NDArray[np.bool_]:
-    """Mask over rows this stage trains on: tier in ``tiers`` and assay in ``assays``.
+    """Mask over rows this stage trains on: data_space in ``data_spaces`` and assay in ``assays``.
 
-    A missing ``tier`` column means every row qualifies (a run that never tagged tiers);
+    A missing ``data_space`` column means every row qualifies (a run that never tagged data_spaces);
     ``assays`` of ``None`` places no constraint on the data type.
     """
-    if "tier" not in observations:
+    if "data_space" not in observations:
         return np.ones(len(observations), dtype=bool)
-    mask = observations["tier"].isin(stage.tiers).to_numpy()
+    mask = observations["data_space"].isin(stage.data_spaces).to_numpy()
     if stage.assays is not None:
         mask = mask & observations["assay"].isin(stage.assays).to_numpy()
     return mask
@@ -174,7 +174,8 @@ def active_stages(observations: pd.DataFrame, stages: list[ResolvedStage]) -> li
     """Drop stages with no rows this run; fall back to one pooled stage if all are empty.
 
     A curriculum can name a facet a given run does not populate -- ``distant_aux`` when no
-    auxiliary source is on, or the TDI assay when its arm is off. Such stages are skipped
+    auxiliary source is on, or the TDI assay when its assay_condition is off. Such stages are
+    skipped
     rather than training on nothing, and if every stage is empty the model still trains
     once over whatever is present, so a run never produces an unfitted model.
     """
@@ -182,7 +183,7 @@ def active_stages(observations: pd.DataFrame, stages: list[ResolvedStage]) -> li
     if present:
         return present
     first = stages[0]
-    return [ResolvedStage(TIERS, None, first.epochs, first.lr, False)]
+    return [ResolvedStage(DATA_SPACES, None, first.epochs, first.lr, False)]
 
 
 @runtime_checkable
