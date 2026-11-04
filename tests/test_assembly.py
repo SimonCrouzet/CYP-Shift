@@ -143,11 +143,13 @@ class TestAssayMetadata:
 
     def test_the_preincubated_assays_are_the_tdi_curve_and_the_screen(self):
         # The organisers ran the primary single-concentration screen (and its response/log2fc
-        # heads) under the preincubation (TDI) condition, so all carry preincubated=1.0; the
-        # direct DRC and every auxiliary assay do not.
+        # heads) under the preincubation (TDI) condition, so all carry preincubated=1.0, as do
+        # the TDI curve and the Novartis inactivation rate; the direct DRC and every other
+        # auxiliary assay do not.
         preincubated = {a for a, v in ASSAY_METADATA.items() if v[0] == 1.0}
         assert preincubated == {
             "tdi_drc",
+            "tdi_kobs",
             "direct_inhibition_screen",
             "direct_inhibition_screen_response",
             "direct_inhibition_screen_log2fc",

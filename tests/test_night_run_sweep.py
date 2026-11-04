@@ -1483,7 +1483,7 @@ def test_the_probes_are_valid_one_setting_changes_and_stay_out_of_the_plan(
         night_run, "ranked_means", lambda phase: pd.DataFrame({"mean": [], "std": [], "count": []})
     )
     night_run.run_questions()
-    assert len(queue) == 64
+    assert len(queue) == 65
     monkeypatch.setenv("CYP_CELLS", "boosted_deep_squared,tfm_octant_dense_chemeleon_pca128")
     queue.clear()
     night_run.run_questions()
