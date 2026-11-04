@@ -1,61 +1,432 @@
-# CYP-Shift: predicting CYP inhibition under an interval-censored loss
+# CYP-Shift: approach to the OpenADMET CYP inhibition challenge
 
-*Our entry for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/spaces/openadmet/cyp-challenge). Code is open ([MIT](../README.md#-licence)); this note walks through the approach while the challenge is still open, through 3 November 2026.*
+*Methods and results as of 2 November 2026, before final evaluation. Code is
+available under the [MIT licence](../LICENSE).*
 
-## Inhibition across four CYP isoforms
+Dose-response measurements in this challenge are concentrated among screening
+hits, leaving many compound–isoform pairs without a measured potency. The test
+set contains analogues of those hits measured across all four isoforms, so both
+label coverage and compound selection affect prediction. We combined the
+challenge data with public auxiliary data, compared molecular representations
+under scaffold cross-validation, and calibrated the selected predictions using
+public leaderboard feedback. We also investigated a joint dose-response model
+to predict both direct inhibition and time-dependent inhibition (TDI).
 
-Four cytochrome P450 enzymes — CYP1A2, CYP2C9, CYP2D6 and CYP3A4 — metabolise most small-molecule drugs, and a compound that inhibits one of them can raise the blood level of another drug to a toxic dose. Predicting that inhibition early, from structure alone, is what keeps a dangerous combination out of the clinic. The challenge asks for a pIC50 per compound for each of the four isoforms, on 750 blinded compounds, scored against dose-response curves the organisers hold back.
+## Challenge data and scoring
 
-Two features of the task decide almost every design choice we made: the metric is unusual, and the labels are sparse in a way that is not random.
+The direct-inhibition table contains 4,905 compounds, with 1,412 measured pIC50
+values for CYP1A2, 1,285 for CYP2C9, 1,493 for CYP2D6 and 2,335 for CYP3A4. The
+single-concentration table contains 17,504 measurements across 4,376 compounds and
+all four isoforms. The TDI table contains 6,145 compounds. The three tables contain
+overlapping sets of compounds.
 
-## Scoring inside the credible interval
+The organizers selected compounds for dose-response measurements after a primary
+screen. The 750 test compounds were purchased as analogues of 75 hits selected on
+CYP1A2, CYP2C9 and CYP3A4; CYP2D6 did not guide that selection. The primary screen
+used NADPH preincubation, so it can include time-dependent inhibition. It is
+therefore an auxiliary assay for direct-inhibition prediction, rather than a
+single point on the direct-inhibition curve. [OpenADMET challenge methods](https://openadmet.ghost.io/announcing-openadmets-cyp-inhibition-blind-challenge/)
 
-The regression track is ranked on a soft-threshold relative absolute error (ST-RAE): a dead-zone L1 loss that is **exactly zero anywhere inside a compound's 95% credible interval**, and grows linearly once a prediction falls outside it. The denominator is the same loss committed by a constant predictor at the mean, so 1.0 is the score of guessing the mean and lower is better.
+Regression is ranked by the mean soft-threshold relative absolute error
+(MA-ST-RAE) across the four isoforms. For a prediction p and the supplied 95%
+credible interval [L, U], the absolute error is:
 
-The credible band is narrow for potent compounds and wide for weak ones — roughly 0.3–0.5 log units for actives against 1.2–2.6 for inactives. The actives therefore carry nearly all of the score. The loss rewards a prediction for landing anywhere inside a compound's band — a narrow target for a potent compound, a wide one for a weak one — and is indifferent to where inside it sits. A model tuned for squared error shrinks its spread toward the global mean, which for a potent compound lands outside that narrow band and pays; the gap between squared-error tuning and this band-aware target is where the track is won or lost.
+```text
+e(p; L, U) = max(0, L - p) + max(0, p - U)
+ST-RAE    = sum(e(prediction; L, U)) / sum(e(mean(y); L, U))
+```
 
-## Label coverage and the single-concentration screen
+Predictions inside the interval incur no error. The denominator uses a constant
+prediction at the mean observed pIC50, so a score of 1 corresponds to that
+baseline. Our implementation follows the
+[official scoring code](https://github.com/OpenADMET/CYP-Challenge-Tutorial/blob/main/evaluation/custom_scoring_functions.py).
 
-Only 4,905 compounds carry a fitted dose-response pIC50, and the coverage is uneven: 47.6% of compounds have a CYP3A4 label but only 26.2% a CYP2C9 one, because a compound was promoted to a full 12-point curve only when it hit that isoform in the primary screen. Train on these labels alone and the model learns "given that this compound is a hit, how strong a hit" — which is not the question the blinded test, full of near-inactive analogs, actually asks.
+Weak inhibitors have wider credible intervals in the training data. Median
+interval widths across isoforms are 1.21–2.59 pIC50 units for compounds below
+pIC50 4, compared with 0.22–0.43 for compounds with pIC50 ≥ 4. The score therefore
+tolerates larger deviations from the fitted potency for weak inhibitors, while
+still penalizing predictions beyond their interval bounds.
 
-The single-concentration screen is the fix. It is dense and unbiased, covering 4,376 compounds at one concentration across all four isoforms, and its log fold-change ranks pIC50 almost perfectly (Spearman −0.94 on CYP3A4 down to −0.83 on CYP2D6). It supplies exactly the inactives the supervised labels lack. Using it well — rather than using more exotic data — is the single highest-value move in the pipeline, so it is on by default.
+## Combining screening and auxiliary data
 
-## A modular pipeline of swept options
+The primary screen supplies activity information for compound–isoform pairs
+without a fitted direct-inhibition curve. On compounds with both measurements,
+Spearman correlations between screen log2 fold-change and direct pIC50 range from
+−0.83 for CYP2D6 to −0.94 for CYP3A4. Because dose-response measurements followed
+hit selection, the relationship outside this paired subset remains uncertain.
 
-CYP-Shift is deliberately not one model. Several model families sit over one shared conditioning vocabulary and a set of optional evidence sources, a config picks one combination, and the sweeps decide which combination wins. The families are a gradient-boosted tree over fingerprints and physicochemical descriptors, a neural MLP, a Chemprop D-MPNN, a dose-response *curve* model that predicts the Hill curve itself and reads pIC50 off it, and a tabular foundation model (TabPFN) over the dense blocks. The curve model earns its place on the multi-fidelity data: a dose-response label constrains the curve's midpoint and a single-concentration reading constrains one point on the same curve, so two assays become two views of one object rather than two tasks to reconcile.
+For the selected graph models, we fitted a decreasing isotonic regression per
+isoform to map screen readings onto the pIC50 scale. We included the resulting
+pseudo-labels only where a direct measurement was missing, with weight 0.3
+relative to a direct measurement and a separate assay indicator. We fitted this
+calibration within each training fold and excluded validation compounds' screen
+readings.
 
-The feature set each model sees is itself a swept axis, not a fixed choice: the fingerprint, physicochemical, mechanistic, ionization and learned-embedding blocks switch on and off independently, so a model is run over a panel of representations and the winner is measured rather than assumed. A pretrained D-MPNN encoder (CheMeleon, or a MAMMAL molecular embedding) can initialise or condition the graph, frozen or fine-tuned — another swept lever.
+Screen readings on the weak-activity side of the calibrated range provide upper
+bounds on pIC50. For CYP2D6, 2,855 of the 2,883 screen readings without a direct
+measurement lie beyond that range. We therefore used almost all of its additional
+screen observations to constrain low activity without specifying individual
+potencies.
 
-How a row is told *which enzyme and assay it came from* is its own swept axis, because a tree and an MLP want different answers. A tree can split on an assay-identity column and then on fingerprint bits inside that branch, which is an interaction for free; a linear first layer cannot, and needs the condition expressed as properties or as a learned per-assay offset instead. We verified the conditioning carries chemistry and not just a constant: predicting the same compounds under the screen and the dose-response arm, the per-compound spread of the difference (0.268) is as large as its mean (0.264), so the model is doing more than learning an intercept.
+The selected regression models also use three public auxiliary sources:
 
-Auxiliary potencies — ChEMBL, SAIR, Veith, Tox21, Novartis, Octant — enter through independent on/off switches, each deduplicated against the whole challenge set, and a single binding-site distance knob decides which enzymes' rows to admit. Pulling a scored enzyme's own measurements from an outside source and pulling a relative's are the same operation at different distances, so one axis covers both. The overlap check matches on canonical structure or, more aggressively, on the InChIKey connectivity block; and sources that share a detection chemistry either pool into one assay context or stay stratified by source, so the model can calibrate each separately rather than average them. None of these is on by default; a plain run trains on the challenge data alone.
+| Source | Information used |
+|---|---|
+| [Octant CYP release](https://huggingface.co/datasets/openadmet/Octant_CYP_inhibition_reactivity_blog_release) | CYP3A4 pIC50 and credible intervals after assay quality filtering |
+| [Tox21 CYP inhibition panel, Sakamuru et al. (2025)](https://pubmed.ncbi.nlm.nih.gov/40507787/) | Biochemical P450-Glo AC50 values and maximum inhibition responses |
+| [Novartis dataset on Polaris](https://polarishub.io/datasets/novartis/novartis-cyp3a4-v1) | Released predictions of pIC50 for CYP3A4, CYP2C9 and CYP2D6 |
 
-Finally, the enzyme can be described rather than named. A one-hot says CYP2C9 and CYP2D6 are two symbols; a descriptor says they recognise opposite charges, so a rule learned on one can transfer to the other by chemistry. The descriptors are computed from structure and sequence, not hand-set, and a leave-one-enzyme-out check keeps the set narrow until width earns its place — with so few enzymes, a descriptor wide enough to identify each is a one-hot in disguise.
+The Novartis pIC50 values are model-generated surrogate labels. The
+[Polaris processing notebook](https://github.com/polaris-hub/polaris-recipes/blob/main/org-Novartis/CYP/00_CYP3A4_data_processing.ipynb)
+loads them from the public surrogate training set; our cached table contains
+16,372 compounds with these values before filtering. The source paper describes
+generating the surrogate data with models trained using in-house assays. We used
+the public predictions, without access to those proprietary assay tables, so this
+contribution is a form of knowledge distillation. [Fluetsch et al. (2024)](https://pubmed.ncbi.nlm.nih.gov/38501689/)
 
-## CYP2D6 and its ion-pair interaction
+We selected auxiliary sources by testing their contribution to a fixed graph
+model. An early comparison used a directed message-passing neural network
+(D-MPNN) with width 300, depth 3 and 30 training epochs, with the screen and
+Octant plus Tox21 potency data as the baseline. Adding
+Novartis improved both MAE and MA-ST-RAE; adding ChEMBL, SAIR or Veith potency data
+increased both errors. The following results use the same five-fold split at
+seed 0, before the later architecture and auxiliary-weight changes.
 
-Three of the four isoforms respond to bulk physicochemistry; CYP2D6 does not. A five-fold cross-validated model on physicochemical descriptors reaches R² 0.375 on CYP3A4 and a negative R² on CYP2D6. What CYP2D6 tracks instead is a single substructural feature — a protonated aliphatic amine, worth +0.55 log units of potency there and negative on all three other isoforms, the signature of the Asp301/Glu216 ion pair in its crystal structures. CYP2D6 also correlates with the other three isoforms at 0.06 or below and is measured on a different assay technology. It needs a representation that sees that specific interaction, and because it decides the macro average, it is where the remaining gains most likely sit.
+| Additional source beyond Octant and Tox21 | Macro MAE | MA-ST-RAE |
+|---|---:|---:|
+| None | 0.5408 | 0.6553 |
+| Novartis | 0.5327 | 0.6415 |
+| [ChEMBL](https://www.ebi.ac.uk/chembl/) | 0.5515 | 0.6743 |
+| [SAIR](https://huggingface.co/datasets/SandboxAQ/SAIR), potency labels | 0.5485 | 0.6749 |
+| [Veith et al. (2009)](https://pubmed.ncbi.nlm.nih.gov/19855396/), qHTS potency | 0.5501 | 0.6640 |
 
-## Validation against an analog-series test
+Removing Octant from the three-source model gave MA-ST-RAE 0.6386, an improvement
+of 0.0029 over 0.6415. This was below the staged search's practical improvement
+threshold of 0.005; subsequent architecture comparisons retained all three
+sources.
 
-The split is the hardest unsolved problem here. The test set is 75 analog series expanded from training hits, while the training library is a diversity set with almost no analog series, so a like-for-like local split cannot be built from it. A random split is worse than merely optimistic: it is biased in favour of descriptors and against fingerprints, which inverts the test regime. Models are compared on five-fold scaffold cross-validation, scored on the out-of-fold predictions: mean absolute error, Pearson correlation and R², macro over the four isoforms. The local ST-RAE is not used to choose between models, because it rewards compressed predictions and that did not carry over to the live board. The seed also moves the folds, so a difference has to repeat across seeds to count: a gain seen on one seed has more than once disappeared on the next two, and the run-to-run noise of one recipe is about 0.0035 in MAE and 0.005 in Pearson.
+We removed auxiliary compounds matching the direct-inhibition training set or
+blinded test set by canonical SMILES. For each scored isoform, we rescaled the
+total weight of the retained auxiliary observations to nine times the number of
+retained direct-inhibition labels, giving each isoform the same ratio of
+auxiliary to direct-label weight.
 
-## Pose and affinity from the cofold
+We also tested whether selecting a smaller, more chemically diverse auxiliary
+set would improve prediction. Within each isoform, assay and source, we compared
+random sampling, MaxMin selection using Morgan-fingerprint Tanimoto distances,
+and representatives from fingerprint clusters. We tested a cap of 2,000 rows per
+group and retention of 50% or 75% of the rows, holding the total auxiliary weight
+per isoform fixed. On Octant plus Tox21, random retention of 75% initially
+improved MA-ST-RAE from 0.6631 to 0.6577. Across three seeds, however, its mean was
+0.6627 versus 0.6621 for all rows. MaxMin and cluster selection also failed to
+improve the corresponding full-data control, so we retained all eligible rows.
 
-The second and third tracks reuse the same cofold. A Boltz-2 model folds the enzyme with its heme and the inhibitor together, and we read two things off the complex: the predicted affinity, and the pose — how close the inhibitor's coordinating nitrogen sits to the heme iron. On a validation cofold, imidazole's nitrogen landed 2.19 Å from the iron, textbook type-II coordination, and exactly the mechanism the fingerprint model is measurably worst on. The structure features are a GPU precompute cached to disk, so a sweep trial reads them without ever invoking Boltz.
+The graph models distinguish isoform and assay through separate indicator
+vectors concatenated with the molecular representation. Tox21 potency and maximum
+response enter as separate outputs, trained with soft-threshold absolute error
+and squared error, respectively. The TabPFN component uses uncensored potency
+observations and assay indicators, without screen pseudo-labels, response tasks
+or sample weighting.
 
-## What the sweeps found
+## Molecular representations and task sharing
 
-The Chemprop D-MPNN is the strongest single family; the gradient-boosted tree, the neural MLP and the tabular foundation model all trail it on the same data. It trains on the challenge labels plus Octant, Tox21 and Novartis potencies, with the qHTS curves in both representations and a per-isoform weight budget so that no outside source outweighs the scored labels. The best recipe is wider and deeper than the first one (hidden width 700, depth 5, dropout 0.3, learning rate 1e-4, 100 epochs). Over five seeds it beats the original small recipe by about 0.009 in MAE and 0.011 in Pearson, with the same sign on every seed. A ten-epoch fine-tune of one copy per isoform at a low learning rate adds a gain below our adoption margin of 0.005 and is kept. Hard parameter sharing between the isoform heads, per-task loss scaling and a fine-tune restricted to direct measurements all scored the same or worse. A pretrained-encoder (CheMeleon) fine-tune also scored worse alone, but it earns its place in the final model below.
+We compared fixed molecular features with graph representations learned from
+the CYP data. LightGBM, multilayer perceptrons and TabPFN used combinations of
+Morgan fingerprints, physicochemical descriptors, substructure descriptors and
+pretrained molecular embeddings. The embedding comparisons included frozen
+CheMeleon and [MAMMAL](https://arxiv.org/abs/2410.22367) representations; for
+CheMeleon we also tested fine-tuning the graph encoder. Matched feature-block
+comparisons helped distinguish the choice of representation from the choice of
+predictor, although the model families differed in their support for censored
+labels, response tasks and observation weights.
 
-## The final model: four models, one mix
+The selected graph architecture shares molecular features across isoforms and
+assays. A D-MPNN updates directed bond representations, constructs atom
+representations and averages them into a molecular vector. We concatenate this
+vector with molecular descriptors and one-hot indicators for isoform and assay,
+then use a shared feed-forward network to predict potency and assay responses.
+The encoder receives the molecular graph; the assay and isoform affect the
+prediction through the readout. This allows auxiliary assays to train the same
+encoder while retaining distinct assay identities.
 
-Seeds alone saturate. Five seeds of the graph score MAE 0.5135, Pearson 0.6599 and R² 0.4446 out of fold, a sixth adds almost nothing, and choosing the best seed per isoform is worse than averaging them. Most other graph variants (a larger network, the earlier recipe, hard sharing, per-task scaling, a fine-tune on direct measurements) looked like good partners on one seed and lost the gain on the next two. The exception is the CheMeleon fine-tune. Alone it is worse than the best recipe (Pearson 0.6508 averaged over three seeds, against 0.6599 for five), but as a minority of the mix it raised Pearson on every isoform and for each of its three seeds, most on CYP2D6 (+0.016 when 0.3 of it is added to the graph). Two models of other families helped as well, each as 15% of the mix: TabPFN on the dense descriptors with the CheMeleon embedding reduced to 128 principal components (MAE 0.5625 and Pearson 0.5726 alone), and gradient-boosted trees with a squared-error loss on the fingerprint and descriptor features (0.5565 and 0.6075 alone). The boosted trees added nothing as a partner under the soft-threshold loss and became useful under the squared one. The weights lie on a flat optimum: TabPFN 0.10–0.15, boosted trees 0.10–0.20, CheMeleon 0.2–0.4, and weights picked on half the compounds did no better on the other half than round numbers.
+We varied how much of the network was shared between tasks. Alternatives
+included separate encoders per isoform, a shared encoder with independent
+isoform heads, independent heads for each isoform–assay pair, and shared hidden
+layers ending in separate task outputs. On the 300-wide graph, independent
+isoform–assay heads increased MA-ST-RAE from 0.6369 to 0.7168 at seed 0. In a later
+paired comparison on the regularized 700-wide model, shared hidden layers with
+separate task outputs gave MAE 0.5245 versus 0.5177 for the conditioned readout;
+MA-ST-RAE was 0.6283 versus 0.6277. We retained the conditioned readout. We also
+tested per-task target standardization and a CYP2D6-specific adaptation layer,
+neither of which entered the selected model.
 
-The final model is 0.50 best graph, 0.20 CheMeleon graph, 0.15 TabPFN and 0.15 boosted trees, each refit on all labelled data with five members. Out of fold the mix scores MAE 0.5064, Pearson 0.6726 and R² 0.4553, against 0.5082, 0.6670 and 0.4525 for the earlier mix without CheMeleon and 0.5135, 0.6599 and 0.4446 for the graph alone. On the live board, adding CheMeleon raised Spearman ρ by 0.011 to 0.014 on every isoform and improved all twenty-five scores (five metrics on five boards) over the earlier mix, which is more than the out-of-fold run predicted. TabPFN and the boosted trees are single-seed runs and their gain was not repeated at other seeds, so it is probably smaller than it looks. The members, weights and calibration are recorded in `configs/best_regression_model.json` and built by `scripts/best_model.py`.
+## Joint prediction of dose-response curves
 
-## Calibrating level and spread on the blinded test
+We tested whether paired dose-response curves could combine potency estimates
+and single-concentration responses to predict both direct inhibition and TDI.
+For each molecule and isoform, the model predicts separate curves for direct
+inhibition and NADPH preincubation. Each curve has a midpoint pIC50, a Hill slope h
+and a maximum inhibited fraction Emax:
 
-At first the level and spread of the predictions were a larger error than the model. Our first graph submission scored 0.781; the same predictions with their mean and spread changed scored 0.550. Three scored files that differ only in mean or spread identify each isoform's mean, spread and correlation on the blinded test, since the algebra needs only their R², and one round of probing gave the target mean and the squared-error-optimal spread per isoform. The test means were lower than our predictions by 0.72 for CYP1A2 and 1.54 for CYP2D6.
+```text
+inhibition(c) = Emax / (1 + 10^[h × (pC - pIC50)])
+pC = -log10(c), with c in mol/L
+```
 
-The ranking is untouched by this step and is where the remaining gap sits: Spearman ρ is 0.73 overall where the best entries have about 0.81, and 0.45 on CYP2D6 where the best has 0.59. Squared error and the challenge's ST-RAE do not share an optimum, because ST-RAE counts only the error outside each compound's credible interval. On CYP1A2 and CYP2C9 a spread 15–20% wider than the solved one kept lowering MAE and raising R² while ST-RAE stayed flat or rose, and a narrower spread, which cross-validation preferred, scored worse on the board. Each isoform has its own board, so one file can carry a different setting per isoform and each is read on its own; a file assembled from the best measured column of each isoform scored exactly the sum of those columns. Two probing uploads changed only the spread and the mean of each isoform, and the last upload combined the best measured column of each: CYP1A2 at 1.15 times the solved spread with the mean raised by 0.1, CYP2C9 at the solved values, CYP2D6 at 1.5 times the spread, CYP3A4 at the solved spread with the mean raised by 0.1. A raised mean helped two isoforms and hurt one, although cross-validation had predicted a gain on all three, and CYP2D6 was best at 1.5 between worse scores at 1.0 and 2.0. These settings moved the macro ST-RAE from 0.5064 to 0.4831 without changing a ranking. They were chosen on the public half of the test set, so the hidden half may not agree. The organizers keep the latest entry, so the calibrated file is the last upload before the deadline; the settings and the scores behind them are in the spec.
+A fitted potency constrains the midpoint, while a screen reading constrains the
+preincubated curve at 49.5 µM. Direct-inhibition predictions are read from the
+first curve; TDI calls are derived from the difference between the two midpoints,
+with the assay-floor rules applied. The aim was to learn from measured responses
+without first converting the screen into pseudo-pIC50 values. We implemented
+independent output heads per isoform and condition, as well as alternatives using
+protein descriptors. A multilayer perceptron (MLP) or a D-MPNN supplies the
+molecular representation to the
+[curve model](../src/cypshift/models/curve.py).
+
+The six MLP curve configurations performed poorly in five-fold cross-validation
+at seed 0: regression MA-ST-RAE ranged from 0.807 to 0.910 and TDI macro Matthews
+correlation coefficient (MCC) from 0.013 to 0.057. The configuration using the
+screen, all three selected auxiliary sources and the auxiliary weighting
+described above gave MAE 0.6487, MA-ST-RAE 0.8447 and TDI MCC 0.0566. We excluded
+these models from the submission. We also checked the D-MPNN curve implementation
+in a short holdout experiment, without completing a comparable five-fold
+evaluation.
+
+The training targets did not fully constrain curve shape. We trained
+on fitted potencies and single-concentration responses, without using the
+released Emax measurements or full concentration-response observations. One
+screen concentration cannot separately identify the midpoint, slope and plateau;
+even a known midpoint leaves the other two parameters underdetermined. The
+parameterization starts near a Hill slope of 1 and Emax of 0.9, but those initial
+values do not supply additional experimental constraints.
+
+TDI adds a further difficulty: a twofold IC50 change is only 0.301 pIC50 units.
+Predicting two potencies accurately enough to classify that difference is a
+different objective from minimizing their individual regression errors. Direct
+supervision with the provided TDI labels performed better in our experiments.
+
+The curve model also pooled external potency assays into one direct-inhibition
+curve per isoform, whereas the selected graph model can learn separate assay
+relationships. We did not isolate the contributions of assay pooling, curve
+identifiability and model capacity to the observed errors. These explanations
+could be tested by separating assays, adding slope or Emax supervision, and
+comparing the same molecular encoder with and without the curve constraint.
+
+## Validation and model selection
+
+We used five-fold cross-validation grouped by Bemis–Murcko scaffold, with
+stratification to balance label coverage. This does not reproduce the challenge's
+hit-expansion process. Public and hidden test subsets are themselves separated by
+analogue series, so a calibration that helps the public subset may not transfer
+to the hidden series. [Challenge split description](https://openadmet.ghost.io/announcing-openadmets-cyp-inhibition-blind-challenge/)
+
+We prioritized macro MAE, Pearson correlation and R² when comparing regression
+models, while also reporting MA-ST-RAE. Early experiments showed that lower local
+ST-RAE could favor predictions with too little variation, and the preferred
+calibration did not transfer to the public leaderboard. The graph models still
+use a soft-threshold training loss; the model-selection criteria are a separate
+choice.
+
+The seed changes both initialization and fold assignments. For one baseline
+configuration, the standard deviation across five runs was approximately 0.0035 in MAE
+and 0.0047 in Pearson correlation. We repeated the main graph comparisons across
+seeds, but TabPFN and LightGBM comparisons used one seed.
+
+We used the same cross-validation results to select models and estimate their
+performance. Some graph runs also used the validation fold for early stopping.
+The reported scores are therefore development estimates; we did not perform an
+independent nested evaluation of the complete selection procedure.
+
+## Hyperparameter sweeps and training comparisons
+
+We organized the later sweeps around specific data and modelling questions.
+Source comparisons held the graph model fixed; architecture comparisons used
+the selected source set. Most candidates first ran on one five-fold split, with
+selected graph configurations repeated across seeds. We then compared their
+saved out-of-fold predictions both individually and in ensembles. The
+[experiment driver](../scripts/night_run.py) records the configurations and
+controls for these comparisons.
+
+Auxiliary representation and weighting interacted in the graph experiments.
+With all three retained sources, adding Tox21 maximum-response observations to
+potency observations left MA-ST-RAE at 0.6415 under the original weights. With
+the auxiliary weight fixed at nine times the direct-label count per isoform,
+adding those responses improved MA-ST-RAE from 0.6492 to 0.6369. We therefore
+retained potency and maximum response together with that weighting. Replacing
+screen pseudo-labels with a raw log2 fold-change response task gave 0.6434 on the
+same split, compared with 0.6369 for the isotonic pseudo-label approach.
+
+The main graph-capacity sweep tested width/depth pairs of 300/3, 500/4, 700/5 and
+1,000/6, together with readout depth, dropout, learning rate and training duration.
+Increasing capacity alone did not improve prediction. The following examples
+show how regularization and fine-tuning affected the choices; each comparison
+uses its corresponding control at seed 0.
+
+| Question | Comparison | Result and choice |
+|---|---|---|
+| Dropout at greater capacity | Dropout 0.05, 0.10 and 0.20 on the 500-wide, depth-4 graph | MA-ST-RAE decreased from 0.6847 to 0.6682 to 0.6458; this motivated stronger regularization for the larger models. |
+| Capacity with regularization | The 300-wide baseline versus the 700-wide graph with dropout 0.30, peak learning rate 10⁻⁴ and up to 100 epochs | MAE decreased from 0.5304 to 0.5229, although MA-ST-RAE was similar, 0.6353 versus 0.6373. |
+| Further capacity increase | A 1,000-wide, depth-6 graph with the same dropout, learning rate and epoch limit | MAE was 0.5336 and MA-ST-RAE 0.6633; we retained the 700-wide model. |
+| Per-isoform fine-tuning | 30 epochs at 10⁻⁴ versus 10 epochs at 10⁻⁵ after pooled training | The longer schedule gave MA-ST-RAE 0.6553; the shorter schedule gave 0.6335 and entered the final model. |
+| Training objective | Soft-threshold, absolute, squared, quantile and expectile losses; an added point-error term for the graph | We retained soft-threshold loss for the graph components and squared error for LightGBM, whose predictions improved the ensemble. |
+
+Training schedules also tested whether auxiliary learning should precede
+adaptation to the challenge assay. We compared pooled training with subsequent
+direct-potency fine-tuning, with either a trainable or frozen encoder, and with
+per-isoform fine-tuning. The selected per-isoform stage keeps that isoform's
+auxiliary assays; a separate direct-assay-only variant was also evaluated.
+
+Pretrained weights required their own tuning: applying the larger graph's
+readout and training settings to CheMeleon reduced seed-0 Pearson correlation
+from approximately 0.635 to 0.621, so the selected CheMeleon component retained
+its separate 30-epoch configuration.
+
+## Selected regression ensemble
+
+A directed message-passing neural network implemented in
+[Chemprop v2](https://pubmed.ncbi.nlm.nih.gov/41453060/) was the strongest individual
+model family in our completed comparisons. It combines a learned molecular graph
+representation with physicochemical and substructure descriptors, including
+basic amines and potential heme-coordinating groups. The selected model has hidden
+width 700, message-passing depth 5, two readout layers of width 700, dropout 0.3,
+a peak learning rate of 10⁻⁴ and a maximum of 100 epochs. After pooled training,
+we fine-tuned one copy per isoform for 10 epochs at 10⁻⁵. This reduced MAE by
+approximately 0.002 in the initial paired runs.
+
+Representation diversity improved the ensemble beyond averaging graph seeds.
+Fine-tuning the pretrained [CheMeleon encoder](https://arxiv.org/abs/2506.15792)
+gave weaker standalone predictions, but its addition improved Pearson correlation
+for every isoform across each of the three evaluated seeds. The largest increase
+was on CYP2D6: adding 30% CheMeleon to the five-seed graph average increased Pearson
+correlation by approximately 0.016.
+
+The selected weights are shared across isoforms:
+
+| Component | Weight | Representation and training |
+|---|---:|---|
+| Chemprop D-MPNN | 0.50 | Molecular graph and descriptors; soft-threshold loss; per-isoform fine-tuning |
+| CheMeleon D-MPNN | 0.20 | Pretrained encoder, fine-tuned for 30 epochs with soft-threshold loss |
+| TabPFN | 0.15 | Physicochemical and substructure descriptors plus CheMeleon embeddings; combined features reduced to 128 principal components |
+| LightGBM | 0.15 | Radius-2, 4,096-bit Morgan fingerprints and descriptors; squared-error loss |
+
+[TabPFN](https://doi.org/10.1038/s41586-024-08328-6) uses one fitted regressor per
+isoform with its internal ensembling. We refitted the two graph components and
+LightGBM on all available training data as five-member ensembles. LightGBM also
+uses auxiliary maximum-response predictions as features. Its squared-error
+version contributed more to the ensemble than its soft-threshold version.
+
+| Model | Macro MAE | Macro Pearson r | Macro R² | MA-ST-RAE |
+|---|---:|---:|---:|---:|
+| Selected graph, five-seed average | 0.5135 | 0.6599 | 0.4446 | 0.6182 |
+| Graph + TabPFN + LightGBM | 0.5082 | 0.6670 | 0.4525 | 0.6064 |
+| Selected four-component ensemble | 0.5064 | 0.6726 | 0.4553 | 0.5980 |
+
+These are out-of-fold results before leaderboard calibration. The four-component
+estimate averages five graph seeds and three CheMeleon seeds, with TabPFN and
+LightGBM at seed 0. It therefore differs from the final refit ensemble size.
+Nearby ensemble weights gave similar cross-validation scores. The
+[regression specification](../configs/best_regression_model.json) records the
+configurations and comparisons, and [best_model.py](../scripts/best_model.py)
+assembles and calibrates the predictions.
+
+## Calibration from public leaderboard feedback
+
+Differences in the mean and variance of predicted potencies accounted for a large
+part of our initial public-test error. An earlier graph model using Octant and
+Tox21 scored MA-ST-RAE 0.781 before calibration and 0.550 after changing its
+per-isoform mean and standard deviation. We estimated calibration targets from
+aggregate R² feedback on affine transformations of submitted predictions, then
+tested additional shifts and scales against ST-RAE. These targets are approximate:
+the public subset is unknown, its prediction mean and variance can differ from
+those of the full submission, and the reported scores are bootstrap summaries.
+
+For the selected four-component ensemble, the following settings gave the best
+measured public score for each isoform. The standard-deviation multiplier and
+mean shift are relative to the initial calibration targets.
+
+| Isoform | Standard-deviation multiplier | Mean shift, pIC50 | Public ST-RAE |
+|---|---:|---:|---:|
+| CYP1A2 | 1.15 | +0.10 | 0.4941 |
+| CYP2C9 | 1.00 | 0.00 | 0.3697 |
+| CYP2D6 | 1.50 | 0.00 | 0.6514 |
+| CYP3A4 | 1.00 | +0.10 | 0.4170 |
+
+Combining these calibrated predictions improved public MA-ST-RAE from 0.5064 to 0.4831, with
+macro Spearman correlation approximately 0.729. Calibration used public test
+feedback, and its gains have not been validated on the hidden series. The tested
+settings also showed that improving MAE or R² need not improve ST-RAE.
+
+## Time-dependent inhibition classification
+
+For classification, we trained the graph model directly on the supplied binary
+TDI labels through an additional score output. The selected graph variants use
+squared error on this output alongside the potency and response tasks. Training
+on the labels gave better results than deriving calls from predicted potency
+shifts. We used a separate five-fold scaffold split stratified on TDI labels and
+evaluated model comparisons on compounds with a direct measurement: 1,495 for
+CYP2D6 and 2,346 for CYP3A4.
+
+Excluding TDI labels without a direct measurement increased graph macro MCC from
+0.274 to 0.305 at seed 0, with thresholds chosen to match the evaluated subset's
+positive fraction. These labels were all negative in the training subset we
+examined, and including them at full weight reduced MCC on the measured subset.
+We retained two graph variants in the ensemble, assigning these observations
+weights of 0 and 0.25. The zero-weight variant averages two seeds. The comparison
+above used one seed; the zero-weight model scored 0.270 on the second seed.
+
+The classification ensemble averages percentile-transformed scores separately
+for each isoform. CYP2D6 combines the two graph variants, LightGBM on CheMeleon
+embeddings and a nearest-neighbour model, each with weight 0.25. The latter uses a
+Tanimoto-weighted vote of the 15 nearest training compounds by Morgan fingerprint.
+CYP3A4 combines the two graph variants and LightGBM on fingerprints and descriptors,
+each with weight one third. The ensemble's out-of-fold ROC AUC is 0.661 for CYP2D6
+and 0.782 for CYP3A4. Graph test predictions average the five fold models, rather
+than using the regression refits. The procedure is implemented in
+[tdi_submission.py](../scripts/tdi_submission.py).
+
+Aggregate public precision, recall and accuracy imply a CYP2D6 positive fraction
+of approximately 7.1%, compared with 21.7% in the measured training subset. We
+therefore tested thresholds to account for this estimated change in prevalence
+and selected them using public feedback. Their benefit on the hidden series
+remains unmeasured.
+
+The 2 November leaderboard snapshot records macro MCC 0.3232, with 0.2290 for
+CYP2D6 and 0.4174 for CYP3A4. The prepared final candidate combines the per-isoform
+predictions with the best observed MCC: 113 positive calls among 750 compounds for
+CYP2D6 and 232 for CYP3A4. Their separately observed MCC values imply a public macro MCC of
+approximately 0.3334; this combined file had not been confirmed on the leaderboard
+at that snapshot.
+
+## Chemical interpretation of CYP2D6 predictions
+
+CYP2D6 showed a different association with molecular properties from CYP3A4.
+In the measured training subsets, the Spearman correlation between calculated
+logP and pIC50 was 0.034 for CYP2D6 and 0.602 for CYP3A4. Compounds matching our
+SMARTS pattern for basic aliphatic amines had a mean CYP2D6 pIC50 0.554 units
+higher than non-matching compounds; the corresponding difference was negative
+for the other three isoforms. These comparisons use unadjusted associations in
+the selected compounds, without matched molecular pairs.
+
+The amine association is consistent with structural studies showing interactions
+between cationic ligands and acidic residues including Asp301 and Glu216. Their
+roles depend on the ligand and binding geometry; a substructure association alone
+cannot identify a particular interaction. [Wang et al. (2015)](https://pmc.ncbi.nlm.nih.gov/articles/PMC4335244/)
+These observations motivated explicit amine descriptors; the additional geometry
+descriptors produced only small gains in early tests.
+
+Biology and assay design are difficult to separate here. CYP2D6 was measured by
+dextromethorphan depletion using mass spectrometry, while the other three
+isoforms used fluorogenic probes. [Assay description](https://openadmet.ghost.io/announcing-openadmets-cyp-inhibition-blind-challenge/)
+Together with test selection based on the other isoforms, this offers plausible
+explanations for its distinct distribution and weaker prediction accuracy. Our
+experiments do not determine how much each contributes.
+
+## Exploratory protein–ligand structure prediction
+
+We also tested [Boltz-2](https://pubmed.ncbi.nlm.nih.gov/40667369/) with CYP1A2,
+heme and imidazole, aiming to obtain features describing heme coordination. In
+the predicted complex, an imidazole nitrogen was 2.19 Å from the heme iron. This
+was a geometric plausibility check on one complex, not a validation of pose or
+affinity accuracy across the challenge compounds. Structure-derived features
+were not used in the selected regression or classification ensembles, and this
+exploration did not produce a validated structure-track submission.
